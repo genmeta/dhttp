@@ -1,0 +1,8 @@
+[package]
+name = "dhttp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+h3x = { git = "https://github.com/genmeta/h3x.git", branch = "endpoint" }
+dhttp-home = { git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
