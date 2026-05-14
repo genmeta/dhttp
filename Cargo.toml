@@ -4,5 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-h3x = { git = "https://github.com/genmeta/h3x.git", branch = "endpoint" }
-dhttp-home = { git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
+bon = "3"
+futures = "0.3"
+http = "1"
+snafu = "0.9"
+tower-service = "0.3"
+home = { package = "dhttp-home", git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
+dhttp-identity = { package = "dhttp-identity", git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
+ddns = { package = "gmdns", git = "https://github.com/genmeta/gmdns.git", branch = "main" }
+h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "main" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[patch."https://github.com/genmeta/h3x.git"]
+h3x = { path = "../h3x" }
+
+[patch."https://github.com/genmeta/dhttp-home.git"]
+dhttp-identity = { path = "../dhttp-home/identity" }
+dhttp-home = { path = "../dhttp-home/home" }
+
+[patch."https://github.com/genmeta/gmdns.git"]
+gmdns = { path = "../gmdns" }
