@@ -30,3 +30,8 @@ h3x = { path = "../h3x" }
 
 [patch."https://github.com/genmeta/gmdns.git"]
 gmdns = { path = "../gmdns" }
+
+# Unify dhttp-identity: h3x depends on it via git, dhttp crate via local path.
+# Without this patch, Cargo compiles two copies and types don't match.
+[patch."ssh://git@github.com/genmeta/dhttp.git"]
+dhttp-identity = { path = "identity" }
