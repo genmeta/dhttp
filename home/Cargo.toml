@@ -1,0 +1,21 @@
+[package]
+name = "dhttp-home"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dhttp-identity = { workspace = true }
+dirs = { workspace = true }
+snafu = { workspace = true }
+serde = { workspace = true }
+
+futures = { workspace = true, optional = true }
+rustls = { workspace = true, features = ["ring", "std"], optional = true }
+tokio = { workspace = true, features = ["fs", "io-util"], optional = true }
+toml = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
+
+[features]
+default = ["ssl", "default-config"]
+ssl = ["dep:tokio", "dep:futures", "dep:rustls", "dep:x509-parser"]
+default-config = ["dep:tokio", "dep:toml"]

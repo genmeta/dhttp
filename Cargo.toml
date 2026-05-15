@@ -1,28 +1,32 @@
-[package]
-name = "dhttp"
+[workspace]
+resolver = "3"
+members = ["dhttp", "identity", "home"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-bon = "3"
-futures = "0.3"
-http = "1"
+[workspace.dependencies]
+bytes = "1"
+dirs = "6"
 snafu = "0.9"
+serde = { version = "1", features = ["derive"] }
+futures = "0.3"
+rustls = { version = "0.23", default-features = false }
+tokio = { version = "1" }
+toml = "1"
+x509-parser = "0.18"
+bon = "3"
+http = "1"
 tower-service = "0.3"
-home = { package = "dhttp-home", git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
-dhttp-identity = { package = "dhttp-identity", git = "https://github.com/genmeta/dhttp-home.git", branch = "main" }
+
+dhttp-identity = { path = "identity" }
+home = { package = "dhttp-home", path = "home" }
 ddns = { package = "gmdns", git = "https://github.com/genmeta/gmdns.git", branch = "main" }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "main" }
 
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
-
 [patch."https://github.com/genmeta/h3x.git"]
 h3x = { path = "../h3x" }
-
-[patch."https://github.com/genmeta/dhttp-home.git"]
-dhttp-identity = { path = "../dhttp-home/identity" }
-dhttp-home = { path = "../dhttp-home/home" }
 
 [patch."https://github.com/genmeta/gmdns.git"]
 gmdns = { path = "../gmdns" }
