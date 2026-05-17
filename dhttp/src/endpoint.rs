@@ -10,6 +10,7 @@ use crate::dquic::{
     Identity, Network, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
     resolver::Resolve, resolver::handy::SystemResolver, server::ServerQuicConfig,
 };
+use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
 use h3x::endpoint::client::Request;
 use http::Method;
@@ -36,11 +37,11 @@ pub mod server {
 /// The endpoint is cheaply cloneable (wraps an `Arc`).
 #[derive(Clone)]
 pub struct Endpoint {
-    inner: Arc<H3Endpoint<QuicEndpoint>>,
+    inner: Arc<DquicH3Endpoint>,
 }
 
-impl From<Arc<H3Endpoint<QuicEndpoint>>> for Endpoint {
-    fn from(inner: Arc<H3Endpoint<QuicEndpoint>>) -> Self {
+impl From<Arc<DquicH3Endpoint>> for Endpoint {
+    fn from(inner: Arc<DquicH3Endpoint>) -> Self {
         Self { inner }
     }
 }
@@ -187,27 +188,27 @@ impl Endpoint {
     ///
     /// [`Request`]: Request
     /// [`.uri()`]: Request::uri
-    pub fn new_request(self: &Arc<Self>) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn new_request(self: &Arc<Self>) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner.new_request_owned()
     }
 
     /// Convenience method to create a GET request for `uri`.
-    pub fn get(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn get(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner.new_request_owned().method(Method::GET).uri(uri)
     }
 
     /// Convenience method to create a POST request for `uri`.
-    pub fn post(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn post(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner.new_request_owned().method(Method::POST).uri(uri)
     }
 
     /// Convenience method to create a PUT request for `uri`.
-    pub fn put(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn put(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner.new_request_owned().method(Method::PUT).uri(uri)
     }
 
     /// Convenience method to create a DELETE request for `uri`.
-    pub fn delete(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn delete(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner
             .new_request_owned()
             .method(Method::DELETE)
@@ -215,7 +216,7 @@ impl Endpoint {
     }
 
     /// Convenience method to create a PATCH request for `uri`.
-    pub fn patch(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn patch(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner
             .new_request_owned()
             .method(Method::PATCH)
@@ -223,12 +224,12 @@ impl Endpoint {
     }
 
     /// Convenience method to create a HEAD request for `uri`.
-    pub fn head(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn head(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner.new_request_owned().method(Method::HEAD).uri(uri)
     }
 
     /// Convenience method to create an OPTIONS request for `uri`.
-    pub fn options(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn options(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner
             .new_request_owned()
             .method(Method::OPTIONS)
@@ -236,7 +237,7 @@ impl Endpoint {
     }
 
     /// Convenience method to create a TRACE request for `uri`.
-    pub fn trace(&self, uri: Uri) -> Request<QuicEndpoint, Arc<H3Endpoint<QuicEndpoint>>> {
+    pub fn trace(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
         self.inner
             .new_request_owned()
             .method(Method::TRACE)
