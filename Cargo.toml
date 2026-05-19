@@ -37,3 +37,6 @@ gmdns = { path = "../ddns/gmdns" }
 # Without this patch, Cargo compiles two copies and types don't match.
 [patch."ssh://git@github.com/genmeta/dhttp.git"]
 dhttp-identity = { path = "identity" }
+
+[patch."ssh://git@github.com/genmeta/dquic.git"]
+dquic = { path = "../dquic/dquic" }

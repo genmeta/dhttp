@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 serde = { workspace = true }
 snafu = { workspace = true }
+futures = { workspace = true }
 rustls = { workspace = true, features = ["std", "ring"] }
 bytes = { workspace = true }
 http = { workspace = true }

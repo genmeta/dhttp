@@ -17,7 +17,7 @@ use crate::{
     identity::{DhttpName, IdentityHome},
 };
 
-pub use dhttp_identity::Identity;
+pub use dhttp_identity::identity::Identity;
 
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";

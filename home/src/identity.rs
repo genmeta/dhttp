@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::DhttpHome;
 use snafu::{OptionExt, ResultExt, Snafu};
 
-pub use dhttp_identity::{DhttpName, InvalidDhttpName, Name as DnsName};
+pub use dhttp_identity::name::{DhttpName, ExpandUriError, InvalidDhttpName, Name as DnsName};
 
 pub type Name<'a> = DhttpName<'a>;
 pub type InvalidName = InvalidDhttpName;

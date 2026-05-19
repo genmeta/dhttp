@@ -214,16 +214,29 @@ impl Endpoint {
         self.inner.quic().bind_patterns().clone()
     }
 
+    pub fn publisher(&self) -> Result<crate::ddns::Publisher, crate::ddns::CreatePublisherError> {
+        let identity = self
+            .identity()
+            .ok_or(crate::ddns::CreatePublisherError::AnonymousEndpoint)?;
+        let identity: Arc<dyn dhttp_identity::identity::LocalAgent> = identity;
+        Ok(crate::ddns::Publisher::new(
+            identity,
+            self.network(),
+            self.resolver(),
+            self.bind_patterns(),
+        ))
+    }
+
     /// Load an endpoint from a domain name.
     ///
-    /// Accepts a [`dhttp_identity::DhttpName`], locates the `.dhttp`
+    /// Accepts a [`dhttp_identity::name::DhttpName`], locates the `.dhttp`
     /// home directory, loads the TLS identity from
     /// `~/.dhttp/<name>/ssl/`, and constructs a QUIC endpoint with
     /// [`DnsScheme::H3`], [`DnsScheme::Mdns`], and [`DnsScheme::System`]
     /// DNS resolution schemes and a default network configuration.
     pub async fn load<N>(name: N) -> Result<Self, LoadEndpointError<N::Error>>
     where
-        N: TryInto<dhttp_identity::DhttpName<'static>>,
+        N: TryInto<dhttp_identity::name::DhttpName<'static>>,
         N::Error: std::error::Error + Send + Sync + 'static,
     {
         use snafu::ResultExt;
@@ -417,5 +430,15 @@ mod tests {
             Err(error) => panic!("expected identity home error, got {error:?}"),
             Ok(_) => panic!("expected identity home error, got endpoint"),
         }
+    }
+
+    #[tokio::test]
+    async fn publisher_rejects_anonymous_endpoint() {
+        let endpoint = Endpoint::builder().build().await;
+        let error = endpoint.publisher().unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ddns::CreatePublisherError::AnonymousEndpoint
+        ));
     }
 }
