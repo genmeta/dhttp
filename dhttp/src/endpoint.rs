@@ -91,6 +91,7 @@ impl Endpoint {
         #[builder(default = crate::trust::default_client_quic_config())] client: ClientQuicConfig,
         #[builder(default = crate::trust::default_server_quic_config())] server: ServerQuicConfig,
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
+        resolver: Option<Arc<dyn Resolve + Send + Sync>>,
         #[builder(default)] connection_builder: Arc<ConnectionBuilder<QuicConnection>>,
     ) -> Self {
         let network = network.unwrap_or_else(|| {
@@ -99,33 +100,41 @@ impl Endpoint {
                 .build()
         });
 
-        let mut resolvers = Resolvers::builder();
+        let quic_resolver: Arc<dyn Resolve + Send + Sync> = match resolver {
+            Some(resolver) => resolver,
+            None => {
+                let mut resolvers = Resolvers::builder();
 
-        if dns_schemes.contains(&DnsScheme::Mdns) {
-            resolvers = resolvers.mdns(network.clone(), bind.clone()).await;
-        }
+                if dns_schemes.contains(&DnsScheme::Mdns) {
+                    resolvers = resolvers.mdns(network.clone(), bind.clone()).await;
+                }
 
-        if dns_schemes.contains(&DnsScheme::System) {
-            resolvers = resolvers.system();
-        }
+                if dns_schemes.contains(&DnsScheme::System) {
+                    resolvers = resolvers.system();
+                }
 
-        if dns_schemes.contains(&DnsScheme::Http) {
-            resolvers = resolvers
-                .http()
-                .expect("BUG: DHTTP HTTP DNS server is a valid URL");
-        }
+                if dns_schemes.contains(&DnsScheme::Http) {
+                    resolvers = resolvers
+                        .http()
+                        .expect("BUG: DHTTP HTTP DNS server is a valid URL");
+                }
 
-        if dns_schemes.contains(&DnsScheme::H3) {
-            let h3 =
-                create_h3_dns_endpoint(identity.clone(), network.clone(), &client, bind.clone())
+                if dns_schemes.contains(&DnsScheme::H3) {
+                    let h3 = create_h3_dns_endpoint(
+                        identity.clone(),
+                        network.clone(),
+                        &client,
+                        bind.clone(),
+                    )
                     .await;
-            resolvers = resolvers
-                .h3(h3)
-                .expect("BUG: DHTTP H3 DNS server is a valid URL");
-        }
+                    resolvers = resolvers
+                        .h3(h3)
+                        .expect("BUG: DHTTP H3 DNS server is a valid URL");
+                }
 
-        let resolvers = resolvers.build();
-        let quic_resolver: Arc<dyn Resolve + Send + Sync> = Arc::new(resolvers);
+                Arc::new(resolvers.build())
+            }
+        };
         let quic = QuicEndpoint::builder()
             .network(network)
             .maybe_identity(identity)
@@ -215,6 +224,13 @@ impl Endpoint {
     }
 
     pub fn publisher(&self) -> Result<crate::ddns::Publisher, crate::ddns::CreatePublisherError> {
+        self.publisher_with_options(crate::ddns::PublishOptions::default())
+    }
+
+    pub fn publisher_with_options(
+        &self,
+        options: crate::ddns::PublishOptions,
+    ) -> Result<crate::ddns::Publisher, crate::ddns::CreatePublisherError> {
         let identity = self
             .identity()
             .ok_or(crate::ddns::CreatePublisherError::AnonymousEndpoint)?;
@@ -224,7 +240,8 @@ impl Endpoint {
             self.network(),
             self.resolver(),
             self.bind_patterns(),
-        ))
+        )
+        .with_options(options))
     }
 
     /// Load an endpoint from a domain name.
@@ -389,10 +406,24 @@ impl Endpoint {
     }
 }
 
+impl crate::h3x::quic::Listen for Endpoint {
+    type Connection = QuicConnection;
+    type Error = crate::h3x::dquic::AcceptError;
+
+    async fn accept(&mut self) -> Result<Arc<Self::Connection>, Self::Error> {
+        self.inner.quic().accept().await
+    }
+
+    async fn shutdown(&self) -> Result<(), Self::Error> {
+        crate::h3x::quic::Listen::shutdown(&self.inner.quic()).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ddns::DnsScheme;
+    use std::fmt;
 
     #[tokio::test]
     async fn check_builder_api() {
@@ -440,5 +471,61 @@ mod tests {
             error,
             crate::ddns::CreatePublisherError::AnonymousEndpoint
         ));
+    }
+
+    #[derive(Debug)]
+    struct MarkerResolver;
+
+    impl fmt::Display for MarkerResolver {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("marker resolver")
+        }
+    }
+
+    impl crate::dquic::qresolve::Resolve for MarkerResolver {
+        fn lookup<'l>(&'l self, _name: &'l str) -> crate::dquic::qresolve::ResolveFuture<'l> {
+            use futures::{FutureExt, StreamExt, stream};
+            async { Ok(stream::empty().boxed()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn builder_accepts_explicit_resolver() {
+        let resolver: Arc<dyn crate::dquic::qresolve::Resolve + Send + Sync> =
+            Arc::new(MarkerResolver);
+
+        let endpoint = Endpoint::builder().resolver(resolver).build().await;
+        let resolver = endpoint.resolver();
+        let any: &dyn std::any::Any = resolver.as_ref();
+
+        assert!(any.downcast_ref::<MarkerResolver>().is_some());
+    }
+
+    #[tokio::test]
+    async fn publisher_can_apply_publish_options() {
+        use rustls::pki_types::PrivateKeyDer;
+
+        let identity = Identity::new(
+            "publisher.example.com".parse().unwrap(),
+            Vec::new(),
+            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
+        );
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .build()
+            .await;
+
+        let publisher = endpoint
+            .publisher_with_options(crate::ddns::PublishOptions { server_id: Some(7) })
+            .expect("named endpoint can publish");
+
+        assert_eq!(publisher.options().server_id, Some(7));
+    }
+
+    #[test]
+    fn endpoint_implements_quic_listen() {
+        fn assert_listen<T: crate::h3x::quic::Listen>() {}
+
+        assert_listen::<Endpoint>();
     }
 }
