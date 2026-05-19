@@ -6,8 +6,11 @@ edition.workspace = true
 [dependencies]
 serde = { workspace = true }
 snafu = { workspace = true }
-rustls = { workspace = true, features = ["std"] }
+rustls = { workspace = true, features = ["std", "ring"] }
 bytes = { workspace = true }
+http = { workspace = true }
+ring = "0.17"
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"

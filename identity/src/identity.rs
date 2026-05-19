@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{
+    SignatureScheme,
+    pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer},
+};
+use snafu::{ResultExt, Snafu};
+use verify_error::UnsupportedSchemeSnafu as VerifyUnsupportedScheme;
+use x509_parser::prelude::FromDer;
 
 use crate::name::Name;
 
 /// A TLS identity backed by a certificate chain and private key.
-///
-/// All fields are public — this is a pure data bag with no accessor methods.
-/// Fields use `Arc` for cheap cloning and sharing across threads.
-/// This is the canonical identity type for DHttp endpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     pub name: Name<'static>,
@@ -17,11 +19,23 @@ pub struct Identity {
     pub ocsp: Arc<Option<Vec<u8>>>,
 }
 
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum SignError {
+    #[snafu(display("unsupported signature scheme {scheme:?}"))]
+    UnsupportedScheme { scheme: SignatureScheme },
+    #[snafu(display("cryptographic operation failed"))]
+    Crypto { source: rustls::Error },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum VerifyError {
+    #[snafu(display("unsupported signature scheme {scheme:?}"))]
+    UnsupportedScheme { scheme: SignatureScheme },
+}
+
 impl Identity {
-    /// Construct a new identity from its components.
-    ///
-    /// `ocsp` defaults to `Arc::new(None)` — call [`set_ocsp`](Self::set_ocsp)
-    /// if an OCSP response is available.
     pub fn new(
         name: Name<'static>,
         certs: Vec<CertificateDer<'static>>,
@@ -33,6 +47,81 @@ impl Identity {
             key: Arc::new(key),
             ocsp: Arc::new(None),
         }
+    }
+
+    pub fn name(&self) -> &Name<'static> {
+        &self.name
+    }
+
+    pub fn cert_chain(&self) -> &[CertificateDer<'static>] {
+        &self.certs
+    }
+
+    pub fn certs(&self) -> &[CertificateDer<'static>] {
+        self.cert_chain()
+    }
+
+    pub fn key(&self) -> &PrivateKeyDer<'static> {
+        &self.key
+    }
+
+    pub fn public_key(&self) -> SubjectPublicKeyInfoDer<'_> {
+        match x509_parser::certificate::X509Certificate::from_der(&self.certs[0]) {
+            Ok((_remain, certificate)) => {
+                let spki = certificate.public_key().raw;
+                spki.to_owned().into()
+            }
+            Err(_) if self.certs.len() == 1 => self.certs[0].as_ref().into(),
+            Err(_) => unreachable!("rustls returned an invalid peer_certificates"),
+        }
+    }
+
+    pub fn sign_algorithm(&self) -> Result<rustls::SignatureAlgorithm, SignError> {
+        use snafu::ResultExt;
+        let key = rustls::crypto::ring::sign::any_supported_type(&self.key)
+            .context(sign_error::CryptoSnafu)?;
+        Ok(key.algorithm())
+    }
+
+    pub fn sign(&self, scheme: SignatureScheme, data: &[u8]) -> Result<Vec<u8>, SignError> {
+        let key = rustls::crypto::ring::sign::any_supported_type(&self.key)
+            .context(sign_error::CryptoSnafu)?;
+        let signer = key
+            .choose_scheme(&[scheme])
+            .ok_or_else(|| sign_error::UnsupportedSchemeSnafu { scheme }.build())?;
+        signer.sign(data).context(sign_error::CryptoSnafu)
+    }
+
+    pub fn verify(
+        &self,
+        scheme: SignatureScheme,
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, VerifyError> {
+        let algorithm: &'static dyn ring::signature::VerificationAlgorithm = match scheme {
+            SignatureScheme::ECDSA_NISTP384_SHA384 => &ring::signature::ECDSA_P384_SHA384_ASN1,
+            SignatureScheme::ECDSA_NISTP256_SHA256 => &ring::signature::ECDSA_P256_SHA256_ASN1,
+            SignatureScheme::ED25519 => &ring::signature::ED25519,
+            SignatureScheme::RSA_PKCS1_SHA256 => &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384 => &ring::signature::RSA_PKCS1_2048_8192_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512 => &ring::signature::RSA_PKCS1_2048_8192_SHA512,
+            SignatureScheme::RSA_PSS_SHA256 => &ring::signature::RSA_PSS_2048_8192_SHA256,
+            SignatureScheme::RSA_PSS_SHA384 => &ring::signature::RSA_PSS_2048_8192_SHA384,
+            SignatureScheme::RSA_PSS_SHA512 => &ring::signature::RSA_PSS_2048_8192_SHA512,
+            _ => return VerifyUnsupportedScheme { scheme }.fail(),
+        };
+
+        let spki = self.public_key();
+        let public_key = match x509_parser::x509::SubjectPublicKeyInfo::from_der(&spki) {
+            Ok((_remain, spki)) => spki.subject_public_key,
+            Err(_) => unreachable!("rustls returned an invalid peer_certificates"),
+        };
+
+        Ok(
+            ring::signature::UnparsedPublicKey::new(algorithm, public_key)
+                .verify(data, signature)
+                .is_ok(),
+        )
     }
 }
 

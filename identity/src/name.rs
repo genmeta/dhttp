@@ -8,7 +8,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 // ============================================================================
 // BytesStr — private string backed by Bytes for O(1) cloning
@@ -115,6 +115,11 @@ impl Name<'_> {
             Repr::Borrowed(s) => s,
             Repr::Owned(b) => b.deref(),
         }
+    }
+
+    /// Return the complete DNS name.
+    pub fn as_full(&self) -> &str {
+        self.as_str()
     }
 
     /// Clone to an owned [`Name<'static>`].
@@ -415,6 +420,20 @@ pub enum InvalidDhttpName {
     InvalidName { source: InvalidName },
 }
 
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ExpandUriError {
+    #[snafu(transparent)]
+    InvalidName { source: InvalidDhttpName },
+    #[snafu(display("failed to parse expanded authority `{authority}`"))]
+    ParseAuthority {
+        authority: String,
+        source: http::uri::InvalidUri,
+    },
+    #[snafu(display("failed to reconstruct uri with expanded dhttp name"))]
+    ReconstructUri { source: http::uri::InvalidUriParts },
+}
+
 // ============================================================================
 // DhttpName<'a> — Name with mandatory `.genmeta.net` suffix
 // ============================================================================
@@ -428,6 +447,21 @@ pub struct DhttpName<'a>(Name<'a>);
 
 impl DhttpName<'_> {
     pub const SUFFIX: &'static str = ".genmeta.net";
+
+    /// Validate DHttp name rules, including the mandatory suffix.
+    pub fn validate(input: &[u8]) -> Result<(), InvalidDhttpName> {
+        if !input.ends_with(Self::SUFFIX.as_bytes()) {
+            return Err(InvalidDhttpName::InvalidName {
+                source: InvalidName::MissingSuffix {
+                    suffix: Self::SUFFIX.to_string(),
+                },
+            });
+        }
+        match Name::validate(input) {
+            Ok(()) => Ok(()),
+            Err(source) => Err(InvalidDhttpName::InvalidName { source }),
+        }
+    }
 
     /// Parse and validate a [`DhttpName`].
     ///
@@ -455,9 +489,56 @@ impl DhttpName<'_> {
             });
         };
 
-        let name =
-            Name::try_from(processed).map_err(|source| InvalidDhttpName::InvalidName { source })?;
+        let name = match Name::try_from(processed) {
+            Ok(name) => name,
+            Err(source) => return Err(InvalidDhttpName::InvalidName { source }),
+        };
         Ok(DhttpName(name))
+    }
+
+    /// Parse a DHttp name, accepting either a full `.genmeta.net` name or a
+    /// partial multi-label name.
+    pub fn try_from_str<'a>(input: impl Into<Cow<'a, str>>) -> Result<Self, InvalidDhttpName> {
+        Self::parse(input.into().as_ref())
+    }
+
+    /// Parse and validate a full DHttp name.
+    pub fn try_from_str_full<'a>(input: impl Into<Cow<'a, str>>) -> Result<Self, InvalidDhttpName> {
+        let input = input.into();
+        if !input.ends_with(Self::SUFFIX) {
+            return Err(InvalidDhttpName::InvalidName {
+                source: InvalidName::MissingSuffix {
+                    suffix: Self::SUFFIX.to_string(),
+                },
+            });
+        }
+        Self::parse(input.as_ref())
+    }
+
+    /// Parse a partial name by appending the DHttp suffix.
+    pub fn try_from_str_partial<'a>(
+        input: impl Into<Cow<'a, str>>,
+    ) -> Result<Self, InvalidDhttpName> {
+        let input = input.into();
+        Self::parse(&format!("{}{}", input.as_ref(), Self::SUFFIX))
+    }
+
+    /// Expand only explicit DHttp forms.
+    ///
+    /// Returns `Some` for already-full names and `~` shorthand, and `None` for
+    /// ordinary host names that should pass through unchanged.
+    pub fn try_expand_from<'a>(
+        input: impl Into<Cow<'a, str>>,
+    ) -> Result<Option<Self>, InvalidDhttpName> {
+        let input = input.into();
+        if input.ends_with(Self::SUFFIX) {
+            return Self::try_from_str_full(input).map(Some);
+        }
+        if let Some(partial) = input.strip_suffix('~') {
+            return Self::try_from_str_partial(partial).map(Some);
+        }
+
+        Ok(None)
     }
 
     /// Consume and return the inner [`Name`].
@@ -484,6 +565,55 @@ impl DhttpName<'_> {
     /// Return a reference to the inner [`Name`].
     pub fn as_name(&self) -> &Name<'_> {
         &self.0
+    }
+
+    /// Return a borrowed DHttp name.
+    pub fn borrow(&self) -> DhttpName<'_> {
+        DhttpName(Name(Repr::Borrowed(self.0.as_str())))
+    }
+
+    /// Expand DHttp shorthand in the authority of `uri`.
+    ///
+    /// The bare host `~` expands to this name. A host ending with `~` expands
+    /// to the same host with the DHttp suffix appended. Ordinary host names
+    /// pass through unchanged.
+    pub fn expand_uri(&self, uri: http::Uri) -> Result<http::Uri, ExpandUriError> {
+        let mut parts = uri.into_parts();
+
+        let Some(authority) = &parts.authority else {
+            return http::Uri::from_parts(parts).context(expand_uri_error::ReconstructUriSnafu);
+        };
+
+        let host = authority.host();
+        let expanded = if host == "~" {
+            Some(self.as_full().to_owned())
+        } else {
+            DhttpName::try_expand_from(host)?.map(|name| name.as_full().to_owned())
+        };
+
+        if let Some(expanded) = expanded
+            && expanded.as_str() != host
+        {
+            let user_info_len = authority
+                .as_str()
+                .split_once('@')
+                .map(|(user_info, ..)| user_info.len() + 1)
+                .unwrap_or_default();
+            let host_len = host.len();
+            let authority = format!(
+                "{user_info}{host}{port}",
+                user_info = &authority.as_str()[..user_info_len],
+                host = expanded,
+                port = &authority.as_str()[user_info_len + host_len..],
+            );
+            parts.authority = Some(authority.parse().context(
+                expand_uri_error::ParseAuthoritySnafu {
+                    authority: &authority,
+                },
+            )?);
+        }
+
+        http::Uri::from_parts(parts).context(expand_uri_error::ReconstructUriSnafu)
     }
 }
 
@@ -552,6 +682,30 @@ impl FromStr for DhttpName<'_> {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         DhttpName::parse(s)
+    }
+}
+
+impl TryFrom<&str> for DhttpName<'static> {
+    type Error = InvalidDhttpName;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        DhttpName::parse(value)
+    }
+}
+
+impl TryFrom<String> for DhttpName<'static> {
+    type Error = InvalidDhttpName;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        DhttpName::parse(&value)
+    }
+}
+
+impl<'a> TryFrom<Cow<'a, str>> for DhttpName<'static> {
+    type Error = InvalidDhttpName;
+
+    fn try_from(value: Cow<'a, str>) -> Result<Self, Self::Error> {
+        DhttpName::parse(value.as_ref())
     }
 }
 
@@ -964,5 +1118,101 @@ mod tests {
     fn dhttp_name_from_str_trait_rejects_invalid() {
         let result: Result<DhttpName, _> = "!!!".parse();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dhttp_name_legacy_partial_constructor() {
+        let dn = DhttpName::try_from_str_partial("reimu.pilot").unwrap();
+        assert_eq!(dn.as_partial(), "reimu.pilot");
+        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_legacy_full_constructor() {
+        let dn = DhttpName::try_from_str_full("reimu.pilot.genmeta.net").unwrap();
+        assert_eq!(dn.as_partial(), "reimu.pilot");
+        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_legacy_expand_constructor() {
+        let dn = DhttpName::try_expand_from("reimu.pilot~")
+            .unwrap()
+            .expect("tilde shorthand should expand");
+        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+
+        let none = DhttpName::try_expand_from("example.com").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn dhttp_name_legacy_borrow_method() {
+        let dn = DhttpName::parse("reimu.pilot").unwrap();
+        let borrowed = dn.borrow();
+        assert_eq!(borrowed.as_full(), dn.as_full());
+    }
+
+    #[test]
+    fn dhttp_name_legacy_validate() {
+        DhttpName::validate(b"reimu.pilot.genmeta.net").unwrap();
+        assert!(DhttpName::validate(b"reimu.pilot").is_err());
+    }
+
+    #[test]
+    fn dhttp_name_try_from_str_expands_partial_name() {
+        let name = DhttpName::try_from("reimu.pilot").unwrap();
+        assert_eq!(name.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_try_from_string_expands_tilde_name() {
+        let name = DhttpName::try_from(String::from("reimu.pilot~")).unwrap();
+        assert_eq!(name.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn expand_uri_replaces_bare_tilde_with_self_name() {
+        let name = DhttpName::parse("reimu.pilot").unwrap();
+        let uri = "https://~/api?q=1".parse().unwrap();
+
+        let expanded = name.expand_uri(uri).unwrap();
+
+        assert_eq!(
+            expanded.to_string(),
+            "https://reimu.pilot.genmeta.net/api?q=1"
+        );
+    }
+
+    #[test]
+    fn expand_uri_expands_tilde_suffix_and_preserves_userinfo_port() {
+        let name = DhttpName::parse("self.host").unwrap();
+        let uri = "https://alice@reimu.pilot~:443/api".parse().unwrap();
+
+        let expanded = name.expand_uri(uri).unwrap();
+
+        assert_eq!(
+            expanded.to_string(),
+            "https://alice@reimu.pilot.genmeta.net:443/api"
+        );
+    }
+
+    #[test]
+    fn expand_uri_leaves_plain_host_unchanged() {
+        let name = DhttpName::parse("self.host").unwrap();
+        let uri: http::Uri = "https://example.com/api".parse().unwrap();
+
+        let expanded = name.expand_uri(uri.clone()).unwrap();
+
+        assert_eq!(expanded, uri);
+    }
+
+    #[test]
+    fn expand_uri_rejects_invalid_expanded_name() {
+        let name = DhttpName::parse("self.host").unwrap();
+        let uri = "https://123~/api".parse().unwrap();
+
+        let error = name.expand_uri(uri).unwrap_err();
+
+        assert!(matches!(error, ExpandUriError::InvalidName { .. }));
     }
 }

@@ -1,8 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::DhttpHome;
+use snafu::{OptionExt, ResultExt, Snafu};
 
-pub use dhttp_identity::{DhttpName, InvalidName, Name};
+pub use dhttp_identity::{DhttpName, InvalidDhttpName, Name as DnsName};
+
+pub type Name<'a> = DhttpName<'a>;
+pub type InvalidName = InvalidDhttpName;
 
 #[cfg(feature = "default-config")]
 pub mod default;
@@ -14,6 +18,17 @@ pub mod ssl;
 pub struct IdentityHome {
     pub(crate) path: PathBuf,
     pub(crate) name: DhttpName<'static>,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum IdentityHomeFromPathError {
+    #[snafu(display("identity home path has no directory name: {}", path.display()))]
+    MissingFileName { path: PathBuf },
+    #[snafu(display("identity home directory name is not valid unicode: {}", path.display()))]
+    NonUtf8FileName { path: PathBuf },
+    #[snafu(display("failed to parse identity home directory name as dhttp name"))]
+    InvalidName { source: InvalidDhttpName },
 }
 
 impl IdentityHome {
@@ -50,6 +65,35 @@ impl IdentityHome {
     pub fn server_conf_path(&self) -> PathBuf {
         self.join(Self::SERVER_CONF_FILE)
     }
+
+    fn try_from_path(path: PathBuf) -> Result<Self, IdentityHomeFromPathError> {
+        use identity_home_from_path_error::*;
+
+        let file_name = path
+            .file_name()
+            .context(MissingFileNameSnafu { path: &path })?;
+        let file_name = file_name
+            .to_str()
+            .context(NonUtf8FileNameSnafu { path: &path })?;
+        let name = DhttpName::parse(file_name).context(InvalidNameSnafu)?;
+        Ok(Self { path, name })
+    }
+}
+
+impl TryFrom<PathBuf> for IdentityHome {
+    type Error = IdentityHomeFromPathError;
+
+    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+        Self::try_from_path(path)
+    }
+}
+
+impl TryFrom<&Path> for IdentityHome {
+    type Error = IdentityHomeFromPathError;
+
+    fn try_from(path: &Path) -> Result<Self, Self::Error> {
+        Self::try_from_path(path.to_path_buf())
+    }
 }
 
 impl DhttpHome {
@@ -62,5 +106,38 @@ impl DhttpHome {
             path: self.join_identity_name(name.clone()),
             name: name.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_home_from_path_uses_directory_name_as_dhttp_name() {
+        let home = IdentityHome::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
+
+        assert_eq!(home.path(), Path::new("/tmp/reimu.pilot"));
+        assert_eq!(home.name().as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn identity_home_from_path_rejects_path_without_directory_name() {
+        let error = IdentityHome::try_from(Path::new("/")).unwrap_err();
+
+        assert!(matches!(
+            error,
+            IdentityHomeFromPathError::MissingFileName { .. }
+        ));
+    }
+
+    #[test]
+    fn identity_home_from_path_rejects_invalid_directory_name() {
+        let error = IdentityHome::try_from(Path::new("/tmp/123")).unwrap_err();
+
+        assert!(matches!(
+            error,
+            IdentityHomeFromPathError::InvalidName { .. }
+        ));
     }
 }

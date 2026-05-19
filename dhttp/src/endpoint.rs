@@ -1,17 +1,19 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use bon::bon;
 use http::Uri;
 use http::uri::Authority;
 
 use crate::ddns::DnsScheme;
-use crate::ddns::resolvers::{H3Resolver, MdnsResolvers, Resolvers};
+use crate::ddns::resolvers::Resolvers;
 use crate::dquic::{
     Identity, Network, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
-    resolver::Resolve, resolver::handy::SystemResolver, server::ServerQuicConfig,
+    connection::Connection as QuicConnection, resolver::Resolve, server::ServerQuicConfig,
 };
+use crate::h3x::connection::ConnectionBuilder;
 use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
+
 use h3x::endpoint::client::Request;
 use http::Method;
 
@@ -55,12 +57,12 @@ pub const STUN_SERVER: &str = "stun.genmeta.net:20004";
 /// so DNS queries reuse the same UDP sockets and [`QuicRouter`]. It does not
 /// accept incoming connections — the identity, if any, is passed for client
 /// authentication only.
-async fn create_h3_dns_resolver(
+async fn create_h3_dns_endpoint(
     identity: Option<Arc<Identity>>,
     network: Arc<Network>,
     client_config: &ClientQuicConfig,
     bind: Arc<Vec<BindPattern>>,
-) -> H3Resolver<QuicEndpoint> {
+) -> Arc<H3Endpoint<QuicEndpoint, QuicConnection>> {
     let quic = QuicEndpoint::builder()
         .network(network)
         .maybe_identity(identity)
@@ -68,8 +70,7 @@ async fn create_h3_dns_resolver(
         .bind(bind)
         .build()
         .await;
-    let h3 = H3Endpoint::new(quic);
-    H3Resolver::new(crate::ddns::DNS_SERVER, h3).expect("BUG: DNS_SERVER is a valid URL")
+    Arc::new(H3Endpoint::new(quic))
 }
 
 #[bon]
@@ -87,9 +88,10 @@ impl Endpoint {
         identity: Option<Arc<Identity>>,
         network: Option<Arc<Network>>,
 
-        #[builder(default)] client: ClientQuicConfig,
-        #[builder(default)] server: ServerQuicConfig,
+        #[builder(default = crate::trust::default_client_quic_config())] client: ClientQuicConfig,
+        #[builder(default = crate::trust::default_server_quic_config())] server: ServerQuicConfig,
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
+        #[builder(default)] connection_builder: Arc<ConnectionBuilder<QuicConnection>>,
     ) -> Self {
         let network = network.unwrap_or_else(|| {
             Network::builder()
@@ -97,23 +99,32 @@ impl Endpoint {
                 .build()
         });
 
-        let mut resolvers = Resolvers::new();
+        let mut resolvers = Resolvers::builder();
 
         if dns_schemes.contains(&DnsScheme::Mdns) {
-            resolvers = resolvers.with(Arc::new(MdnsResolvers::new()));
+            resolvers = resolvers.mdns(network.clone(), bind.clone()).await;
         }
 
         if dns_schemes.contains(&DnsScheme::System) {
-            resolvers = resolvers.with(Arc::new(SystemResolver));
+            resolvers = resolvers.system();
+        }
+
+        if dns_schemes.contains(&DnsScheme::Http) {
+            resolvers = resolvers
+                .http()
+                .expect("BUG: DHTTP HTTP DNS server is a valid URL");
         }
 
         if dns_schemes.contains(&DnsScheme::H3) {
             let h3 =
-                create_h3_dns_resolver(identity.clone(), network.clone(), &client, bind.clone())
+                create_h3_dns_endpoint(identity.clone(), network.clone(), &client, bind.clone())
                     .await;
-            resolvers = resolvers.with(Arc::new(h3));
+            resolvers = resolvers
+                .h3(h3)
+                .expect("BUG: DHTTP H3 DNS server is a valid URL");
         }
 
+        let resolvers = resolvers.build();
         let quic_resolver: Arc<dyn Resolve + Send + Sync> = Arc::new(resolvers);
         let quic = QuicEndpoint::builder()
             .network(network)
@@ -125,7 +136,10 @@ impl Endpoint {
             .build()
             .await;
 
-        let h3 = H3Endpoint::new(quic);
+        let h3 = H3Endpoint::builder()
+            .quic(quic)
+            .builder(connection_builder)
+            .build();
         Self {
             inner: Arc::new(h3),
         }
@@ -140,10 +154,33 @@ impl<S: endpoint_builder::State> EndpointBuilder<S> {
 }
 
 #[derive(Debug, snafu::Snafu)]
-pub enum LoadEndpointError {
+#[snafu(module(load_endpoint_error))]
+pub enum LoadEndpointError<E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    #[snafu(display("failed to parse dhttp name"))]
+    InvalidName { source: E },
     #[snafu(display("failed to locate dhttp home"))]
     NoHome {
         source: crate::home::LocateDhttpHomeError,
+    },
+    #[snafu(display("failed to load identity home"))]
+    LoadIdentity {
+        source: crate::home::identity::ssl::LoadIdentityError,
+    },
+    #[snafu(display("failed to load certificate and key"))]
+    LoadSsl {
+        source: crate::home::identity::ssl::LoadIdentitySslError,
+    },
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(load_endpoint_from_path_error))]
+pub enum LoadEndpointFromPathError {
+    #[snafu(display("failed to construct identity home from path"))]
+    IdentityHome {
+        source: crate::home::identity::IdentityHomeFromPathError,
     },
     #[snafu(display("failed to load certificate and key"))]
     LoadSsl {
@@ -152,6 +189,31 @@ pub enum LoadEndpointError {
 }
 
 impl Endpoint {
+    /// Return a shared reference to the inner [`DquicH3Endpoint`].
+    pub fn as_h3(&self) -> Arc<DquicH3Endpoint> {
+        self.inner.clone()
+    }
+
+    /// Return the shared QUIC network used by this endpoint.
+    pub fn network(&self) -> Arc<Network> {
+        self.inner.quic().network().clone()
+    }
+
+    /// Return the TLS identity used by this endpoint, if any.
+    pub fn identity(&self) -> Option<Arc<Identity>> {
+        self.inner.quic().identity()
+    }
+
+    /// Return the DNS resolver set used by this endpoint.
+    pub fn resolver(&self) -> Arc<dyn Resolve + Send + Sync> {
+        self.inner.quic().resolver().clone()
+    }
+
+    /// Return the bind patterns owned by this endpoint.
+    pub fn bind_patterns(&self) -> Arc<Vec<BindPattern>> {
+        self.inner.quic().bind_patterns().clone()
+    }
+
     /// Load an endpoint from a domain name.
     ///
     /// Accepts a [`dhttp_identity::DhttpName`], locates the `.dhttp`
@@ -159,15 +221,49 @@ impl Endpoint {
     /// `~/.dhttp/<name>/ssl/`, and constructs a QUIC endpoint with
     /// [`DnsScheme::H3`], [`DnsScheme::Mdns`], and [`DnsScheme::System`]
     /// DNS resolution schemes and a default network configuration.
-    pub async fn load(name: dhttp_identity::DhttpName<'_>) -> Result<Self, LoadEndpointError> {
+    pub async fn load<N>(name: N) -> Result<Self, LoadEndpointError<N::Error>>
+    where
+        N: TryInto<dhttp_identity::DhttpName<'static>>,
+        N::Error: std::error::Error + Send + Sync + 'static,
+    {
         use snafu::ResultExt;
 
-        let home = crate::home::DhttpHome::load_from_environment().context(NoHomeSnafu)?;
+        let name = name
+            .try_into()
+            .context(load_endpoint_error::InvalidNameSnafu)?;
+        let home = crate::home::DhttpHome::load_from_environment()
+            .context(load_endpoint_error::NoHomeSnafu)?;
 
-        let dname = name.into_owned();
-        let identity_home = home.identity_home(dname);
+        let identity_home = home
+            .load_identity(name)
+            .await
+            .context(load_endpoint_error::LoadIdentitySnafu)?;
 
-        let identity = identity_home.identity().await.context(LoadSslSnafu)?;
+        let identity = identity_home
+            .identity()
+            .await
+            .context(load_endpoint_error::LoadSslSnafu)?;
+
+        let endpoint = Self::builder()
+            .identity(Arc::new(identity))
+            .dns(DnsScheme::H3)
+            .dns(DnsScheme::Mdns)
+            .dns(DnsScheme::System)
+            .build()
+            .await;
+
+        Ok(endpoint)
+    }
+
+    pub async fn load_from(path: impl Into<PathBuf>) -> Result<Self, LoadEndpointFromPathError> {
+        use snafu::ResultExt;
+
+        let identity_home = crate::home::identity::IdentityHome::try_from(path.into())
+            .context(load_endpoint_from_path_error::IdentityHomeSnafu)?;
+        let identity = identity_home
+            .identity()
+            .await
+            .context(load_endpoint_from_path_error::LoadSslSnafu)?;
 
         let endpoint = Self::builder()
             .identity(Arc::new(identity))
@@ -264,7 +360,7 @@ impl Endpoint {
     /// tokio::spawn(ep.serve(router));
     /// ```
     pub fn serve<S>(
-        self: &Arc<Self>,
+        &self,
         service: S,
     ) -> impl Future<Output = Result<(), h3x::dquic::AcceptError>> + use<S>
     where
@@ -300,8 +396,11 @@ mod tests {
     #[tokio::test]
     async fn load_invalid_name() {
         // Single label without suffix/~/dot should fail at DhttpName::parse
-        let dname = crate::home::identity::DhttpName::parse("invalid_single_label");
-        assert!(dname.is_err());
+        match Endpoint::load("invalid_single_label").await {
+            Err(LoadEndpointError::InvalidName { .. }) => {}
+            Err(error) => panic!("expected invalid name error, got {error:?}"),
+            Ok(_) => panic!("expected invalid name error, got endpoint"),
+        }
     }
 
     #[test]
@@ -309,5 +408,14 @@ mod tests {
         // Valid multi-label name should parse (may fail at I/O but not at parse)
         let dname = crate::home::identity::DhttpName::parse("reimu.pilot");
         assert!(dname.is_ok());
+    }
+
+    #[tokio::test]
+    async fn load_from_rejects_invalid_identity_home_path() {
+        match Endpoint::load_from("/tmp/123").await {
+            Err(LoadEndpointFromPathError::IdentityHome { .. }) => {}
+            Err(error) => panic!("expected identity home error, got {error:?}"),
+            Ok(_) => panic!("expected identity home error, got endpoint"),
+        }
     }
 }

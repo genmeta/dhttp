@@ -7,6 +7,7 @@ edition.workspace = true
 bon = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+rustls = { workspace = true, features = ["ring"] }
 snafu = { workspace = true }
 tower-service = { workspace = true }
 dhttp-identity = { workspace = true }
