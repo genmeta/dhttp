@@ -20,6 +20,11 @@ bon = "3"
 http = "1"
 tower-service = "0.3"
 
+# Keep workspace-local identity/home crates as path dependencies.
+# They are part of this workspace's public type surface; resolving them through
+# the git dhttp repository while building this workspace would create duplicate
+# identity/home crate instances and incompatible types. This is workspace-local
+# only: downstream crates that depend on `dhttp` via git do not inherit it.
 dhttp-identity = { path = "identity" }
 home = { package = "dhttp-home", path = "home" }
 ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
