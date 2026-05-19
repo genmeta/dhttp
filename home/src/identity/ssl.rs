@@ -12,12 +12,9 @@ use tokio::{
 };
 use x509_parser::prelude::Pem;
 
-use crate::{
-    DhttpHome,
-    identity::{DhttpName, IdentityHome},
-};
+use dhttp_identity::{identity::Identity, name::DhttpName};
 
-pub use dhttp_identity::identity::Identity;
+use crate::{DhttpHome, identity::IdentityHome};
 
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";

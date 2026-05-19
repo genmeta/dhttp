@@ -7,7 +7,9 @@ use snafu::{ResultExt, Snafu};
 use tokio::fs;
 use toml::Spanned;
 
-use crate::{DhttpHome, identity::DhttpName};
+use dhttp_identity::name::DhttpName;
+
+use crate::DhttpHome;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultConfig {

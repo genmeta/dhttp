@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn load_valid_name_parses() {
         // Valid multi-label name should parse (may fail at I/O but not at parse)
-        let dname = crate::home::identity::DhttpName::parse("reimu.pilot");
+        let dname = crate::name::DhttpName::parse("reimu.pilot");
         assert!(dname.is_ok());
     }
 
