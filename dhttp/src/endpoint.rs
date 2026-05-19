@@ -419,6 +419,15 @@ impl crate::h3x::quic::Listen for Endpoint {
     }
 }
 
+impl crate::h3x::quic::Connect for Endpoint {
+    type Connection = QuicConnection;
+    type Error = crate::dquic::ConnectError;
+
+    async fn connect(&self, server: &Authority) -> Result<Arc<Self::Connection>, Self::Error> {
+        crate::h3x::quic::Connect::connect(self.inner.quic(), server).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +444,14 @@ mod tests {
                 .await,
         );
         let _ = endpoint.new_request();
+    }
+
+    #[test]
+    fn endpoint_implements_quic_connect() {
+        fn assert_connect<C: crate::h3x::quic::Connect>() {}
+
+        assert_connect::<Endpoint>();
+        assert_connect::<Arc<Endpoint>>();
     }
 
     #[tokio::test]
