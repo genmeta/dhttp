@@ -23,20 +23,4 @@ tower-service = "0.3"
 dhttp-identity = { path = "identity" }
 home = { package = "dhttp-home", path = "home" }
 ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
-h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "main" }
-
-[patch."https://github.com/genmeta/h3x.git"]
-h3x = { path = "../h3x" }
-
-[patch."ssh://git@github.com/genmeta/ddns.git"]
-ddns = { path = "../ddns/ddns" }
-ddns-core = { path = "../ddns/ddns-core" }
-gmdns = { path = "../ddns/gmdns" }
-
-# Unify dhttp-identity: h3x depends on it via git, dhttp crate via local path.
-# Without this patch, Cargo compiles two copies and types don't match.
-[patch."ssh://git@github.com/genmeta/dhttp.git"]
-dhttp-identity = { path = "identity" }
-
-[patch."ssh://git@github.com/genmeta/dquic.git"]
-dquic = { path = "../dquic/dquic" }
+h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
