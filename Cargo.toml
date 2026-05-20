@@ -12,13 +12,15 @@ dirs = "6"
 snafu = "0.9"
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
+matchit = "0.9"
 rustls = { version = "0.23", default-features = false }
 tokio = { version = "1" }
 toml = "1"
+tower-service = "0.3"
+tracing = "0.1"
 x509-parser = "0.18"
 bon = "3"
 http = "1"
-tower-service = "0.3"
 
 # Keep workspace-local identity/home crates as path dependencies.
 # They are part of this workspace's public type surface; resolving them through

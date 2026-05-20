@@ -5,11 +5,15 @@ edition.workspace = true
 
 [dependencies]
 bon = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+matchit = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
 snafu = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 tower-service = { workspace = true }
+tracing = { workspace = true }
 dhttp-identity = { workspace = true }
 home = { workspace = true }
 ddns = { workspace = true }
@@ -17,4 +21,3 @@ h3x = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
-

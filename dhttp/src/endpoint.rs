@@ -13,21 +13,19 @@ use crate::dquic::{
 use crate::h3x::connection::ConnectionBuilder;
 use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
+use crate::message::Message;
 
-use h3x::endpoint::client::Request;
 use http::Method;
 
-pub mod client {
-    //! Re-export of h3x HTTP client types.
-    pub use h3x::endpoint::client::{
-        AcquireError, AuthorityFrozen, Request, RequestError, Response,
-    };
-}
+pub mod client;
+pub mod server;
 
-pub mod server {
-    //! Re-export of h3x HTTP server types.
-    pub use h3x::endpoint::server::*;
-}
+pub use crate::message::{
+    Body, MalformedMessageError, MessageStage, MessageWriteFlow, MessageWriteGoal,
+    ReadToStringError,
+};
+
+use self::client::Request;
 
 /// A DHttp endpoint bound to a QUIC connection.
 ///
@@ -206,6 +204,12 @@ pub enum LoadEndpointFromPathError {
 }
 
 impl Endpoint {
+    fn request(&self) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+        let msg = Message::unresolved_request();
+        let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
+        Request::new(state)
+    }
+
     /// Return a shared reference to the inner [`DquicH3Endpoint`].
     pub fn as_h3(&self) -> Arc<DquicH3Endpoint> {
         self.inner.clone()
@@ -323,59 +327,49 @@ impl Endpoint {
     /// [`Request`]: Request
     /// [`.uri()`]: Request::uri
     pub fn new_request(self: &Arc<Self>) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner.new_request_owned()
+        let msg = Message::unresolved_request();
+        let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
+        Request::new(state)
     }
 
     /// Convenience method to create a GET request for `uri`.
     pub fn get(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner.new_request_owned().method(Method::GET).uri(uri)
+        self.request().method(Method::GET).uri(uri)
     }
 
     /// Convenience method to create a POST request for `uri`.
     pub fn post(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner.new_request_owned().method(Method::POST).uri(uri)
+        self.request().method(Method::POST).uri(uri)
     }
 
     /// Convenience method to create a PUT request for `uri`.
     pub fn put(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner.new_request_owned().method(Method::PUT).uri(uri)
+        self.request().method(Method::PUT).uri(uri)
     }
 
     /// Convenience method to create a DELETE request for `uri`.
     pub fn delete(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner
-            .new_request_owned()
-            .method(Method::DELETE)
-            .uri(uri)
+        self.request().method(Method::DELETE).uri(uri)
     }
 
     /// Convenience method to create a PATCH request for `uri`.
     pub fn patch(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner
-            .new_request_owned()
-            .method(Method::PATCH)
-            .uri(uri)
+        self.request().method(Method::PATCH).uri(uri)
     }
 
     /// Convenience method to create a HEAD request for `uri`.
     pub fn head(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner.new_request_owned().method(Method::HEAD).uri(uri)
+        self.request().method(Method::HEAD).uri(uri)
     }
 
     /// Convenience method to create an OPTIONS request for `uri`.
     pub fn options(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner
-            .new_request_owned()
-            .method(Method::OPTIONS)
-            .uri(uri)
+        self.request().method(Method::OPTIONS).uri(uri)
     }
 
     /// Convenience method to create a TRACE request for `uri`.
     pub fn trace(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
-        self.inner
-            .new_request_owned()
-            .method(Method::TRACE)
-            .uri(uri)
+        self.request().method(Method::TRACE).uri(uri)
     }
 
     pub async fn connect(

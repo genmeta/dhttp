@@ -1,5 +1,6 @@
 pub mod ddns;
 pub mod endpoint;
+pub mod message;
 pub mod identity {
     pub use dhttp_identity::identity::*;
 }
