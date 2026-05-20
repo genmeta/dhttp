@@ -48,8 +48,16 @@ impl From<Arc<DquicH3Endpoint>> for Endpoint {
     }
 }
 
+/// Default STUN server name for NAT traversal.
+pub const STUN_DOMAIN: &str = "nat.genmeta.net";
+
 /// Default STUN server for NAT traversal.
-pub const STUN_SERVER: &str = "stun.genmeta.net:20004";
+///
+/// STUN server resolution uses this authority so the well-known port remains
+/// part of the query. TODO: separate the network STUN resolver from the
+/// endpoint H3 resolver so the Network default can resolve this through DHTTP
+/// DNS without a construction cycle.
+pub const STUN_SERVER: &str = "nat.genmeta.net:20004";
 
 /// Build an [`H3Resolver`] backed by a dedicated DNS-only [`QuicEndpoint`].
 ///
