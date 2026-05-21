@@ -117,6 +117,70 @@ impl Default for EndpointOptions {
     }
 }
 
+#[napi(js_name = "ClientRequest")]
+pub struct ClientRequest {
+    inner: crate::endpoint::client::Request,
+}
+
+impl From<crate::endpoint::client::Request> for ClientRequest {
+    fn from(inner: crate::endpoint::client::Request) -> Self {
+        Self { inner }
+    }
+}
+
+#[napi]
+impl ClientRequest {
+    #[napi]
+    pub fn method(&self, method: String) -> NapiResult<()> {
+        self.set_method(method)
+    }
+
+    #[napi]
+    pub fn uri(&self, uri: String) -> NapiResult<()> {
+        self.set_uri(uri)
+    }
+
+    #[napi]
+    pub fn header(&self, name: String, value: String) -> NapiResult<()> {
+        self.set_header(name, value)
+    }
+
+    #[napi]
+    pub fn body(&self, content: Vec<u8>) {
+        self.set_body(content);
+    }
+
+    #[napi]
+    pub fn trailer(&self, name: String, value: String) -> NapiResult<()> {
+        self.set_trailer(name, value)
+    }
+
+    #[napi]
+    pub fn set_method(&self, method: String) -> NapiResult<()> {
+        self.inner.set_method(&method).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_uri(&self, uri: String) -> NapiResult<()> {
+        self.inner.set_uri(&uri).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_header(&self, name: String, value: String) -> NapiResult<()> {
+        self.inner.set_header(&name, &value).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_body(&self, content: Vec<u8>) {
+        self.inner.set_body(content);
+    }
+
+    #[napi]
+    pub fn set_trailer(&self, name: String, value: String) -> NapiResult<()> {
+        self.inner.set_trailer(&name, &value).map_err(napi_error)
+    }
+}
+
 #[napi(js_name = "Endpoint")]
 pub struct Endpoint {
     inner: crate::endpoint::Endpoint,
@@ -157,5 +221,74 @@ impl Endpoint {
     #[napi]
     pub fn bind_patterns(&self) -> Vec<String> {
         self.inner.bind_patterns()
+    }
+
+    #[napi]
+    pub fn request(&self) -> ClientRequest {
+        self.inner.request().into()
+    }
+
+    #[napi]
+    pub fn get(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .get(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn post(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .post(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn put(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .put(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn delete(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .delete(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn patch(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .patch(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn head(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .head(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn options(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .options(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn trace(&self, uri: String) -> NapiResult<ClientRequest> {
+        self.inner
+            .trace(&uri)
+            .map(ClientRequest::from)
+            .map_err(napi_error)
     }
 }

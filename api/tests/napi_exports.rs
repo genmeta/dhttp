@@ -11,4 +11,20 @@ async fn napi_minimal_endpoint_api_is_constructible() {
 
     let endpoint = dhttp_api::napi::Endpoint::create(None).await.unwrap();
     assert!(endpoint.identity().is_none());
+
+    let request = endpoint.request();
+    request.set_method("POST".to_string()).unwrap();
+    request
+        .set_uri("https://example.com/api".to_string())
+        .unwrap();
+    request
+        .header("content-type".to_string(), "text/plain".to_string())
+        .unwrap();
+    request.body(b"hello".to_vec());
+    request
+        .trailer("x-trailer".to_string(), "done".to_string())
+        .unwrap();
+
+    let _get = endpoint.get("https://example.com/".to_string()).unwrap();
+    let _post = endpoint.post("https://example.com/".to_string()).unwrap();
 }

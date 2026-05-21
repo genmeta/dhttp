@@ -105,6 +105,60 @@ impl Default for EndpointOptions {
     }
 }
 
+#[pyclass(name = "ClientRequest")]
+pub struct ClientRequest {
+    inner: crate::endpoint::client::Request,
+}
+
+impl From<crate::endpoint::client::Request> for ClientRequest {
+    fn from(inner: crate::endpoint::client::Request) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl ClientRequest {
+    pub fn method(&self, method: String) -> PyResult<()> {
+        self.set_method(method)
+    }
+
+    pub fn uri(&self, uri: String) -> PyResult<()> {
+        self.set_uri(uri)
+    }
+
+    pub fn header(&self, name: String, value: String) -> PyResult<()> {
+        self.set_header(name, value)
+    }
+
+    pub fn body(&self, content: Vec<u8>) {
+        self.set_body(content);
+    }
+
+    pub fn trailer(&self, name: String, value: String) -> PyResult<()> {
+        self.set_trailer(name, value)
+    }
+
+    pub fn set_method(&self, method: String) -> PyResult<()> {
+        self.inner.set_method(&method).map_err(py_error)
+    }
+
+    pub fn set_uri(&self, uri: String) -> PyResult<()> {
+        self.inner.set_uri(&uri).map_err(py_error)
+    }
+
+    pub fn set_header(&self, name: String, value: String) -> PyResult<()> {
+        self.inner.set_header(&name, &value).map_err(py_error)
+    }
+
+    pub fn set_body(&self, content: Vec<u8>) {
+        self.inner.set_body(content);
+    }
+
+    pub fn set_trailer(&self, name: String, value: String) -> PyResult<()> {
+        self.inner.set_trailer(&name, &value).map_err(py_error)
+    }
+}
+
 #[pyclass(name = "Endpoint")]
 pub struct Endpoint {
     inner: crate::endpoint::Endpoint,
@@ -144,6 +198,66 @@ impl Endpoint {
     pub fn bind_patterns(&self) -> Vec<String> {
         self.inner.bind_patterns()
     }
+
+    pub fn request(&self) -> ClientRequest {
+        self.inner.request().into()
+    }
+
+    pub fn get(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .get(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn post(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .post(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn put(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .put(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn delete(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .delete(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn patch(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .patch(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn head(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .head(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn options(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .options(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
+
+    pub fn trace(&self, uri: String) -> PyResult<ClientRequest> {
+        self.inner
+            .trace(&uri)
+            .map(ClientRequest::from)
+            .map_err(py_error)
+    }
 }
 
 #[pymodule]
@@ -151,6 +265,7 @@ pub fn dhttp_api(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
     module.add_class::<Home>()?;
     module.add_class::<EndpointOptions>()?;
+    module.add_class::<ClientRequest>()?;
     module.add_class::<Endpoint>()?;
     Ok(())
 }
