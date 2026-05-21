@@ -1,6 +1,12 @@
 #![cfg(feature = "napi")]
 
-use napi::bindgen_prelude::{FnArgs, Function, Promise};
+use napi::bindgen_prelude::{Either, FnArgs, Function, Promise};
+
+type ServerHandlerArgs = FnArgs<(
+    dhttp_api::napi::ServerRequest,
+    dhttp_api::napi::ServerResponse,
+)>;
+type ServerHandlerResult = Either<Promise<()>, ()>;
 
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
@@ -71,14 +77,7 @@ async fn napi_client_response_api_is_exposed(
 #[allow(dead_code)]
 async fn napi_server_api_is_exposed<'env>(
     endpoint: &dhttp_api::napi::Endpoint,
-    handler: Function<
-        'env,
-        FnArgs<(
-            dhttp_api::napi::ServerRequest,
-            dhttp_api::napi::ServerResponse,
-        )>,
-        Promise<()>,
-    >,
+    handler: Function<'env, ServerHandlerArgs, ServerHandlerResult>,
     request: &dhttp_api::napi::ServerRequest,
     response: &dhttp_api::napi::ServerResponse,
     handle: &dhttp_api::napi::ServeHandle,

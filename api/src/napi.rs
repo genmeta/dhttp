@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ::napi::{
     Error, Status,
-    bindgen_prelude::{FnArgs, Function, Promise, Result as NapiResult},
+    bindgen_prelude::{Either, FnArgs, Function, Promise, Result as NapiResult},
 };
 use napi_derive::napi;
 use tokio::sync::Mutex;
@@ -14,6 +14,9 @@ fn napi_error(error: crate::error::DhttpError) -> Error {
 fn dhttp_napi_error(operation: &'static str, error: Error) -> crate::error::DhttpError {
     crate::error::DhttpError::from_error(operation, error)
 }
+
+type ServerHandlerArgs = FnArgs<(ServerRequest, ServerResponse)>;
+type ServerHandlerResult = Either<Promise<()>, ()>;
 
 #[napi(js_name = "Identity")]
 pub struct Identity {
@@ -774,10 +777,10 @@ impl Endpoint {
     #[napi]
     pub fn serve(
         &self,
-        handler: Function<FnArgs<(ServerRequest, ServerResponse)>, Promise<()>>,
+        handler: Function<ServerHandlerArgs, ServerHandlerResult>,
     ) -> NapiResult<ServeHandle> {
         let handler = handler
-            .build_threadsafe_function::<FnArgs<(ServerRequest, ServerResponse)>>()
+            .build_threadsafe_function::<ServerHandlerArgs>()
             .callee_handled::<false>()
             .build()?;
         let handler = Arc::new(handler);
@@ -786,13 +789,15 @@ impl Endpoint {
             let request = ServerRequest::from(request);
             let response = ServerResponse::from(response);
             Box::pin(async move {
-                let promise = handler
+                let result = handler
                     .call_async_catch((request, response).into())
                     .await
                     .map_err(|error| dhttp_napi_error("napi.handler", error))?;
-                promise
-                    .await
-                    .map_err(|error| dhttp_napi_error("napi.handler", error))?;
+                if let Either::A(promise) = result {
+                    promise
+                        .await
+                        .map_err(|error| dhttp_napi_error("napi.handler", error))?;
+                }
                 Ok(())
             })
         });
