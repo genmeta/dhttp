@@ -8,7 +8,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
-use snafu::{ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 // ============================================================================
 // BytesStr — private string backed by Bytes for O(1) cloning
@@ -425,6 +425,8 @@ pub enum InvalidDhttpName {
 pub enum ExpandUriError {
     #[snafu(transparent)]
     InvalidName { source: InvalidDhttpName },
+    #[snafu(display("cannot expand bare dhttp shorthand without a base name"))]
+    MissingBaseName,
     #[snafu(display("failed to parse expanded authority `{authority}`"))]
     ParseAuthority {
         authority: String,
@@ -578,6 +580,18 @@ impl DhttpName<'_> {
     /// to the same host with the DHttp suffix appended. Ordinary host names
     /// pass through unchanged.
     pub fn expand_uri(&self, uri: http::Uri) -> Result<http::Uri, ExpandUriError> {
+        Self::expand_uri_with_base(Some(self), uri)
+    }
+
+    /// Expand DHttp shorthand in the authority of `uri` with an optional base name.
+    ///
+    /// The bare host `~` expands to `base` and fails when `base` is absent. A host
+    /// ending with `~` expands to the same host with the DHttp suffix appended and
+    /// does not require `base`. Ordinary host names pass through unchanged.
+    pub fn expand_uri_with_base(
+        base: Option<&DhttpName<'_>>,
+        uri: http::Uri,
+    ) -> Result<http::Uri, ExpandUriError> {
         let mut parts = uri.into_parts();
 
         let Some(authority) = &parts.authority else {
@@ -586,7 +600,11 @@ impl DhttpName<'_> {
 
         let host = authority.host();
         let expanded = if host == "~" {
-            Some(self.as_full().to_owned())
+            Some(
+                base.context(expand_uri_error::MissingBaseNameSnafu)?
+                    .as_full()
+                    .to_owned(),
+            )
         } else {
             DhttpName::try_expand_from(host)?.map(|name| name.as_full().to_owned())
         };
@@ -1214,5 +1232,23 @@ mod tests {
         let error = name.expand_uri(uri).unwrap_err();
 
         assert!(matches!(error, ExpandUriError::InvalidName { .. }));
+    }
+
+    #[test]
+    fn expand_uri_with_base_expands_partial_without_base_name() {
+        let uri = "https://reimu.pilot~/api".parse().unwrap();
+
+        let expanded = DhttpName::expand_uri_with_base(None, uri).unwrap();
+
+        assert_eq!(expanded.to_string(), "https://reimu.pilot.genmeta.net/api");
+    }
+
+    #[test]
+    fn expand_uri_with_base_requires_base_name_for_bare_tilde() {
+        let uri = "https://~/api".parse().unwrap();
+
+        let error = DhttpName::expand_uri_with_base(None, uri).unwrap_err();
+
+        assert!(matches!(error, ExpandUriError::MissingBaseName));
     }
 }

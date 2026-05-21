@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
 use bon::bon;
-use http::Uri;
 use http::uri::Authority;
 
 use crate::ddns::DnsScheme;
@@ -21,8 +20,8 @@ pub mod client;
 pub mod server;
 
 pub use crate::message::{
-    Body, BodyState, IntoBody, MalformedMessageError, MessageStage, MessageWriteFlow,
-    MessageWriteGoal, ReadToStringError,
+    Body, BodyState, IntoBody, IntoUri, IntoUriError, MalformedMessageError, MessageStage,
+    MessageWriteFlow, MessageWriteGoal, ReadToStringError,
 };
 
 use self::client::Request;
@@ -201,7 +200,7 @@ pub enum LoadEndpointFromPathError {
 }
 
 impl Endpoint {
-    fn request(&self) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    fn request(&self) -> Request {
         let msg = Message::unresolved_request();
         let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
         Request::new(state)
@@ -323,49 +322,49 @@ impl Endpoint {
     ///
     /// [`Request`]: Request
     /// [`.uri()`]: Request::uri
-    pub fn new_request(self: &Arc<Self>) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn new_request(self: &Arc<Self>) -> Request {
         let msg = Message::unresolved_request();
         let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
         Request::new(state)
     }
 
     /// Convenience method to create a GET request for `uri`.
-    pub fn get(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn get(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::GET).uri(uri)
     }
 
     /// Convenience method to create a POST request for `uri`.
-    pub fn post(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn post(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::POST).uri(uri)
     }
 
     /// Convenience method to create a PUT request for `uri`.
-    pub fn put(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn put(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::PUT).uri(uri)
     }
 
     /// Convenience method to create a DELETE request for `uri`.
-    pub fn delete(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn delete(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::DELETE).uri(uri)
     }
 
     /// Convenience method to create a PATCH request for `uri`.
-    pub fn patch(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn patch(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::PATCH).uri(uri)
     }
 
     /// Convenience method to create a HEAD request for `uri`.
-    pub fn head(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn head(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::HEAD).uri(uri)
     }
 
     /// Convenience method to create an OPTIONS request for `uri`.
-    pub fn options(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn options(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::OPTIONS).uri(uri)
     }
 
     /// Convenience method to create a TRACE request for `uri`.
-    pub fn trace(&self, uri: Uri) -> Request<QuicEndpoint, Arc<DquicH3Endpoint>> {
+    pub fn trace(&self, uri: impl IntoUri) -> Request {
         self.request().method(Method::TRACE).uri(uri)
     }
 
@@ -536,6 +535,44 @@ mod tests {
             .expect("named endpoint can publish");
 
         assert_eq!(publisher.options().server_id, Some(7));
+    }
+
+    #[tokio::test]
+    async fn request_uri_accepts_str_and_returns_bare_tilde_error_on_first_io() {
+        let endpoint = Endpoint::builder().build().await;
+
+        let error = match endpoint.get("https://~/api").into_response().await {
+            Ok(_) => panic!("bare tilde request should fail before opening a stream"),
+            Err(error) => error,
+        };
+
+        match error {
+            client::RequestError::MalformedRequest { source } => match source.as_ref() {
+                client::MalformedRequestError::ExpandUri {
+                    source: crate::name::ExpandUriError::MissingBaseName,
+                } => {}
+                other => panic!("expected dhttp uri expansion error, got {other:?}"),
+            },
+            other => panic!("expected malformed request error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn request_uri_parse_error_is_returned_on_first_io() {
+        let endpoint = Endpoint::builder().build().await;
+
+        let error = match endpoint.get("://not a uri").into_response().await {
+            Ok(_) => panic!("invalid uri request should fail before opening a stream"),
+            Err(error) => error,
+        };
+
+        match error {
+            client::RequestError::MalformedRequest { source } => match source.as_ref() {
+                client::MalformedRequestError::Uri { .. } => {}
+                other => panic!("expected request uri conversion error, got {other:?}"),
+            },
+            other => panic!("expected malformed request error, got {other:?}"),
+        }
     }
 
     #[test]

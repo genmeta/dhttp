@@ -2,10 +2,10 @@ use std::{borrow::Cow, mem, ops::ControlFlow};
 
 use bytes::{Buf, Bytes, BytesMut};
 use http::{
-    HeaderMap,
+    HeaderMap, Uri,
     header::{InvalidHeaderName, InvalidHeaderValue},
 };
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 use crate::h3x::{
     buflist::{BufList, BuflistCursor},
@@ -24,6 +24,60 @@ pub type Body = BufList;
 /// Converts common byte/string payload types into a buffered DHTTP body.
 pub trait IntoBody {
     fn into_body(self) -> Body;
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum IntoUriError {
+    #[snafu(display("failed to parse uri"))]
+    Parse { source: http::uri::InvalidUri },
+}
+
+/// Converts common URI input types into an [`http::Uri`].
+pub trait IntoUri {
+    fn into_uri(self) -> Result<Uri, IntoUriError>;
+}
+
+impl IntoUri for Uri {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Ok(self)
+    }
+}
+
+impl IntoUri for &Uri {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Ok(self.clone())
+    }
+}
+
+impl IntoUri for &str {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    }
+}
+
+impl IntoUri for String {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    }
+}
+
+impl IntoUri for &String {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    }
+}
+
+impl IntoUri for &[u8] {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    }
+}
+
+impl IntoUri for Vec<u8> {
+    fn into_uri(self) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    }
 }
 
 fn body_from_buf(buf: impl Buf) -> Body {
@@ -1012,7 +1066,7 @@ mod tests {
 
     use crate::h3x::message::stream::WriteStream;
 
-    use super::{Body, BodyState, IntoBody};
+    use super::{Body, BodyState, IntoBody, IntoUri, IntoUriError};
 
     struct NonSendBody(Rc<Vec<u8>>);
 
@@ -1090,5 +1144,35 @@ mod tests {
     fn internal_message_body_state_is_not_public_payload_body() {
         let state = BodyState::Pending;
         assert!(matches!(state, BodyState::Pending));
+    }
+
+    #[test]
+    fn into_uri_accepts_common_owned_and_borrowed_types() {
+        let expected: http::Uri = "https://example.com/api".parse().unwrap();
+
+        assert_eq!("https://example.com/api".into_uri().unwrap(), expected);
+        assert_eq!(
+            String::from("https://example.com/api").into_uri().unwrap(),
+            expected
+        );
+        let owned = String::from("https://example.com/api");
+        assert_eq!((&owned).into_uri().unwrap(), expected);
+        assert_eq!(
+            b"https://example.com/api".as_slice().into_uri().unwrap(),
+            expected
+        );
+        assert_eq!(
+            b"https://example.com/api".to_vec().into_uri().unwrap(),
+            expected
+        );
+        assert_eq!(expected.clone().into_uri().unwrap(), expected);
+        assert_eq!((&expected).into_uri().unwrap(), expected);
+    }
+
+    #[test]
+    fn into_uri_preserves_parse_error_type() {
+        let error = "://not a uri".into_uri().unwrap_err();
+
+        assert!(matches!(error, IntoUriError::Parse { .. }));
     }
 }
