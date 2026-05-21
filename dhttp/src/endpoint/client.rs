@@ -1,3 +1,17 @@
+//! Client endpoint API.
+//!
+//! Low-level stream access is intentionally not part of the high-level
+//! response surface. Streaming is exposed through `read`, `read_all`,
+//! `read_to_bytes`, `read_to_string`, `as_stream`, and `into_stream`.
+//!
+//! ```compile_fail
+//! fn response_must_not_expose_raw_read_stream(
+//!     response: &mut dhttp::endpoint::client::Response,
+//! ) {
+//!     let _ = response.read_stream();
+//! }
+//! ```
+
 use std::{
     error::Error,
     future::IntoFuture,
@@ -650,11 +664,6 @@ impl Response {
 
     pub async fn stop(&mut self, code: Code) -> Result<(), MessageStreamError> {
         self.stream.stop(code).await
-    }
-
-    /// Low level access to the underlying read stream
-    pub fn read_stream(&mut self) -> &mut ReadStream {
-        &mut self.stream
     }
 
     pub fn agent(&self) -> &Arc<dyn agent::RemoteAgent> {

@@ -46,9 +46,6 @@ impl From<Arc<DquicH3Endpoint>> for Endpoint {
     }
 }
 
-/// Default STUN server name for NAT traversal.
-pub const STUN_DOMAIN: &str = "nat.genmeta.net";
-
 /// Default STUN server for NAT traversal.
 ///
 /// STUN server resolution uses this authority so the well-known port remains

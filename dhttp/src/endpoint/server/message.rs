@@ -1,3 +1,26 @@
+//! Server request and response message API.
+//!
+//! Low-level stream access is intentionally not part of the high-level
+//! request/response surface. Use `read`/`write`, buffered helpers, and
+//! stream adapters instead. A future dedicated low-level API can own the raw
+//! stream handles without aliasing them through these high-level wrappers.
+//!
+//! ```compile_fail
+//! fn request_must_not_expose_raw_read_stream(
+//!     request: &mut dhttp::endpoint::server::Request,
+//! ) {
+//!     let _ = request.read_stream();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn response_must_not_expose_raw_write_stream(
+//!     response: &mut dhttp::endpoint::server::Response,
+//! ) {
+//!     let _ = response.write_stream();
+//! }
+//! ```
+
 use bytes::{Buf, Bytes};
 use dhttp_identity::identity as agent;
 use futures::{Stream, StreamExt};
@@ -142,11 +165,6 @@ impl Request {
 
     pub async fn stop(&mut self, code: Code) -> Result<(), MessageStreamError> {
         self.stream.stop(code).await
-    }
-
-    /// Low level access to the underlying read stream
-    pub fn read_stream(&mut self) -> &mut ReadStream {
-        &mut self.stream
     }
 
     pub fn agent(&self) -> Option<&Arc<dyn agent::RemoteAgent>> {
@@ -325,11 +343,6 @@ impl Response {
 
     pub async fn cancel(&mut self, code: Code) -> Result<(), MessageStreamError> {
         self.stream.cancel(code).await
-    }
-
-    /// Low level access to the underlying write stream
-    pub fn write_stream(&mut self) -> &mut WriteStream {
-        &mut self.stream
     }
 
     pub fn agent(&self) -> &Arc<dyn agent::LocalAgent> {
