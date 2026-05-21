@@ -3,3 +3,8 @@ pub mod error;
 pub mod home;
 pub mod http;
 pub mod identity;
+
+#[cfg(feature = "napi")]
+pub mod napi;
+#[cfg(feature = "pyo3")]
+pub mod pyo3;
