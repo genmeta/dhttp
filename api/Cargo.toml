@@ -3,6 +3,9 @@ name = "dhttp-api"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = []
 napi = ["dep:napi", "dep:napi-derive"]
