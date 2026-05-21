@@ -25,8 +25,16 @@ impl From<crate::identity::Identity> for Identity {
 
 #[pymethods]
 impl Identity {
-    fn name(&self) -> String {
+    pub fn name(&self) -> String {
         self.inner.name()
+    }
+
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
     }
 }
 
@@ -53,6 +61,60 @@ impl Home {
 
     pub fn path(&self) -> String {
         self.inner.path().display().to_string()
+    }
+
+    pub fn identity_home(&self, name: String) -> PyResult<IdentityHome> {
+        self.inner
+            .identity_home(&name)
+            .map(|inner| IdentityHome { inner })
+            .map_err(py_error)
+    }
+
+    pub async fn load_identity(&self, name: String) -> PyResult<IdentityHome> {
+        self.inner
+            .load_identity(&name)
+            .await
+            .map(|inner| IdentityHome { inner })
+            .map_err(py_error)
+    }
+
+    pub async fn identity_exists(&self, name: String) -> PyResult<bool> {
+        self.inner.identity_exists(&name).await.map_err(py_error)
+    }
+
+    pub async fn identities(&self) -> PyResult<Vec<String>> {
+        self.inner.identities().await.map_err(py_error)
+    }
+}
+
+#[pyclass(name = "IdentityHome")]
+pub struct IdentityHome {
+    inner: crate::home::IdentityHome,
+}
+
+#[pymethods]
+impl IdentityHome {
+    #[new]
+    pub fn new(path: String) -> PyResult<Self> {
+        crate::home::IdentityHome::from_path(path)
+            .map(|inner| Self { inner })
+            .map_err(py_error)
+    }
+
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    pub fn path(&self) -> String {
+        self.inner.path().display().to_string()
+    }
+
+    pub async fn identity(&self) -> PyResult<Identity> {
+        self.inner
+            .identity()
+            .await
+            .map(Identity::from)
+            .map_err(py_error)
     }
 }
 
@@ -654,6 +716,7 @@ impl Endpoint {
 pub fn dhttp_api(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
     module.add_class::<Home>()?;
+    module.add_class::<IdentityHome>()?;
     module.add_class::<EndpointOptions>()?;
     module.add_class::<ClientRequest>()?;
     module.add_class::<ClientResponse>()?;

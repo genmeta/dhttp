@@ -6,6 +6,18 @@ use napi::bindgen_prelude::{FnArgs, Function, Promise};
 async fn napi_minimal_endpoint_api_is_constructible() {
     let home = dhttp_api::napi::Home::new("/tmp/dhttp-api-napi".to_string());
     assert_eq!(home.path(), "/tmp/dhttp-api-napi");
+    let identity_home = home.identity_home("reimu.pilot".to_string()).unwrap();
+    assert_eq!(identity_home.name(), "reimu.pilot");
+    assert_eq!(
+        identity_home.path(),
+        "/tmp/dhttp-api-napi/reimu.pilot".to_string()
+    );
+    assert!(
+        !home
+            .identity_exists("missing.pilot".to_string())
+            .await
+            .unwrap()
+    );
 
     let mut options = dhttp_api::napi::EndpointOptions::new();
     options.add_bind_pattern("*".to_string()).unwrap();
@@ -115,4 +127,19 @@ async fn napi_server_api_is_exposed<'env>(
     handle.abort();
     let _is_finished = handle.is_finished();
     handle.closed().await.unwrap();
+}
+
+#[allow(dead_code)]
+async fn napi_home_identity_api_is_exposed(
+    home: &dhttp_api::napi::Home,
+    identity_home: &dhttp_api::napi::IdentityHome,
+    identity: &dhttp_api::napi::Identity,
+) {
+    let _identity_home =
+        dhttp_api::napi::IdentityHome::from_path("/tmp/reimu.pilot".to_string()).unwrap();
+    let _identity_home = home.load_identity("reimu.pilot".to_string()).await.unwrap();
+    let _identities = home.identities().await.unwrap();
+    let _identity = identity_home.identity().await.unwrap();
+    let _certs = identity.cert_chain_der();
+    let _public_key = identity.public_key_der();
 }

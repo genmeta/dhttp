@@ -6,6 +6,18 @@ use pyo3::prelude::*;
 async fn pyo3_minimal_endpoint_api_is_constructible() {
     let home = dhttp_api::pyo3::Home::new("/tmp/dhttp-api-pyo3".to_string());
     assert_eq!(home.path(), "/tmp/dhttp-api-pyo3");
+    let identity_home = home.identity_home("reimu.pilot".to_string()).unwrap();
+    assert_eq!(identity_home.name(), "reimu.pilot");
+    assert_eq!(
+        identity_home.path(),
+        "/tmp/dhttp-api-pyo3/reimu.pilot".to_string()
+    );
+    assert!(
+        !home
+            .identity_exists("missing.pilot".to_string())
+            .await
+            .unwrap()
+    );
 
     let mut options = dhttp_api::pyo3::EndpointOptions::new();
     options.add_bind_pattern("*".to_string()).unwrap();
@@ -108,4 +120,19 @@ async fn pyo3_server_api_is_exposed(
     handle.abort();
     let _is_finished = handle.is_finished();
     handle.closed().await.unwrap();
+}
+
+#[allow(dead_code)]
+async fn pyo3_home_identity_api_is_exposed(
+    home: &dhttp_api::pyo3::Home,
+    identity_home: &dhttp_api::pyo3::IdentityHome,
+    identity: &dhttp_api::pyo3::Identity,
+) {
+    let _identity_home =
+        dhttp_api::pyo3::IdentityHome::new("/tmp/reimu.pilot".to_string()).unwrap();
+    let _identity_home = home.load_identity("reimu.pilot".to_string()).await.unwrap();
+    let _identities = home.identities().await.unwrap();
+    let _identity = identity_home.identity().await.unwrap();
+    let _certs = identity.cert_chain_der();
+    let _public_key = identity.public_key_der();
 }

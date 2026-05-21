@@ -6,12 +6,14 @@ use std::{
     },
 };
 
-use dhttp::{
-    ddns::DnsScheme,
-    dquic::binds::BindPattern,
-    h3x::{error::Code, quic::Listen, varint::VarInt},
-};
+use ddns::DnsScheme;
 use futures::future::BoxFuture;
+use h3x::{
+    dquic::{AcceptError, binds::BindPattern},
+    error::Code,
+    quic::Listen,
+    varint::VarInt,
+};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use tokio::{
     sync::Mutex as AsyncMutex,
@@ -232,13 +234,13 @@ pub struct ServeHandle {
     endpoint: Arc<dhttp::endpoint::Endpoint>,
     abort: AbortHandle,
     aborted: AtomicBool,
-    task: AsyncMutex<Option<JoinHandle<std::result::Result<(), dhttp::dquic::AcceptError>>>>,
+    task: AsyncMutex<Option<JoinHandle<std::result::Result<(), AcceptError>>>>,
 }
 
 impl ServeHandle {
     fn new(
         endpoint: Arc<dhttp::endpoint::Endpoint>,
-        task: JoinHandle<std::result::Result<(), dhttp::dquic::AcceptError>>,
+        task: JoinHandle<std::result::Result<(), AcceptError>>,
     ) -> Self {
         let abort = task.abort_handle();
         Self {
@@ -409,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_handle_closed_clears_failed_join_handle() {
-        async fn panic_task() -> std::result::Result<(), dhttp::dquic::AcceptError> {
+        async fn panic_task() -> std::result::Result<(), AcceptError> {
             panic!("serve task failed");
         }
 
@@ -427,7 +429,7 @@ mod tests {
         let (send_complete, recv_complete) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             recv_complete.await.expect("test completion signal");
-            Err(dhttp::dquic::AcceptError::ServerUnavailable)
+            Err(AcceptError::ServerUnavailable)
         });
         let handle = ServeHandle::new(endpoint, task);
 

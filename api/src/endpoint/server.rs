@@ -325,7 +325,7 @@ impl Response {
         self.cancel_code(code).await
     }
 
-    pub(crate) async fn cancel_code(&self, code: dhttp::h3x::error::Code) -> Result<()> {
+    pub(crate) async fn cancel_code(&self, code: h3x::error::Code) -> Result<()> {
         let mut response = self.take_response("server_response.cancel").await?;
         response
             .cancel(code)

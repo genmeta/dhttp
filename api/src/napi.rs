@@ -32,6 +32,16 @@ impl Identity {
     pub fn name(&self) -> String {
         self.inner.name()
     }
+
+    #[napi]
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    #[napi]
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
+    }
 }
 
 #[napi(js_name = "Home")]
@@ -58,6 +68,67 @@ impl Home {
     #[napi]
     pub fn path(&self) -> String {
         self.inner.path().display().to_string()
+    }
+
+    #[napi]
+    pub fn identity_home(&self, name: String) -> NapiResult<IdentityHome> {
+        self.inner
+            .identity_home(&name)
+            .map(|inner| IdentityHome { inner })
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn load_identity(&self, name: String) -> NapiResult<IdentityHome> {
+        self.inner
+            .load_identity(&name)
+            .await
+            .map(|inner| IdentityHome { inner })
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn identity_exists(&self, name: String) -> NapiResult<bool> {
+        self.inner.identity_exists(&name).await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn identities(&self) -> NapiResult<Vec<String>> {
+        self.inner.identities().await.map_err(napi_error)
+    }
+}
+
+#[napi(js_name = "IdentityHome")]
+pub struct IdentityHome {
+    inner: crate::home::IdentityHome,
+}
+
+#[napi]
+impl IdentityHome {
+    #[napi]
+    pub fn from_path(path: String) -> NapiResult<IdentityHome> {
+        crate::home::IdentityHome::from_path(path)
+            .map(|inner| Self { inner })
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    #[napi]
+    pub fn path(&self) -> String {
+        self.inner.path().display().to_string()
+    }
+
+    #[napi]
+    pub async fn identity(&self) -> NapiResult<Identity> {
+        self.inner
+            .identity()
+            .await
+            .map(Identity::from)
+            .map_err(napi_error)
     }
 }
 
