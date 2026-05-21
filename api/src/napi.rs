@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use ::napi::{
     Error, Status,
-    bindgen_prelude::{Either, FnArgs, Function, Promise, Result as NapiResult},
+    bindgen_prelude::{
+        Either, FnArgs, Function, Promise, Result as NapiResult, within_runtime_if_available,
+    },
 };
 use napi_derive::napi;
 use tokio::sync::Mutex;
@@ -277,61 +279,46 @@ impl ClientRequest {
 
     #[napi]
     pub async fn write(&self, content: Vec<u8>) -> NapiResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.write",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .shared_request("client_request.write")
+            .await
+            .map_err(napi_error)?;
         request.write(content).await.map_err(napi_error)
     }
 
     #[napi]
     pub async fn flush(&self) -> NapiResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.flush",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .shared_request("client_request.flush")
+            .await
+            .map_err(napi_error)?;
         request.flush().await.map_err(napi_error)
     }
 
     #[napi]
     pub async fn close(&self) -> NapiResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.close",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .shared_request("client_request.close")
+            .await
+            .map_err(napi_error)?;
         request.close().await.map_err(napi_error)
     }
 
     #[napi]
     pub async fn cancel(&self, code: u32) -> NapiResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.cancel",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .shared_request("client_request.cancel")
+            .await
+            .map_err(napi_error)?;
         request.cancel(u64::from(code)).await.map_err(napi_error)
     }
 
     #[napi]
     pub async fn response(&self) -> NapiResult<ClientResponse> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.response",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .shared_request("client_request.response")
+            .await
+            .map_err(napi_error)?;
         request
             .response()
             .await
@@ -372,6 +359,17 @@ impl ClientRequest {
             ))
         })?;
         f(request).map_err(napi_error)
+    }
+
+    async fn shared_request(
+        &self,
+        operation: &'static str,
+    ) -> crate::endpoint::Result<crate::endpoint::client::Request> {
+        let guard = self.inner.lock().await;
+        let request = guard.as_ref().ok_or_else(|| {
+            crate::error::DhttpError::from_message(operation, "request is closed")
+        })?;
+        Ok(request.shared_handle())
     }
 }
 
@@ -637,35 +635,63 @@ impl ServerResponse {
 
 #[napi(js_name = "ServeHandle")]
 pub struct ServeHandle {
-    inner: crate::endpoint::ServeHandle,
+    inner: Option<crate::endpoint::ServeHandle>,
+}
+
+impl Drop for ServeHandle {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            within_runtime_if_available(|| drop(inner));
+        }
+    }
+}
+
+impl ServeHandle {
+    fn inner(&self) -> &crate::endpoint::ServeHandle {
+        self.inner.as_ref().expect("serve handle is closed")
+    }
 }
 
 #[napi]
 impl ServeHandle {
     #[napi]
     pub async fn shutdown(&self) -> NapiResult<()> {
-        self.inner.shutdown().await.map_err(napi_error)
+        self.inner().shutdown().await.map_err(napi_error)
     }
 
     #[napi]
     pub fn abort(&self) {
-        self.inner.abort();
+        self.inner().abort();
     }
 
     #[napi]
     pub fn is_finished(&self) -> bool {
-        self.inner.is_finished()
+        self.inner().is_finished()
     }
 
     #[napi]
     pub async fn closed(&self) -> NapiResult<()> {
-        self.inner.closed().await.map_err(napi_error)
+        self.inner().closed().await.map_err(napi_error)
     }
 }
 
 #[napi(js_name = "Endpoint")]
 pub struct Endpoint {
-    inner: crate::endpoint::Endpoint,
+    inner: Option<crate::endpoint::Endpoint>,
+}
+
+impl Drop for Endpoint {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            within_runtime_if_available(|| drop(inner));
+        }
+    }
+}
+
+impl Endpoint {
+    fn inner(&self) -> &crate::endpoint::Endpoint {
+        self.inner.as_ref().expect("endpoint is closed")
+    }
 }
 
 #[napi]
@@ -675,7 +701,7 @@ impl Endpoint {
         let options = options.map(|options| options.inner.clone());
         crate::endpoint::Endpoint::create(options)
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(napi_error)
     }
 
@@ -683,7 +709,7 @@ impl Endpoint {
     pub async fn load(name: String) -> NapiResult<Endpoint> {
         crate::endpoint::Endpoint::load(&name)
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(napi_error)
     }
 
@@ -691,28 +717,28 @@ impl Endpoint {
     pub async fn load_from(path: String) -> NapiResult<Endpoint> {
         crate::endpoint::Endpoint::load_from(path)
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(napi_error)
     }
 
     #[napi]
     pub fn identity(&self) -> Option<Identity> {
-        self.inner.identity().map(Identity::from)
+        self.inner().identity().map(Identity::from)
     }
 
     #[napi]
     pub fn bind_patterns(&self) -> Vec<String> {
-        self.inner.bind_patterns()
+        self.inner().bind_patterns()
     }
 
     #[napi]
     pub fn request(&self) -> ClientRequest {
-        self.inner.request().into()
+        self.inner().request().into()
     }
 
     #[napi]
     pub fn get(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .get(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -720,7 +746,7 @@ impl Endpoint {
 
     #[napi]
     pub fn post(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .post(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -728,7 +754,7 @@ impl Endpoint {
 
     #[napi]
     pub fn put(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .put(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -736,7 +762,7 @@ impl Endpoint {
 
     #[napi]
     pub fn delete(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .delete(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -744,7 +770,7 @@ impl Endpoint {
 
     #[napi]
     pub fn patch(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .patch(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -752,7 +778,7 @@ impl Endpoint {
 
     #[napi]
     pub fn head(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .head(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -760,7 +786,7 @@ impl Endpoint {
 
     #[napi]
     pub fn options(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .options(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -768,7 +794,7 @@ impl Endpoint {
 
     #[napi]
     pub fn trace(&self, uri: String) -> NapiResult<ClientRequest> {
-        self.inner
+        self.inner()
             .trace(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
@@ -784,23 +810,25 @@ impl Endpoint {
             .callee_handled::<false>()
             .build()?;
         let handler = Arc::new(handler);
-        let inner = self.inner.serve(move |request, response| {
-            let handler = handler.clone();
-            let request = ServerRequest::from(request);
-            let response = ServerResponse::from(response);
-            Box::pin(async move {
-                let result = handler
-                    .call_async_catch((request, response).into())
-                    .await
-                    .map_err(|error| dhttp_napi_error("napi.handler", error))?;
-                if let Either::A(promise) = result {
-                    promise
+        let inner = within_runtime_if_available(|| {
+            self.inner().serve(move |request, response| {
+                let handler = handler.clone();
+                let request = ServerRequest::from(request);
+                let response = ServerResponse::from(response);
+                Box::pin(async move {
+                    let result = handler
+                        .call_async_catch((request, response).into())
                         .await
                         .map_err(|error| dhttp_napi_error("napi.handler", error))?;
-                }
-                Ok(())
+                    if let Either::A(promise) = result {
+                        promise
+                            .await
+                            .map_err(|error| dhttp_napi_error("napi.handler", error))?;
+                    }
+                    Ok(())
+                })
             })
         });
-        Ok(ServeHandle { inner })
+        Ok(ServeHandle { inner: Some(inner) })
     }
 }

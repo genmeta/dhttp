@@ -17,6 +17,12 @@ impl Request {
         Self { inner }
     }
 
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+
     pub fn method(&self, method: &str) -> Result<()> {
         self.set_method_value(parse_method("client_request.method", method)?);
         Ok(())
@@ -309,5 +315,20 @@ impl Response {
 impl From<dhttp::endpoint::client::Response> for Response {
     fn from(response: dhttp::endpoint::client::Response) -> Self {
         Self::new(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::Request;
+
+    #[tokio::test]
+    async fn request_shared_handle_keeps_non_consuming_operations_independent() {
+        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await);
+        let request = Request::new(endpoint.new_request());
+
+        let _shared = request.shared_handle();
     }
 }

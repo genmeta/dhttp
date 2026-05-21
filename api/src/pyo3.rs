@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use ::pyo3::{exceptions::PyRuntimeError, prelude::*};
 use futures::{FutureExt, future::BoxFuture};
@@ -10,6 +15,60 @@ fn py_error(error: crate::error::DhttpError) -> PyErr {
 
 fn dhttp_py_error(operation: &'static str, error: PyErr) -> crate::error::DhttpError {
     crate::error::DhttpError::from_error(operation, error)
+}
+
+async fn wait_python_result(
+    result: Py<PyAny>,
+    locals: Option<pyo3_async_runtimes::TaskLocals>,
+) -> PyResult<()> {
+    let future = Python::attach(
+        |py| -> PyResult<Option<BoxFuture<'static, PyResult<Py<PyAny>>>>> {
+            let is_awaitable = py
+                .import("inspect")?
+                .call_method1("isawaitable", (result.bind(py),))?
+                .extract()?;
+            if is_awaitable {
+                let locals = locals.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err("async dhttp handler requires a running asyncio task")
+                })?;
+                let future =
+                    pyo3_async_runtimes::into_future_with_locals(locals, result.into_bound(py))?;
+                Ok(Some(future.boxed()))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
+    if let Some(future) = future {
+        future.await?;
+    }
+    Ok(())
+}
+
+async fn with_tokio<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+{
+    TokioContextFuture {
+        future: Box::pin(future),
+    }
+    .await
+}
+
+struct TokioContextFuture<F> {
+    future: Pin<Box<F>>,
+}
+
+impl<F> Future for TokioContextFuture<F>
+where
+    F: Future,
+{
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+        self.future.as_mut().poll(cx)
+    }
 }
 
 #[pyclass(name = "Identity")]
@@ -71,19 +130,20 @@ impl Home {
     }
 
     pub async fn load_identity(&self, name: String) -> PyResult<IdentityHome> {
-        self.inner
-            .load_identity(&name)
+        with_tokio(self.inner.load_identity(&name))
             .await
             .map(|inner| IdentityHome { inner })
             .map_err(py_error)
     }
 
     pub async fn identity_exists(&self, name: String) -> PyResult<bool> {
-        self.inner.identity_exists(&name).await.map_err(py_error)
+        with_tokio(self.inner.identity_exists(&name))
+            .await
+            .map_err(py_error)
     }
 
     pub async fn identities(&self) -> PyResult<Vec<String>> {
-        self.inner.identities().await.map_err(py_error)
+        with_tokio(self.inner.identities()).await.map_err(py_error)
     }
 }
 
@@ -110,8 +170,7 @@ impl IdentityHome {
     }
 
     pub async fn identity(&self) -> PyResult<Identity> {
-        self.inner
-            .identity()
+        with_tokio(self.inner.identity())
             .await
             .map(Identity::from)
             .map_err(py_error)
@@ -240,80 +299,77 @@ impl ClientRequest {
     }
 
     pub async fn write(&self, content: Vec<u8>) -> PyResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.write",
-                "request is closed",
-            ))
-        })?;
-        request.write(content).await.map_err(py_error)
+        with_tokio(async {
+            let request = self.shared_request("client_request.write").await?;
+            request.write(content).await
+        })
+        .await
+        .map_err(py_error)
     }
 
     pub async fn flush(&self) -> PyResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.flush",
-                "request is closed",
-            ))
-        })?;
-        request.flush().await.map_err(py_error)
+        with_tokio(async {
+            let request = self.shared_request("client_request.flush").await?;
+            request.flush().await
+        })
+        .await
+        .map_err(py_error)
     }
 
     pub async fn close(&self) -> PyResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.close",
-                "request is closed",
-            ))
-        })?;
-        request.close().await.map_err(py_error)
+        with_tokio(async {
+            let request = self.shared_request("client_request.close").await?;
+            request.close().await
+        })
+        .await
+        .map_err(py_error)
     }
 
     pub async fn cancel(&self, code: u64) -> PyResult<()> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.cancel",
-                "request is closed",
-            ))
-        })?;
-        request.cancel(code).await.map_err(py_error)
+        with_tokio(async {
+            let request = self.shared_request("client_request.cancel").await?;
+            request.cancel(code).await
+        })
+        .await
+        .map_err(py_error)
     }
 
     pub async fn response(&self) -> PyResult<ClientResponse> {
-        let guard = self.inner.lock().await;
-        let request = guard.as_ref().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.response",
-                "request is closed",
-            ))
-        })?;
-        request
-            .response()
-            .await
-            .map(ClientResponse::from)
-            .map_err(py_error)
+        with_tokio(async {
+            let request = self.shared_request("client_request.response").await?;
+            request.response().await.map(ClientResponse::from)
+        })
+        .await
+        .map_err(py_error)
     }
 
     pub async fn into_response(&self) -> PyResult<ClientResponse> {
-        let request = self.inner.lock().await.take().ok_or_else(|| {
-            py_error(crate::error::DhttpError::from_message(
-                "client_request.into_response",
-                "request is closed",
-            ))
-        })?;
-        request
-            .into_response()
-            .await
-            .map(ClientResponse::from)
-            .map_err(py_error)
+        with_tokio(async {
+            let request = self.inner.lock().await.take().ok_or_else(|| {
+                crate::error::DhttpError::from_message(
+                    "client_request.into_response",
+                    "request is closed",
+                )
+            })?;
+            request.into_response().await.map(ClientResponse::from)
+        })
+        .await
+        .map_err(py_error)
     }
 }
 
 impl ClientRequest {
+    async fn shared_request(
+        &self,
+        operation: &'static str,
+    ) -> crate::endpoint::Result<crate::endpoint::client::Request> {
+        let guard = self.inner.lock().await;
+        let request = guard.as_ref().ok_or_else(|| {
+            crate::error::DhttpError::from_message(operation, "request is closed")
+        })?;
+        Ok(request.shared_handle())
+    }
+
     fn with_ref<T>(
         &self,
         operation: &'static str,
@@ -349,7 +405,9 @@ impl From<crate::endpoint::client::Response> for ClientResponse {
 #[pymethods]
 impl ClientResponse {
     pub async fn next_response(&self) -> PyResult<()> {
-        self.inner.next_response().await.map_err(py_error)
+        with_tokio(self.inner.next_response())
+            .await
+            .map_err(py_error)
     }
 
     pub fn status(&self) -> PyResult<u16> {
@@ -365,23 +423,27 @@ impl ClientResponse {
     }
 
     pub async fn read(&self) -> PyResult<Option<Vec<u8>>> {
-        self.inner.read().await.map_err(py_error)
+        with_tokio(self.inner.read()).await.map_err(py_error)
     }
 
     pub async fn read_to_bytes(&self) -> PyResult<Vec<u8>> {
-        self.inner.read_to_bytes().await.map_err(py_error)
+        with_tokio(self.inner.read_to_bytes())
+            .await
+            .map_err(py_error)
     }
 
     pub async fn read_to_string(&self) -> PyResult<String> {
-        self.inner.read_to_string().await.map_err(py_error)
+        with_tokio(self.inner.read_to_string())
+            .await
+            .map_err(py_error)
     }
 
     pub async fn trailers(&self) -> PyResult<Vec<(String, String)>> {
-        self.inner.trailers().await.map_err(py_error)
+        with_tokio(self.inner.trailers()).await.map_err(py_error)
     }
 
     pub async fn stop(&self, code: u64) -> PyResult<()> {
-        self.inner.stop(code).await.map_err(py_error)
+        with_tokio(self.inner.stop(code)).await.map_err(py_error)
     }
 
     pub fn agent_name(&self) -> PyResult<String> {
@@ -437,23 +499,27 @@ impl ServerRequest {
     }
 
     pub async fn read(&self) -> PyResult<Option<Vec<u8>>> {
-        self.inner.read().await.map_err(py_error)
+        with_tokio(self.inner.read()).await.map_err(py_error)
     }
 
     pub async fn read_to_bytes(&self) -> PyResult<Vec<u8>> {
-        self.inner.read_to_bytes().await.map_err(py_error)
+        with_tokio(self.inner.read_to_bytes())
+            .await
+            .map_err(py_error)
     }
 
     pub async fn read_to_string(&self) -> PyResult<String> {
-        self.inner.read_to_string().await.map_err(py_error)
+        with_tokio(self.inner.read_to_string())
+            .await
+            .map_err(py_error)
     }
 
     pub async fn trailers(&self) -> PyResult<Vec<(String, String)>> {
-        self.inner.trailers().await.map_err(py_error)
+        with_tokio(self.inner.trailers()).await.map_err(py_error)
     }
 
     pub async fn stop(&self, code: u64) -> PyResult<()> {
-        self.inner.stop(code).await.map_err(py_error)
+        with_tokio(self.inner.stop(code)).await.map_err(py_error)
     }
 
     pub fn agent_name(&self) -> PyResult<Option<String>> {
@@ -501,11 +567,13 @@ impl ServerResponse {
     }
 
     pub async fn write(&self, content: Vec<u8>) -> PyResult<()> {
-        self.inner.write(content).await.map_err(py_error)
+        with_tokio(self.inner.write(content))
+            .await
+            .map_err(py_error)
     }
 
     pub async fn flush(&self) -> PyResult<()> {
-        self.inner.flush().await.map_err(py_error)
+        with_tokio(self.inner.flush()).await.map_err(py_error)
     }
 
     pub fn trailers(&self) -> PyResult<Vec<(String, String)>> {
@@ -521,11 +589,11 @@ impl ServerResponse {
     }
 
     pub async fn close(&self) -> PyResult<()> {
-        self.inner.close().await.map_err(py_error)
+        with_tokio(self.inner.close()).await.map_err(py_error)
     }
 
     pub async fn cancel(&self, code: u64) -> PyResult<()> {
-        self.inner.cancel(code).await.map_err(py_error)
+        with_tokio(self.inner.cancel(code)).await.map_err(py_error)
     }
 
     pub fn agent_name(&self) -> PyResult<String> {
@@ -537,37 +605,69 @@ impl ServerResponse {
     }
 
     pub async fn finish(&self) -> PyResult<()> {
-        self.inner.finish().await.map_err(py_error)
+        with_tokio(self.inner.finish()).await.map_err(py_error)
     }
 }
 
 #[pyclass(name = "ServeHandle")]
 pub struct ServeHandle {
-    inner: crate::endpoint::ServeHandle,
+    inner: Option<crate::endpoint::ServeHandle>,
+}
+
+impl Drop for ServeHandle {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+        drop(inner);
+    }
+}
+
+impl ServeHandle {
+    fn inner(&self) -> &crate::endpoint::ServeHandle {
+        self.inner.as_ref().expect("serve handle is closed")
+    }
 }
 
 #[pymethods]
 impl ServeHandle {
     pub async fn shutdown(&self) -> PyResult<()> {
-        self.inner.shutdown().await.map_err(py_error)
+        with_tokio(self.inner().shutdown()).await.map_err(py_error)
     }
 
     pub fn abort(&self) {
-        self.inner.abort();
+        self.inner().abort();
     }
 
     pub fn is_finished(&self) -> bool {
-        self.inner.is_finished()
+        self.inner().is_finished()
     }
 
     pub async fn closed(&self) -> PyResult<()> {
-        self.inner.closed().await.map_err(py_error)
+        with_tokio(self.inner().closed()).await.map_err(py_error)
     }
 }
 
 #[pyclass(name = "Endpoint")]
 pub struct Endpoint {
-    inner: crate::endpoint::Endpoint,
+    inner: Option<crate::endpoint::Endpoint>,
+}
+
+impl Drop for Endpoint {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+        drop(inner);
+    }
+}
+
+impl Endpoint {
+    fn inner(&self) -> &crate::endpoint::Endpoint {
+        self.inner.as_ref().expect("endpoint is closed")
+    }
 }
 
 #[pymethods]
@@ -575,91 +675,91 @@ impl Endpoint {
     #[staticmethod]
     pub async fn create(options: Option<&EndpointOptions>) -> PyResult<Self> {
         let options = options.map(|options| options.inner.clone());
-        crate::endpoint::Endpoint::create(options)
+        with_tokio(crate::endpoint::Endpoint::create(options))
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(py_error)
     }
 
     #[staticmethod]
     pub async fn load(name: String) -> PyResult<Self> {
-        crate::endpoint::Endpoint::load(&name)
+        with_tokio(crate::endpoint::Endpoint::load(&name))
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(py_error)
     }
 
     #[staticmethod]
     pub async fn load_from(path: String) -> PyResult<Self> {
-        crate::endpoint::Endpoint::load_from(path)
+        with_tokio(crate::endpoint::Endpoint::load_from(path))
             .await
-            .map(|inner| Self { inner })
+            .map(|inner| Self { inner: Some(inner) })
             .map_err(py_error)
     }
 
     pub fn identity(&self) -> Option<Identity> {
-        self.inner.identity().map(Identity::from)
+        self.inner().identity().map(Identity::from)
     }
 
     pub fn bind_patterns(&self) -> Vec<String> {
-        self.inner.bind_patterns()
+        self.inner().bind_patterns()
     }
 
     pub fn request(&self) -> ClientRequest {
-        self.inner.request().into()
+        self.inner().request().into()
     }
 
     pub fn get(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .get(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn post(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .post(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn put(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .put(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn delete(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .delete(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn patch(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .patch(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn head(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .head(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn options(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .options(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
     }
 
     pub fn trace(&self, uri: String) -> PyResult<ClientRequest> {
-        self.inner
+        self.inner()
             .trace(&uri)
             .map(ClientRequest::from)
             .map_err(py_error)
@@ -668,47 +768,26 @@ impl Endpoint {
     pub fn serve(&self, handler: Py<PyAny>) -> PyResult<ServeHandle> {
         let locals = Python::attach(|py| pyo3_async_runtimes::tokio::get_current_locals(py).ok());
         let handler = Arc::new(handler);
-        let inner = self.inner.serve(move |request, response| {
+        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+        let inner = self.inner().serve(move |request, response| {
             let handler = handler.clone();
             let locals = locals.clone();
             let request = ServerRequest::from(request);
             let response = ServerResponse::from(response);
             Box::pin(async move {
-                let future = Python::attach(
-                    |py| -> PyResult<Option<BoxFuture<'static, PyResult<Py<PyAny>>>>> {
-                        let request = Py::new(py, request)?;
-                        let response = Py::new(py, response)?;
-                        let result = handler.as_ref().call1(py, (request, response))?;
-                        let is_awaitable = py
-                            .import("inspect")?
-                            .call_method1("isawaitable", (result.bind(py),))?
-                            .extract()?;
-                        if is_awaitable {
-                            let locals = locals.as_ref().ok_or_else(|| {
-                                PyRuntimeError::new_err(
-                                    "async dhttp handler requires a running asyncio task",
-                                )
-                            })?;
-                            let future = pyo3_async_runtimes::into_future_with_locals(
-                                locals,
-                                result.into_bound(py),
-                            )?;
-                            Ok(Some(future.boxed()))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                )
+                let result = Python::attach(|py| -> PyResult<Py<PyAny>> {
+                    let request = Py::new(py, request)?;
+                    let response = Py::new(py, response)?;
+                    handler.as_ref().call1(py, (request, response))
+                })
                 .map_err(|error| dhttp_py_error("pyo3.handler", error))?;
-                if let Some(future) = future {
-                    future
-                        .await
-                        .map_err(|error| dhttp_py_error("pyo3.handler", error))?;
-                }
+                wait_python_result(result, locals)
+                    .await
+                    .map_err(|error| dhttp_py_error("pyo3.handler", error))?;
                 Ok(())
             })
         });
-        Ok(ServeHandle { inner })
+        Ok(ServeHandle { inner: Some(inner) })
     }
 }
 
@@ -725,4 +804,44 @@ pub fn dhttp_api(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ServeHandle>()?;
     module.add_class::<Endpoint>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_python_result;
+
+    use pyo3::{prelude::*, types::PyDict};
+
+    #[test]
+    fn wait_python_result_drives_asyncio_awaitable_from_rust_future() {
+        Python::initialize();
+        Python::attach(|py| {
+            pyo3_async_runtimes::tokio::run(py, async move {
+                let (coroutine, task_locals) = Python::attach(|py| {
+                    let locals = PyDict::new(py);
+                    py.run(
+                        c"
+import asyncio
+
+async def handler():
+    await asyncio.sleep(0)
+    return 'ok'
+",
+                        Some(&locals),
+                        Some(&locals),
+                    )?;
+                    let coroutine = py
+                        .eval(c"handler()", Some(&locals), Some(&locals))?
+                        .unbind();
+                    let task_locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+                    PyResult::Ok((coroutine, task_locals))
+                })?;
+                wait_python_result(coroutine, Some(task_locals))
+                    .await
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+    }
 }
