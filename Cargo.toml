@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dhttp", "identity", "home"]
+members = ["dhttp", "identity", "home", "api"]
 
 [workspace.package]
 version = "0.1.0"
@@ -31,6 +31,7 @@ dhttp-identity = { path = "identity" }
 home = { package = "dhttp-home", path = "home" }
 ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
+dhttp = { path = "dhttp" }
 
 # Workspace-local identity/home unification.
 # The dhttp workspace exposes these crates as part of the same public type

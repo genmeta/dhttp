@@ -1,0 +1,19 @@
+[package]
+name = "dhttp-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing = { workspace = true }
+tower-service = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+dhttp = { workspace = true }
+futures = { workspace = true }
+snafu = { workspace = true }
+
+[dev-dependencies]
+trybuild = "1"
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `dhttp_api::endpoint::server::Response: Clone` is not satisfied
+ --> tests/ui/server_response_clone.rs:4:20
+  |
+4 |     assert_clone::<dhttp_api::endpoint::server::Response>();
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Clone` is not implemented for `dhttp_api::endpoint::server::Response`
+  |
+note: required by a bound in `assert_clone`
+ --> tests/ui/server_response_clone.rs:1:20
+  |
+1 | fn assert_clone<T: Clone>() {}
+  |                    ^^^^^ required by this bound in `assert_clone`
