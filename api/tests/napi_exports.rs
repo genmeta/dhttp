@@ -1,5 +1,7 @@
 #![cfg(feature = "napi")]
 
+use napi::bindgen_prelude::{FnArgs, Function, Promise};
+
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
     let home = dhttp_api::napi::Home::new("/tmp/dhttp-api-napi".to_string());
@@ -52,4 +54,65 @@ async fn napi_client_response_api_is_exposed(
     let _trailers = response.trailers().await.unwrap();
     response.stop(0).await.unwrap();
     let _agent_name = response.agent_name().unwrap();
+}
+
+#[allow(dead_code)]
+async fn napi_server_api_is_exposed<'env>(
+    endpoint: &dhttp_api::napi::Endpoint,
+    handler: Function<
+        'env,
+        FnArgs<(
+            dhttp_api::napi::ServerRequest,
+            dhttp_api::napi::ServerResponse,
+        )>,
+        Promise<()>,
+    >,
+    request: &dhttp_api::napi::ServerRequest,
+    response: &dhttp_api::napi::ServerResponse,
+    handle: &dhttp_api::napi::ServeHandle,
+) {
+    let _handle = endpoint.serve(handler).unwrap();
+
+    let _method = request.method().unwrap();
+    let _uri = request.uri().unwrap();
+    let _scheme = request.scheme().unwrap();
+    let _authority = request.authority().unwrap();
+    let _path = request.path().unwrap();
+    let _protocol = request.protocol().unwrap();
+    let _headers = request.headers().unwrap();
+    let _header = request.header("content-type".to_string()).unwrap();
+    let _body = request.read().await.unwrap();
+    let _body = request.read_to_bytes().await.unwrap();
+    let _text = request.read_to_string().await.unwrap();
+    let _trailers = request.trailers().await.unwrap();
+    request.stop(0).await.unwrap();
+    let _agent_name = request.agent_name().unwrap();
+    let _stream_id = request.stream_id().unwrap();
+
+    let _status = response.status().unwrap();
+    response.set_status(204).unwrap();
+    let _headers = response.headers().unwrap();
+    response
+        .set_header("content-type".to_string(), "text/plain".to_string())
+        .unwrap();
+    response.set_body(b"hello".to_vec()).unwrap();
+    response.write(b"chunk".to_vec()).await.unwrap();
+    response.flush().await.unwrap();
+    let _trailers = response.trailers().unwrap();
+    response
+        .set_trailer("x-trailer".to_string(), "done".to_string())
+        .unwrap();
+    response
+        .set_trailers(vec![("x-trailer".to_string(), "done".to_string())])
+        .unwrap();
+    response.close().await.unwrap();
+    response.cancel(0).await.unwrap();
+    let _agent_name = response.agent_name().unwrap();
+    let _stream_id = response.stream_id().unwrap();
+    response.finish().await.unwrap();
+
+    handle.shutdown().await.unwrap();
+    handle.abort();
+    let _is_finished = handle.is_finished();
+    handle.closed().await.unwrap();
 }

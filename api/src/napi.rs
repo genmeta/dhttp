@@ -1,11 +1,18 @@
 use std::sync::Arc;
 
-use ::napi::{Error, Status, bindgen_prelude::Result as NapiResult};
+use ::napi::{
+    Error, Status,
+    bindgen_prelude::{FnArgs, Function, Promise, Result as NapiResult},
+};
 use napi_derive::napi;
 use tokio::sync::Mutex;
 
 fn napi_error(error: crate::error::DhttpError) -> Error {
     Error::new(Status::GenericFailure, error.report().to_owned())
+}
+
+fn dhttp_napi_error(operation: &'static str, error: Error) -> crate::error::DhttpError {
+    crate::error::DhttpError::from_error(operation, error)
 }
 
 #[napi(js_name = "Identity")]
@@ -358,6 +365,230 @@ impl ClientResponse {
     }
 }
 
+#[napi(js_name = "ServerRequest")]
+pub struct ServerRequest {
+    inner: crate::endpoint::server::Request,
+}
+
+impl From<&crate::endpoint::server::Request> for ServerRequest {
+    fn from(inner: &crate::endpoint::server::Request) -> Self {
+        Self {
+            inner: inner.shared_handle(),
+        }
+    }
+}
+
+#[napi]
+impl ServerRequest {
+    #[napi]
+    pub fn method(&self) -> NapiResult<String> {
+        self.inner.method().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn uri(&self) -> NapiResult<String> {
+        self.inner.uri().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn scheme(&self) -> NapiResult<Option<String>> {
+        self.inner.scheme().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn authority(&self) -> NapiResult<Option<String>> {
+        self.inner.authority().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn path(&self) -> NapiResult<Option<String>> {
+        self.inner.path().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn protocol(&self) -> NapiResult<Option<String>> {
+        self.inner.protocol().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn headers(&self) -> NapiResult<Vec<(String, String)>> {
+        self.inner.headers().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn header(&self, name: String) -> NapiResult<Option<String>> {
+        self.inner.header(&name).map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn read(&self) -> NapiResult<Option<Vec<u8>>> {
+        self.inner.read().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn read_to_bytes(&self) -> NapiResult<Vec<u8>> {
+        self.inner.read_to_bytes().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn read_to_string(&self) -> NapiResult<String> {
+        self.inner.read_to_string().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn trailers(&self) -> NapiResult<Vec<(String, String)>> {
+        self.inner.trailers().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn stop(&self, code: u32) -> NapiResult<()> {
+        self.inner.stop(u64::from(code)).await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn agent_name(&self) -> NapiResult<Option<String>> {
+        self.inner.agent_name().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn stream_id(&self) -> NapiResult<i64> {
+        self.inner
+            .stream_id()
+            .and_then(|stream_id| {
+                i64::try_from(stream_id).map_err(|error| {
+                    crate::error::DhttpError::from_error("server_request.stream_id", error)
+                })
+            })
+            .map_err(napi_error)
+    }
+}
+
+#[napi(js_name = "ServerResponse")]
+pub struct ServerResponse {
+    inner: crate::endpoint::server::Response,
+}
+
+impl From<&crate::endpoint::server::Response> for ServerResponse {
+    fn from(inner: &crate::endpoint::server::Response) -> Self {
+        Self {
+            inner: inner.shared_handle(),
+        }
+    }
+}
+
+#[napi]
+impl ServerResponse {
+    #[napi]
+    pub fn status(&self) -> NapiResult<Option<u16>> {
+        self.inner.status().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_status(&self, status: u16) -> NapiResult<()> {
+        self.inner.set_status(status).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn headers(&self) -> NapiResult<Vec<(String, String)>> {
+        self.inner.headers().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_header(&self, name: String, value: String) -> NapiResult<()> {
+        self.inner.set_header(&name, &value).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_body(&self, content: Vec<u8>) -> NapiResult<()> {
+        self.inner.set_body(content).map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn write(&self, content: Vec<u8>) -> NapiResult<()> {
+        self.inner.write(content).await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn flush(&self) -> NapiResult<()> {
+        self.inner.flush().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn trailers(&self) -> NapiResult<Vec<(String, String)>> {
+        self.inner.trailers().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_trailer(&self, name: String, value: String) -> NapiResult<()> {
+        self.inner.set_trailer(&name, &value).map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn set_trailers(&self, trailers: Vec<(String, String)>) -> NapiResult<()> {
+        self.inner.set_trailers(trailers).map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn close(&self) -> NapiResult<()> {
+        self.inner.close().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn cancel(&self, code: u32) -> NapiResult<()> {
+        self.inner.cancel(u64::from(code)).await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn agent_name(&self) -> NapiResult<String> {
+        self.inner.agent_name().map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn stream_id(&self) -> NapiResult<i64> {
+        self.inner
+            .stream_id()
+            .and_then(|stream_id| {
+                i64::try_from(stream_id).map_err(|error| {
+                    crate::error::DhttpError::from_error("server_response.stream_id", error)
+                })
+            })
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn finish(&self) -> NapiResult<()> {
+        self.inner.finish().await.map_err(napi_error)
+    }
+}
+
+#[napi(js_name = "ServeHandle")]
+pub struct ServeHandle {
+    inner: crate::endpoint::ServeHandle,
+}
+
+#[napi]
+impl ServeHandle {
+    #[napi]
+    pub async fn shutdown(&self) -> NapiResult<()> {
+        self.inner.shutdown().await.map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+
+    #[napi]
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    #[napi]
+    pub async fn closed(&self) -> NapiResult<()> {
+        self.inner.closed().await.map_err(napi_error)
+    }
+}
+
 #[napi(js_name = "Endpoint")]
 pub struct Endpoint {
     inner: crate::endpoint::Endpoint,
@@ -467,5 +698,33 @@ impl Endpoint {
             .trace(&uri)
             .map(ClientRequest::from)
             .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn serve(
+        &self,
+        handler: Function<FnArgs<(ServerRequest, ServerResponse)>, Promise<()>>,
+    ) -> NapiResult<ServeHandle> {
+        let handler = handler
+            .build_threadsafe_function::<FnArgs<(ServerRequest, ServerResponse)>>()
+            .callee_handled::<false>()
+            .build()?;
+        let handler = Arc::new(handler);
+        let inner = self.inner.serve(move |request, response| {
+            let handler = handler.clone();
+            let request = ServerRequest::from(request);
+            let response = ServerResponse::from(response);
+            Box::pin(async move {
+                let promise = handler
+                    .call_async_catch((request, response).into())
+                    .await
+                    .map_err(|error| dhttp_napi_error("napi.handler", error))?;
+                promise
+                    .await
+                    .map_err(|error| dhttp_napi_error("napi.handler", error))?;
+                Ok(())
+            })
+        });
+        Ok(ServeHandle { inner })
     }
 }
