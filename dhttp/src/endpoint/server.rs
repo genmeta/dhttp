@@ -4,8 +4,8 @@ pub use crate::{
 };
 
 mod message;
-pub use message::read_request_header;
-pub use message::{ReadRequestHeaderError, Request, Response};
+pub use message::resolve;
+pub use message::{Request, ResolveError, Response};
 mod route;
 pub use route::{HandleError, MethodRouter, Service};
 mod service;

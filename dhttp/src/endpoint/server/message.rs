@@ -47,7 +47,7 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum ReadRequestHeaderError {
+pub enum ResolveError {
     #[snafu(display("failed to read server local agent"))]
     LocalAgent {
         source: crate::h3x::quic::ConnectionError,
@@ -62,9 +62,7 @@ pub enum ReadRequestHeaderError {
     ReadHeader { source: MessageStreamError },
 }
 
-pub async fn read_request_header(
-    request: UnresolvedRequest,
-) -> Result<(Request, Response), ReadRequestHeaderError> {
+pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), ResolveError> {
     let UnresolvedRequest {
         stream_id,
         read_stream,
@@ -76,12 +74,12 @@ pub async fn read_request_header(
     let local_agent = connection
         .local_agent()
         .await
-        .context(read_request_header_error::LocalAgentSnafu)?
-        .context(read_request_header_error::MissingLocalAgentSnafu)?;
+        .context(resolve_error::LocalAgentSnafu)?
+        .context(resolve_error::MissingLocalAgentSnafu)?;
     let remote_agent = connection
         .remote_agent()
         .await
-        .context(read_request_header_error::RemoteAgentSnafu)?;
+        .context(resolve_error::RemoteAgentSnafu)?;
     let protocols = connection.protocols().clone();
 
     let mut request = Request {
@@ -95,7 +93,7 @@ pub async fn read_request_header(
         .message
         .read_header_from(&mut request.stream)
         .await
-        .context(read_request_header_error::ReadHeaderSnafu)?;
+        .context(resolve_error::ReadHeaderSnafu)?;
     let response = Response {
         message: Message::unresolved_response(),
         stream: write_stream,

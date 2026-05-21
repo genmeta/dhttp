@@ -9,6 +9,24 @@ use dhttp_api::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 #[test]
+fn http_boundary_aliases_are_public() {
+    let headers: dhttp_api::http::HeaderPairs =
+        vec![("content-type".to_string(), "text/plain".to_string())];
+    let body: dhttp_api::http::Body = b"hello".to_vec();
+    let method: dhttp_api::http::Method = "GET".to_string();
+    let uri: dhttp_api::http::Uri = "https://example.com/".to_string();
+    let authority: dhttp_api::http::Authority = "example.com".to_string();
+    let status: dhttp_api::http::Status = 200;
+
+    assert_eq!(headers.len(), 1);
+    assert_eq!(body, b"hello");
+    assert_eq!(method, "GET");
+    assert_eq!(uri, "https://example.com/");
+    assert_eq!(authority, "example.com");
+    assert_eq!(status, 200);
+}
+
+#[test]
 fn identity_home_from_path_exposes_partial_name_and_path() {
     let identity_home = IdentityHome::from_path("/tmp/reimu.pilot").unwrap();
 

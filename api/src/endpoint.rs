@@ -321,9 +321,9 @@ where
     fn call(&mut self, req: dhttp::endpoint::server::UnresolvedRequest) -> Self::Future {
         let handler = self.handler.clone();
         Box::pin(async move {
-            let (request, response) = dhttp::endpoint::server::read_request_header(req)
+            let (request, response) = dhttp::endpoint::server::resolve(req)
                 .await
-                .map_err(|error| DhttpError::from_error("server.read_request_header", error))?;
+                .map_err(|error| DhttpError::from_error("server.resolve", error))?;
             let request = server::Request::new(request);
             let response = server::Response::new(response);
 

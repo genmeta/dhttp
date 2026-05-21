@@ -9,7 +9,7 @@ use http::{Method, StatusCode};
 use snafu::{Report, ResultExt, Snafu};
 
 use crate::endpoint::server::{
-    BoxService, BoxServiceFuture, IntoBoxService, ReadRequestHeaderError, Request, Response, Serve,
+    BoxService, BoxServiceFuture, IntoBoxService, Request, ResolveError, Response, Serve,
     UnresolvedRequest, box_service,
 };
 
@@ -185,9 +185,9 @@ impl Service {
 
     #[tracing::instrument(skip(self, req), fields(method = tracing::field::Empty, uri = tracing::field::Empty))]
     pub async fn handle(&self, req: UnresolvedRequest) -> Result<(), HandleError> {
-        let (mut request, mut response) = crate::endpoint::server::read_request_header(req)
+        let (mut request, mut response) = crate::endpoint::server::resolve(req)
             .await
-            .context(handle_error::ReadRequestHeaderSnafu)?;
+            .context(handle_error::ResolveSnafu)?;
 
         tracing::Span::current()
             .record("method", request.method().as_str())
@@ -237,8 +237,8 @@ impl tower_service::Service<UnresolvedRequest> for Service {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum HandleError {
-    #[snafu(display("failed to read request header"))]
-    ReadRequestHeader { source: ReadRequestHeaderError },
+    #[snafu(display("failed to resolve server request"))]
+    Resolve { source: ResolveError },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

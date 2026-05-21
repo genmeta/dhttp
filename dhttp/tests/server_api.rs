@@ -1,14 +1,14 @@
 use std::future::Future;
 
 use dhttp::{
-    endpoint::server::{self, ReadRequestHeaderError, Request, Response},
+    endpoint::server::{self, Request, ResolveError, Response},
     h3x::endpoint::server::UnresolvedRequest,
 };
 
-fn assert_read_request_header<F, Fut>(_f: F)
+fn assert_resolve<F, Fut>(_f: F)
 where
     F: FnOnce(UnresolvedRequest) -> Fut,
-    Fut: Future<Output = Result<(Request, Response), ReadRequestHeaderError>>,
+    Fut: Future<Output = Result<(Request, Response), ResolveError>>,
 {
 }
 
@@ -20,8 +20,8 @@ where
 }
 
 #[test]
-fn server_header_reader_is_public() {
-    assert_read_request_header(server::read_request_header);
+fn server_resolve_hook_is_public() {
+    assert_resolve(server::resolve);
 }
 
 #[test]
