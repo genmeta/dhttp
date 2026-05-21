@@ -21,8 +21,8 @@ pub mod client;
 pub mod server;
 
 pub use crate::message::{
-    Body, MalformedMessageError, MessageStage, MessageWriteFlow, MessageWriteGoal,
-    ReadToStringError,
+    Body, BodyState, IntoBody, MalformedMessageError, MessageStage, MessageWriteFlow,
+    MessageWriteGoal, ReadToStringError,
 };
 
 use self::client::Request;

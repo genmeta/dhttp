@@ -14,7 +14,7 @@
 
 use std::{
     error::Error,
-    future::IntoFuture,
+    future::{Future, IntoFuture},
     ops::{ControlFlow, Deref},
     sync::{
         Arc, Mutex as SyncMutex,
@@ -43,7 +43,9 @@ use crate::{
         qpack::field::MalformedHeaderSection,
         quic,
     },
-    message::{MalformedMessageError, Message, MessageWriteGoal, ReadToStringError},
+    message::{
+        Body, IntoBody, MalformedMessageError, Message, MessageWriteGoal, ReadToStringError,
+    },
 };
 
 #[derive(Debug, Snafu)]
@@ -334,10 +336,7 @@ where
         self.send_request_to_goal(MessageWriteGoal::Header).await
     }
 
-    async fn write_body_chunk(
-        &self,
-        content: impl Buf + Send,
-    ) -> Result<(), RequestError<Q::Error>> {
+    async fn write_body_chunk(&self, content: Body) -> Result<(), RequestError<Q::Error>> {
         let mut write_stream = self.acquire_write_stream().await?;
 
         let result = {
@@ -456,7 +455,7 @@ where
         self
     }
 
-    pub fn set_body(&self, content: impl Buf + Send) -> &Self {
+    pub fn set_body(&self, content: impl IntoBody) -> &Self {
         self.state.operate_message("set_body", |message| {
             message.set_body(content)?;
             Ok(())
@@ -500,8 +499,7 @@ where
         self
     }
 
-    // impl IntoBody ( for &str String Vec<u8> etc)
-    pub fn body(self, content: impl Buf + Send) -> Self {
+    pub fn body(self, content: impl IntoBody) -> Self {
         self.set_body(content);
         self
     }
@@ -516,9 +514,18 @@ where
         self
     }
 
-    pub async fn write(&self, content: impl Buf + Send) -> Result<&Self, RequestError<Q::Error>> {
-        self.state.write_body_chunk(content).await?;
-        Ok(self)
+    pub fn write<B>(
+        &self,
+        content: B,
+    ) -> impl Future<Output = Result<&Self, RequestError<Q::Error>>> + use<'_, Q, EP, B>
+    where
+        B: IntoBody,
+    {
+        let content = content.into_body();
+        async move {
+            self.state.write_body_chunk(content).await?;
+            Ok(self)
+        }
     }
 
     pub async fn flush(&self) -> Result<&Self, RequestError<Q::Error>> {

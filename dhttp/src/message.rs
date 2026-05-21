@@ -1,6 +1,6 @@
-use std::{mem, ops::ControlFlow};
+use std::{borrow::Cow, mem, ops::ControlFlow};
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, Bytes, BytesMut};
 use http::{
     HeaderMap,
     header::{InvalidHeaderName, InvalidHeaderValue},
@@ -18,8 +18,83 @@ use crate::h3x::{
     },
 };
 
+/// Buffered DHTTP message body payload.
+pub type Body = BufList;
+
+/// Converts common byte/string payload types into a buffered DHTTP body.
+pub trait IntoBody {
+    fn into_body(self) -> Body;
+}
+
+fn body_from_buf(buf: impl Buf) -> Body {
+    let mut body = Body::new();
+    body.write(buf);
+    body
+}
+
+impl IntoBody for Body {
+    fn into_body(self) -> Body {
+        self
+    }
+}
+
+impl IntoBody for Bytes {
+    fn into_body(self) -> Body {
+        body_from_buf(self)
+    }
+}
+
+impl IntoBody for BytesMut {
+    fn into_body(self) -> Body {
+        body_from_buf(self)
+    }
+}
+
+impl IntoBody for Vec<u8> {
+    fn into_body(self) -> Body {
+        body_from_buf(Bytes::from(self))
+    }
+}
+
+impl IntoBody for String {
+    fn into_body(self) -> Body {
+        body_from_buf(Bytes::from(self))
+    }
+}
+
+impl IntoBody for () {
+    fn into_body(self) -> Body {
+        Body::new()
+    }
+}
+
+impl<'a> IntoBody for Cow<'a, str> {
+    fn into_body(self) -> Body {
+        match self {
+            Cow::Borrowed(content) => content.into_body(),
+            Cow::Owned(content) => content.into_body(),
+        }
+    }
+}
+
+impl<'a> IntoBody for Cow<'a, [u8]> {
+    fn into_body(self) -> Body {
+        match self {
+            Cow::Borrowed(content) => content.into_body(),
+            Cow::Owned(content) => content.into_body(),
+        }
+    }
+}
+
+impl<T: AsRef<[u8]> + ?Sized> IntoBody for &T {
+    fn into_body(self) -> Body {
+        body_from_buf(Bytes::copy_from_slice(self.as_ref()))
+    }
+}
+
+/// Message body transfer state.
 #[derive(Debug, Clone)]
-pub enum Body {
+pub enum BodyState {
     Pending,
     Streaming { count: u64 },
     Buffered { buflist: BuflistCursor },
@@ -101,7 +176,7 @@ impl From<MalformedHeaderSection> for MalformedMessageError {
 #[derive(Debug, Clone)]
 pub struct Message {
     header: FieldSection,
-    body: Body,
+    body: BodyState,
     trailer: FieldSection,
 
     stage: MessageStage,
@@ -119,7 +194,7 @@ impl Message {
     pub fn unresolved_request() -> Self {
         Self {
             header: FieldSection::header(PseudoHeaders::unresolved_request(), HeaderMap::default()),
-            body: Body::Pending,
+            body: BodyState::Pending,
             trailer: FieldSection::trailer(HeaderMap::default()),
             stage: MessageStage::Header,
         }
@@ -131,7 +206,7 @@ impl Message {
                 PseudoHeaders::unresolved_response(),
                 HeaderMap::default(),
             ),
-            body: Body::Pending,
+            body: BodyState::Pending,
             trailer: FieldSection::trailer(HeaderMap::default()),
             stage: MessageStage::Header,
         }
@@ -166,16 +241,16 @@ impl Message {
         }
 
         match &self.body {
-            Body::Pending => self.body = Body::Streaming { count: 0 },
-            Body::Streaming { .. } => {}
-            Body::Buffered { .. } => {
+            BodyState::Pending => self.body = BodyState::Streaming { count: 0 },
+            BodyState::Streaming { .. } => {}
+            BodyState::Buffered { .. } => {
                 return Err(MalformedMessageError::StreamingOperationOnBufferedBody);
             }
         }
         match &mut self.body {
-            Body::Pending => unreachable!(),
-            Body::Streaming { count } => Ok(count),
-            Body::Buffered { .. } => unreachable!(),
+            BodyState::Pending => unreachable!(),
+            BodyState::Streaming { count } => Ok(count),
+            BodyState::Buffered { .. } => unreachable!(),
         }
     }
 
@@ -188,20 +263,20 @@ impl Message {
         }
 
         match &self.body {
-            Body::Pending => {
-                self.body = Body::Buffered {
+            BodyState::Pending => {
+                self.body = BodyState::Buffered {
                     buflist: BuflistCursor::new(BufList::new()),
                 };
             }
-            Body::Buffered { .. } => {}
-            Body::Streaming { .. } => {
+            BodyState::Buffered { .. } => {}
+            BodyState::Streaming { .. } => {
                 return Err(MalformedMessageError::BufferedOperationOnStreamingBody);
             }
         }
         match &mut self.body {
-            Body::Pending => unreachable!(),
-            Body::Streaming { .. } => unreachable!(),
-            Body::Buffered { buflist } => Ok(buflist),
+            BodyState::Pending => unreachable!(),
+            BodyState::Streaming { .. } => unreachable!(),
+            BodyState::Buffered { buflist } => Ok(buflist),
         }
     }
 
@@ -230,15 +305,15 @@ impl Message {
     }
 
     pub fn is_streaming(&self) -> bool {
-        matches!(self.body, Body::Streaming { .. })
+        matches!(self.body, BodyState::Streaming { .. })
     }
 
     pub fn is_buffered(&self) -> bool {
-        matches!(self.body, Body::Buffered { .. })
+        matches!(self.body, BodyState::Buffered { .. })
     }
 
     /// Set body to buffered mode with given content
-    pub fn set_body(&mut self, mut content: impl Buf) -> Result<(), MalformedMessageError> {
+    pub fn set_body(&mut self, content: impl IntoBody) -> Result<(), MalformedMessageError> {
         if let Some(error) = self.terminal_stage_error() {
             return Err(error);
         }
@@ -253,12 +328,8 @@ impl Message {
             }
         }
 
-        let mut buflist = BufList::new();
-        while content.has_remaining() {
-            buflist.write(content.copy_to_bytes(content.chunk().len()));
-        }
-        self.body = Body::Buffered {
-            buflist: BuflistCursor::new(buflist),
+        self.body = BodyState::Buffered {
+            buflist: BuflistCursor::new(content.into_body()),
         };
         Ok(())
     }
@@ -324,7 +395,7 @@ impl Message {
         assert!(!self.is_dropped(), "cannot unsend a dropped message");
         self.stage = MessageStage::Header;
         // reset cursor
-        if let Body::Buffered { buflist } = &mut self.body {
+        if let BodyState::Buffered { buflist } = &mut self.body {
             buflist.reset();
         }
         self
@@ -516,13 +587,13 @@ impl Message {
                 .await?;
 
             let Some(body_part) = next else { break };
-            let Body::Buffered { buflist } = &mut self.body else {
+            let BodyState::Buffered { buflist } = &mut self.body else {
                 unreachable!("message body mode changed while reading buffered body")
             };
             buflist.write(body_part);
         }
 
-        let Body::Buffered { buflist } = &mut self.body else {
+        let BodyState::Buffered { buflist } = &mut self.body else {
             unreachable!("message body mode changed while reading buffered body")
         };
         Ok(buflist)
@@ -557,10 +628,10 @@ impl Message {
     ) -> Result<&HeaderMap, MessageStreamError> {
         match self.stage {
             MessageStage::Header | MessageStage::Body => match &self.body {
-                Body::Pending | Body::Buffered { .. } => {
+                BodyState::Pending | BodyState::Buffered { .. } => {
                     self.read_buffered_body_from(stream).await?;
                 }
-                Body::Streaming { .. } => {
+                BodyState::Streaming { .. } => {
                     return Err(MessageStreamError::MalformedIncomingMessage);
                 }
             },
@@ -624,8 +695,9 @@ impl Message {
         content: B,
     ) -> impl Future<Output = Result<(), MessageStreamError>> + use<'s, B>
     where
-        B: Buf + Send + 's,
+        B: IntoBody,
     {
+        let content = content.into_body();
         let additional = content.remaining() as u64;
         let action = match self.stage {
             MessageStage::Header | MessageStage::Body => {
@@ -681,8 +753,8 @@ impl Message {
         &mut self,
         stream: &mut WriteStream,
     ) -> Result<(), MessageStreamError> {
-        if matches!(self.body, Body::Pending) {
-            self.body = Body::Buffered {
+        if matches!(self.body, BodyState::Pending) {
+            self.body = BodyState::Buffered {
                 buflist: BuflistCursor::new(BufList::new()),
             };
         }
@@ -857,15 +929,15 @@ fn prepare_message_body_step(
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
     match &message.body {
-        Body::Pending => match goal {
+        BodyState::Pending => match goal {
             MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
-        Body::Streaming { .. } => match goal {
+        BodyState::Streaming { .. } => match goal {
             MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
-        Body::Buffered { .. } => prepare_message_buffered_body_step(message, goal),
+        BodyState::Buffered { .. } => prepare_message_buffered_body_step(message, goal),
     }
 }
 
@@ -874,7 +946,7 @@ fn prepare_message_buffered_body_step(
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
     let data = {
-        let Body::Buffered { buflist } = &mut message.body else {
+        let BodyState::Buffered { buflist } = &mut message.body else {
             unreachable!("message body mode changed while preparing buffered body")
         };
 
@@ -930,4 +1002,93 @@ enum StreamingBodyAction<B> {
     },
     Cancel,
     Failed,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use bytes::{Buf, Bytes, BytesMut};
+
+    use crate::h3x::message::stream::WriteStream;
+
+    use super::{Body, BodyState, IntoBody};
+
+    struct NonSendBody(Rc<Vec<u8>>);
+
+    impl IntoBody for NonSendBody {
+        fn into_body(self) -> Body {
+            self.0.as_slice().into_body()
+        }
+    }
+
+    fn collect_body(mut body: Body) -> Bytes {
+        body.copy_to_bytes(body.remaining())
+    }
+
+    #[test]
+    fn into_body_accepts_common_owned_and_borrowed_types() {
+        assert_eq!(collect_body("hello".into_body()), b"hello"[..]);
+        assert_eq!(
+            collect_body(String::from("owned string").into_body()),
+            b"owned string"[..]
+        );
+        assert_eq!(collect_body(vec![1, 2, 3].into_body()), [1, 2, 3][..]);
+        assert_eq!(
+            collect_body(Bytes::from_static(b"bytes").into_body()),
+            b"bytes"[..]
+        );
+        assert_eq!(
+            collect_body(BytesMut::from(&b"bytes mut"[..]).into_body()),
+            b"bytes mut"[..]
+        );
+
+        let borrowed_bytes: &[u8] = b"borrowed bytes";
+        let borrowed_string = String::from("borrowed string");
+        assert_eq!(
+            collect_body(borrowed_bytes.into_body()),
+            b"borrowed bytes"[..]
+        );
+        assert_eq!(
+            collect_body((&borrowed_string).into_body()),
+            b"borrowed string"[..]
+        );
+    }
+
+    #[test]
+    fn body_alias_is_the_public_payload_body() {
+        let body: Body = Bytes::from_static(b"alias body").into_body();
+        assert_eq!(collect_body(body), b"alias body"[..]);
+    }
+
+    #[test]
+    fn set_body_accepts_non_send_into_body() {
+        let mut message = super::Message::unresolved_request();
+        message
+            .set_body(NonSendBody(Rc::new(b"non send body".to_vec())))
+            .expect("non-Send body should be accepted");
+
+        let BodyState::Buffered { mut buflist } = message.body else {
+            panic!("body should be buffered");
+        };
+        assert_eq!(
+            buflist.copy_to_bytes(buflist.remaining()),
+            b"non send body"[..]
+        );
+    }
+
+    #[allow(dead_code)]
+    fn write_streaming_body_accepts_non_send_into_body(
+        message: &mut super::Message,
+        stream: &mut WriteStream,
+        body: NonSendBody,
+    ) {
+        let _future = message.write_streaming_body_to(stream, body);
+    }
+
+    #[test]
+    fn internal_message_body_state_is_not_public_payload_body() {
+        let state = BodyState::Pending;
+        assert!(matches!(state, BodyState::Pending));
+    }
 }

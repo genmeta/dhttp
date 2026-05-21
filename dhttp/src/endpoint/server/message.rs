@@ -30,7 +30,7 @@ use http::{
     uri::{Authority, PathAndQuery, Scheme},
 };
 use snafu::Report;
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use tracing::Instrument;
 
 use crate::{
@@ -42,7 +42,7 @@ use crate::{
         qpack::field::Protocol,
         stream_id::StreamId,
     },
-    message::{MalformedMessageError, Message, ReadToStringError},
+    message::{Body, IntoBody, MalformedMessageError, Message, ReadToStringError},
 };
 
 pub(crate) async fn read_request_header(
@@ -262,7 +262,7 @@ impl Response {
         self
     }
 
-    pub fn set_body(&mut self, content: impl Buf) -> &mut Self {
+    pub fn set_body(&mut self, content: impl IntoBody) -> &mut Self {
         self.check_message_operation("write_chunked_body", |this| {
             if this.message.is_interim_response() {
                 return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
@@ -273,21 +273,27 @@ impl Response {
         self
     }
 
-    pub async fn write(
+    pub fn write<B>(
         &mut self,
-        content: impl Buf + Send,
-    ) -> Result<&mut Self, MessageStreamError> {
-        self.check_message_operation("write_streaming_body", |this| {
-            if this.message.is_interim_response() {
-                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
-            }
-            this.message.streaming_body()?;
-            Ok(())
-        });
-        self.message
-            .write_streaming_body_to(&mut self.stream, content)
-            .await?;
-        Ok(self)
+        content: B,
+    ) -> impl Future<Output = Result<&mut Self, MessageStreamError>> + use<'_, B>
+    where
+        B: IntoBody,
+    {
+        let content: Body = content.into_body();
+        async move {
+            self.check_message_operation("write_streaming_body", |this| {
+                if this.message.is_interim_response() {
+                    return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+                }
+                this.message.streaming_body()?;
+                Ok(())
+            });
+            self.message
+                .write_streaming_body_to(&mut self.stream, content)
+                .await?;
+            Ok(self)
+        }
     }
 
     pub async fn flush(&mut self) -> Result<&mut Self, MessageStreamError> {
