@@ -5,7 +5,7 @@ use super::{
     Result, code_from_u64, header_pairs, parse_header_name, parse_header_value, parse_headers,
     parse_status,
 };
-use crate::error::DhttpError;
+use crate::{error::DhttpError, http as api_http};
 
 pub struct Request {
     inner: std::sync::Arc<Mutex<Option<dhttp::endpoint::server::Request>>>,
@@ -72,7 +72,7 @@ impl Request {
         })
     }
 
-    pub fn headers(&self) -> Result<Vec<(String, String)>> {
+    pub fn headers(&self) -> Result<api_http::HeaderPairs> {
         self.with_ref("server_request.headers", |request| {
             header_pairs("server_request.headers", request.headers())
         })
@@ -93,7 +93,7 @@ impl Request {
         })
     }
 
-    pub async fn read(&self) -> Result<Option<Vec<u8>>> {
+    pub async fn read(&self) -> Result<Option<api_http::Body>> {
         let mut guard = self.inner.lock().await;
         let request = guard
             .as_mut()
@@ -109,7 +109,7 @@ impl Request {
             .transpose()
     }
 
-    pub async fn read_to_bytes(&self) -> Result<Vec<u8>> {
+    pub async fn read_to_bytes(&self) -> Result<api_http::Body> {
         let mut guard = self.inner.lock().await;
         let request = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("server_request.read_to_bytes", "request is closed")
@@ -132,7 +132,7 @@ impl Request {
             .map_err(|error| DhttpError::from_error("server_request.read_to_string", error))
     }
 
-    pub async fn trailers(&self) -> Result<Vec<(String, String)>> {
+    pub async fn trailers(&self) -> Result<api_http::HeaderPairs> {
         let mut guard = self.inner.lock().await;
         let request = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("server_request.trailers", "request is closed")
@@ -217,13 +217,13 @@ impl Response {
         self.inner.lock().await.take()
     }
 
-    pub fn status(&self) -> Result<Option<u16>> {
+    pub fn status(&self) -> Result<Option<api_http::Status>> {
         self.with_ref("server_response.status", |response| {
             Ok(response.status().map(|status| status.as_u16()))
         })
     }
 
-    pub fn set_status(&self, status: u16) -> Result<()> {
+    pub fn set_status(&self, status: api_http::Status) -> Result<()> {
         let status = parse_status("server_response.set_status", status)?;
         self.with_mut("server_response.set_status", |response| {
             response.set_status(status);
@@ -231,7 +231,7 @@ impl Response {
         })
     }
 
-    pub fn headers(&self) -> Result<Vec<(String, String)>> {
+    pub fn headers(&self) -> Result<api_http::HeaderPairs> {
         self.with_ref("server_response.headers", |response| {
             header_pairs("server_response.headers", response.headers())
         })
@@ -246,14 +246,14 @@ impl Response {
         })
     }
 
-    pub fn set_body(&self, content: Vec<u8>) -> Result<()> {
+    pub fn set_body(&self, content: api_http::Body) -> Result<()> {
         self.with_mut("server_response.set_body", |response| {
             response.set_body(Bytes::from(content));
             Ok(())
         })
     }
 
-    pub async fn write(&self, content: Vec<u8>) -> Result<()> {
+    pub async fn write(&self, content: api_http::Body) -> Result<()> {
         let mut guard = self.inner.lock().await;
         let response = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("server_response.write", "response is closed")
@@ -277,7 +277,7 @@ impl Response {
             .map_err(|error| DhttpError::from_error("server_response.flush", error))
     }
 
-    pub fn trailers(&self) -> Result<Vec<(String, String)>> {
+    pub fn trailers(&self) -> Result<api_http::HeaderPairs> {
         self.with_ref("server_response.trailers", |response| {
             header_pairs("server_response.trailers", response.trailers())
         })
@@ -292,7 +292,7 @@ impl Response {
         })
     }
 
-    pub fn set_trailers(&self, trailers: Vec<(String, String)>) -> Result<()> {
+    pub fn set_trailers(&self, trailers: api_http::HeaderPairs) -> Result<()> {
         let trailers = parse_headers("server_response.set_trailers", trailers)?;
         self.with_mut("server_response.set_trailers", |response| {
             response.set_trailers(trailers);

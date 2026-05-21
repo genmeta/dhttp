@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use futures::TryStreamExt;
 
@@ -23,8 +23,8 @@ impl Home {
         Self(dhttp::home::DhttpHome::new(path.into()))
     }
 
-    pub fn path(&self) -> &Path {
-        self.0.as_path()
+    pub fn path(&self) -> PathBuf {
+        self.0.as_path().to_path_buf()
     }
 
     pub fn identity_home(&self, name: &str) -> Result<IdentityHome> {
@@ -88,8 +88,8 @@ impl IdentityHome {
         self.0.name().to_string()
     }
 
-    pub fn path(&self) -> &Path {
-        self.0.path()
+    pub fn path(&self) -> PathBuf {
+        self.0.path().to_path_buf()
     }
 
     pub async fn identity(&self) -> Result<Identity> {

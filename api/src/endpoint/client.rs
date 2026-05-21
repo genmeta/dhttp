@@ -6,7 +6,7 @@ use super::{
     Result, code_from_u64, header_pairs, parse_header_name, parse_header_value, parse_headers,
     parse_method, parse_uri,
 };
-use crate::error::DhttpError;
+use crate::{error::DhttpError, http as api_http};
 
 pub struct Request {
     inner: dhttp::endpoint::client::Request,
@@ -43,13 +43,13 @@ impl Request {
         Ok(())
     }
 
-    pub fn headers(&self, headers: Vec<(String, String)>) -> Result<()> {
+    pub fn headers(&self, headers: api_http::HeaderPairs) -> Result<()> {
         self.inner
             .set_headers(parse_headers("client_request.headers", headers)?);
         Ok(())
     }
 
-    pub fn body(&self, content: Vec<u8>) {
+    pub fn body(&self, content: api_http::Body) {
         self.inner.set_body(Bytes::from(content));
     }
 
@@ -61,7 +61,7 @@ impl Request {
         Ok(())
     }
 
-    pub fn trailers(&self, trailers: Vec<(String, String)>) -> Result<()> {
+    pub fn trailers(&self, trailers: api_http::HeaderPairs) -> Result<()> {
         self.inner
             .set_trailers(parse_headers("client_request.trailers", trailers)?);
         Ok(())
@@ -79,11 +79,11 @@ impl Request {
         self.header(name, value)
     }
 
-    pub fn set_headers(&self, headers: Vec<(String, String)>) -> Result<()> {
+    pub fn set_headers(&self, headers: api_http::HeaderPairs) -> Result<()> {
         self.headers(headers)
     }
 
-    pub fn set_body(&self, content: Vec<u8>) {
+    pub fn set_body(&self, content: api_http::Body) {
         self.body(content);
     }
 
@@ -91,11 +91,11 @@ impl Request {
         self.trailer(name, value)
     }
 
-    pub fn set_trailers(&self, trailers: Vec<(String, String)>) -> Result<()> {
+    pub fn set_trailers(&self, trailers: api_http::HeaderPairs) -> Result<()> {
         self.trailers(trailers)
     }
 
-    pub async fn write(&self, content: Vec<u8>) -> Result<()> {
+    pub async fn write(&self, content: api_http::Body) -> Result<()> {
         self.inner
             .write(Bytes::from(content))
             .await
@@ -190,7 +190,7 @@ impl Response {
             .map_err(|error| DhttpError::from_error("client_response.next_response", error))
     }
 
-    pub fn status(&self) -> Result<u16> {
+    pub fn status(&self) -> Result<api_http::Status> {
         let guard = self
             .inner
             .try_lock()
@@ -201,7 +201,7 @@ impl Response {
         Ok(response.status().as_u16())
     }
 
-    pub fn headers(&self) -> Result<Vec<(String, String)>> {
+    pub fn headers(&self) -> Result<api_http::HeaderPairs> {
         let mut guard = self
             .inner
             .try_lock()
@@ -232,7 +232,7 @@ impl Response {
             .transpose()
     }
 
-    pub async fn read(&self) -> Result<Option<Vec<u8>>> {
+    pub async fn read(&self) -> Result<Option<api_http::Body>> {
         let mut guard = self.inner.lock().await;
         let response = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("client_response.read", "response is closed")
@@ -248,7 +248,7 @@ impl Response {
             .transpose()
     }
 
-    pub async fn read_to_bytes(&self) -> Result<Vec<u8>> {
+    pub async fn read_to_bytes(&self) -> Result<api_http::Body> {
         let mut guard = self.inner.lock().await;
         let response = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("client_response.read_to_bytes", "response is closed")
@@ -271,7 +271,7 @@ impl Response {
             .map_err(|error| DhttpError::from_error("client_response.read_to_string", error))
     }
 
-    pub async fn trailers(&self) -> Result<Vec<(String, String)>> {
+    pub async fn trailers(&self) -> Result<api_http::HeaderPairs> {
         let mut guard = self.inner.lock().await;
         let response = guard.as_mut().ok_or_else(|| {
             DhttpError::from_message("client_response.trailers", "response is closed")

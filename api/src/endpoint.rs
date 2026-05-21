@@ -20,7 +20,7 @@ use tokio::{
 use tower_service::Service;
 use tracing::Instrument;
 
-use crate::{error::DhttpError, identity::Identity};
+use crate::{error::DhttpError, http as api_http, identity::Identity};
 
 pub mod client;
 pub mod server;
@@ -352,7 +352,10 @@ pub(crate) fn parse_uri(operation: &'static str, uri: &str) -> Result<Uri> {
         .map_err(|error| DhttpError::from_error(operation, error))
 }
 
-pub(crate) fn parse_status(operation: &'static str, status: u16) -> Result<StatusCode> {
+pub(crate) fn parse_status(
+    operation: &'static str,
+    status: api_http::Status,
+) -> Result<StatusCode> {
     StatusCode::from_u16(status).map_err(|error| DhttpError::from_error(operation, error))
 }
 
@@ -367,7 +370,7 @@ pub(crate) fn parse_header_value(operation: &'static str, value: &str) -> Result
 
 pub(crate) fn parse_headers(
     operation: &'static str,
-    headers: Vec<(String, String)>,
+    headers: api_http::HeaderPairs,
 ) -> Result<HeaderMap> {
     let mut map = HeaderMap::new();
     for (name, value) in headers {
@@ -382,7 +385,7 @@ pub(crate) fn parse_headers(
 pub(crate) fn header_pairs(
     operation: &'static str,
     headers: &HeaderMap,
-) -> Result<Vec<(String, String)>> {
+) -> Result<api_http::HeaderPairs> {
     headers
         .iter()
         .map(|(name, value)| {
