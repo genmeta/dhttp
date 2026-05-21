@@ -18,12 +18,6 @@ impl Request {
         }
     }
 
-    pub(crate) fn share(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-
     pub async fn into_core(self) -> Result<dhttp::endpoint::server::Request> {
         let inner = std::sync::Arc::try_unwrap(self.inner).map_err(|_| {
             DhttpError::from_message(
@@ -204,12 +198,6 @@ impl Response {
     pub(crate) fn new(inner: dhttp::endpoint::server::Response) -> Self {
         Self {
             inner: std::sync::Arc::new(Mutex::new(Some(inner))),
-        }
-    }
-
-    pub(crate) fn share(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
         }
     }
 

@@ -66,9 +66,11 @@ async fn endpoint_builds_client_requests_without_network_io() {
 async fn endpoint_serve_returns_abortable_handle() {
     let endpoint = Endpoint::create(None).await.unwrap();
 
-    let handle = endpoint.serve(|_request, response| async move {
-        response.set_status(204)?;
-        Ok::<_, DhttpError>(())
+    let handle = endpoint.serve(|_request, response| {
+        Box::pin(async move {
+            response.set_status(204)?;
+            Ok::<_, DhttpError>(())
+        })
     });
 
     handle.abort();
@@ -86,7 +88,7 @@ fn test_identity() -> Identity {
 #[tokio::test]
 async fn serve_handle_closed_does_not_require_mut_binding() {
     let endpoint = Endpoint::create(None).await.unwrap();
-    let handle = endpoint.serve(|_request, _response| async { Ok::<_, DhttpError>(()) });
+    let handle = endpoint.serve(|_request, _response| Box::pin(async { Ok::<_, DhttpError>(()) }));
 
     handle.abort();
     handle.closed().await.unwrap();

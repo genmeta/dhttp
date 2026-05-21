@@ -362,11 +362,13 @@ impl Response {
             }
             Ok(())
         });
-        async {
+        let result = async {
             self.message.write_all_to(&mut self.stream).await?;
             self.stream.close().await
         }
-        .await
+        .await;
+        self.message.set_dropped();
+        result
     }
 
     pub async fn cancel(&mut self, code: Code) -> Result<(), MessageStreamError> {

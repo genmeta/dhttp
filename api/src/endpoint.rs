@@ -1,4 +1,10 @@
-use std::{future::Future, str::FromStr, sync::Arc};
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use dhttp::{
     ddns::DnsScheme,
@@ -7,7 +13,10 @@ use dhttp::{
 };
 use futures::future::BoxFuture;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::Mutex as AsyncMutex,
+    task::{AbortHandle, JoinHandle},
+};
 use tower_service::Service;
 use tracing::Instrument;
 
@@ -178,10 +187,13 @@ impl Endpoint {
         Ok(request)
     }
 
-    pub fn serve<H, Fut>(&self, handler: H) -> ServeHandle
+    pub fn serve<H>(&self, handler: H) -> ServeHandle
     where
-        H: Fn(server::Request, server::Response) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        H: for<'a> Fn(&'a server::Request, &'a server::Response) -> BoxFuture<'a, Result<()>>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
     {
         let endpoint = self.inner.clone();
         let service = HandlerService { handler };
@@ -218,7 +230,9 @@ impl From<Endpoint> for Arc<dhttp::endpoint::Endpoint> {
 
 pub struct ServeHandle {
     endpoint: Arc<dhttp::endpoint::Endpoint>,
-    task: std::sync::Mutex<Option<JoinHandle<std::result::Result<(), dhttp::dquic::AcceptError>>>>,
+    abort: AbortHandle,
+    aborted: AtomicBool,
+    task: AsyncMutex<Option<JoinHandle<std::result::Result<(), dhttp::dquic::AcceptError>>>>,
 }
 
 impl ServeHandle {
@@ -226,9 +240,12 @@ impl ServeHandle {
         endpoint: Arc<dhttp::endpoint::Endpoint>,
         task: JoinHandle<std::result::Result<(), dhttp::dquic::AcceptError>>,
     ) -> Self {
+        let abort = task.abort_handle();
         Self {
             endpoint,
-            task: std::sync::Mutex::new(Some(task)),
+            abort,
+            aborted: AtomicBool::new(false),
+            task: AsyncMutex::new(Some(task)),
         }
     }
 
@@ -240,36 +257,36 @@ impl ServeHandle {
     }
 
     pub fn abort(&self) {
-        if let Some(task) = self
-            .task
-            .lock()
-            .expect("serve task lock is not poisoned")
-            .take()
-        {
-            task.abort();
-        }
+        self.aborted.store(true, Ordering::SeqCst);
+        self.abort.abort();
     }
 
     pub fn is_finished(&self) -> bool {
         self.task
-            .lock()
-            .expect("serve task lock is not poisoned")
-            .as_ref()
-            .is_none_or(JoinHandle::is_finished)
+            .try_lock()
+            .ok()
+            .is_some_and(|task| task.as_ref().is_none_or(JoinHandle::is_finished))
     }
 
     pub async fn closed(&self) -> Result<()> {
-        let Some(task) = self
-            .task
-            .lock()
-            .expect("serve task lock is not poisoned")
-            .take()
-        else {
+        let mut guard = self.task.lock().await;
+        let Some(task) = guard.as_mut() else {
             return Ok(());
         };
-        let result = task
-            .await
-            .map_err(|error| DhttpError::from_error("serve_handle.closed", error))?;
+        let result = task.await;
+        *guard = None;
+        if self.aborted.load(Ordering::SeqCst) {
+            return match result {
+                Err(error) if !error.is_cancelled() => {
+                    Err(DhttpError::from_error("serve_handle.closed", error))
+                }
+                _ => Ok(()),
+            };
+        }
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => return Err(DhttpError::from_error("serve_handle.closed", error)),
+        };
         result.map_err(|error| DhttpError::from_error("serve_handle.closed", error))
     }
 }
@@ -285,10 +302,13 @@ struct HandlerService<H> {
     handler: H,
 }
 
-impl<H, Fut> Service<dhttp::endpoint::server::UnresolvedRequest> for HandlerService<H>
+impl<H> Service<dhttp::endpoint::server::UnresolvedRequest> for HandlerService<H>
 where
-    H: Fn(server::Request, server::Response) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<()>> + Send + 'static,
+    H: for<'a> Fn(&'a server::Request, &'a server::Response) -> BoxFuture<'a, Result<()>>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     type Response = ();
     type Error = DhttpError;
@@ -306,22 +326,18 @@ where
                 .map_err(|error| DhttpError::from_error("server.read_request_header", error))?;
             let request = server::Request::new(request);
             let response = server::Response::new(response);
-            let request_cleanup = request.share();
-            let response_cleanup = response.share();
 
-            if let Err(error) = handler(request, response).await {
+            if let Err(error) = handler(&request, &response).await {
                 tracing::warn!(error = %error.report(), "dhttp handler failed");
-                if let Err(cancel_error) =
-                    response_cleanup.cancel_code(Code::H3_INTERNAL_ERROR).await
-                {
+                if let Err(cancel_error) = response.cancel_code(Code::H3_INTERNAL_ERROR).await {
                     tracing::warn!(error = %cancel_error.report(), "failed to cancel response after handler failure");
                 }
-            } else if let Err(error) = response_cleanup.finish_if_open().await {
+            } else if let Err(error) = response.finish_if_open().await {
                 tracing::warn!(error = %error.report(), "failed to finish response after handler completion");
             }
 
-            request_cleanup.take().await;
-            response_cleanup.take().await;
+            request.take().await;
+            response.take().await;
             Ok(())
         })
     }
@@ -382,4 +398,42 @@ pub(crate) fn code_from_u64(operation: &'static str, code: u64) -> Result<Code> 
     VarInt::from_u64(code)
         .map(Code::from)
         .map_err(|error| DhttpError::from_error(operation, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn serve_handle_closed_clears_failed_join_handle() {
+        async fn panic_task() -> std::result::Result<(), dhttp::dquic::AcceptError> {
+            panic!("serve task failed");
+        }
+
+        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await);
+        let handle = ServeHandle::new(endpoint, tokio::spawn(panic_task()));
+
+        assert!(handle.closed().await.is_err());
+        handle.closed().await.unwrap();
+        assert!(handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn serve_handle_abort_suppresses_completed_accept_error() {
+        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await);
+        let (send_complete, recv_complete) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            recv_complete.await.expect("test completion signal");
+            Err(dhttp::dquic::AcceptError::ServerUnavailable)
+        });
+        let handle = ServeHandle::new(endpoint, task);
+
+        send_complete.send(()).expect("test task should be waiting");
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        handle.abort();
+
+        handle.closed().await.unwrap();
+    }
 }
