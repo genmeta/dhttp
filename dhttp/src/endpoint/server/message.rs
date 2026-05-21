@@ -29,7 +29,7 @@ use http::{
     header::{AsHeaderName, IntoHeaderName},
     uri::{Authority, PathAndQuery, Scheme},
 };
-use snafu::Report;
+use snafu::{OptionExt, Report, ResultExt, Snafu};
 use std::{future::Future, sync::Arc};
 use tracing::Instrument;
 
@@ -45,9 +45,26 @@ use crate::{
     message::{Body, IntoBody, MalformedMessageError, Message, ReadToStringError},
 };
 
-pub(crate) async fn read_request_header(
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ReadRequestHeaderError {
+    #[snafu(display("failed to read server local agent"))]
+    LocalAgent {
+        source: crate::h3x::quic::ConnectionError,
+    },
+    #[snafu(display("server request is missing local agent"))]
+    MissingLocalAgent,
+    #[snafu(display("failed to read server remote agent"))]
+    RemoteAgent {
+        source: crate::h3x::quic::ConnectionError,
+    },
+    #[snafu(display("failed to read request header"))]
+    ReadHeader { source: MessageStreamError },
+}
+
+pub async fn read_request_header(
     request: UnresolvedRequest,
-) -> Result<(Request, Response), MessageStreamError> {
+) -> Result<(Request, Response), ReadRequestHeaderError> {
     let UnresolvedRequest {
         stream_id,
         read_stream,
@@ -58,9 +75,13 @@ pub(crate) async fn read_request_header(
     // is effectively a clone once the handshake has completed.
     let local_agent = connection
         .local_agent()
-        .await?
-        .expect("server connection must have a local agent (SNI)");
-    let remote_agent = connection.remote_agent().await?;
+        .await
+        .context(read_request_header_error::LocalAgentSnafu)?
+        .context(read_request_header_error::MissingLocalAgentSnafu)?;
+    let remote_agent = connection
+        .remote_agent()
+        .await
+        .context(read_request_header_error::RemoteAgentSnafu)?;
     let protocols = connection.protocols().clone();
 
     let mut request = Request {
@@ -73,7 +94,8 @@ pub(crate) async fn read_request_header(
     request
         .message
         .read_header_from(&mut request.stream)
-        .await?;
+        .await
+        .context(read_request_header_error::ReadHeaderSnafu)?;
     let response = Response {
         message: Message::unresolved_response(),
         stream: write_stream,
@@ -348,6 +370,7 @@ impl Response {
     }
 
     pub async fn cancel(&mut self, code: Code) -> Result<(), MessageStreamError> {
+        self.message.set_dropped();
         self.stream.cancel(code).await
     }
 
@@ -376,8 +399,15 @@ impl Response {
         &self.protocols
     }
 
-    /// Async drop the response properly
-    pub(crate) fn drop(&mut self) -> Option<impl Future<Output = ()> + Send + use<>> {
+    /// Returns a future that completes response finalization, if the response is unfinished.
+    ///
+    /// Awaiting the returned future writes any buffered response data and closes the response
+    /// stream. If this method returns `None`, the response has already been completed or
+    /// finalized. Dropping an unfinished response still performs the same finalization in a
+    /// best-effort background task.
+    pub fn finish(
+        &mut self,
+    ) -> Option<impl Future<Output = Result<(), MessageStreamError>> + Send + use<>> {
         if self.message.is_complete() || self.message.is_dropped() {
             return None;
         }
@@ -404,20 +434,35 @@ impl Response {
         }
 
         Some(async move {
-            _ = async {
+            async {
                 message.write_all_to(&mut stream).await?;
                 stream.close().await
             }
-            .await;
+            .await
         })
+    }
+
+    /// Async drop the response properly.
+    pub(crate) fn drop(
+        &mut self,
+    ) -> Option<impl Future<Output = Result<(), MessageStreamError>> + Send + use<>> {
+        self.finish()
     }
 }
 
 impl Drop for Response {
     fn drop(&mut self) {
-        if let Some(future) = self.drop() {
+        if let Some(future) = self.finish() {
             // Best-effort: send the end-of-stream marker before the response is dropped.
-            tokio::spawn(future.in_current_span());
+            tokio::spawn(
+                async move {
+                    if let Err(error) = future.await {
+                        let report = Report::from_error(&error);
+                        tracing::debug!(error = %report, "failed to finish response on drop");
+                    }
+                }
+                .in_current_span(),
+            );
         }
     }
 }

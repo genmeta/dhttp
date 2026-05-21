@@ -6,9 +6,10 @@ use std::{
 
 use futures::future::BoxFuture;
 use http::{Method, StatusCode};
+use snafu::{Report, ResultExt, Snafu};
 
 use crate::endpoint::server::{
-    BoxService, BoxServiceFuture, IntoBoxService, MessageStreamError, Request, Response, Serve,
+    BoxService, BoxServiceFuture, IntoBoxService, ReadRequestHeaderError, Request, Response, Serve,
     UnresolvedRequest, box_service,
 };
 
@@ -183,8 +184,10 @@ impl Service {
     }
 
     #[tracing::instrument(skip(self, req), fields(method = tracing::field::Empty, uri = tracing::field::Empty))]
-    pub async fn handle(&self, req: UnresolvedRequest) -> Result<(), MessageStreamError> {
-        let (mut request, mut response) = crate::endpoint::server::read_request_header(req).await?;
+    pub async fn handle(&self, req: UnresolvedRequest) -> Result<(), HandleError> {
+        let (mut request, mut response) = crate::endpoint::server::read_request_header(req)
+            .await
+            .context(handle_error::ReadRequestHeaderSnafu)?;
 
         tracing::Span::current()
             .record("method", request.method().as_str())
@@ -194,8 +197,11 @@ impl Service {
 
         // Drop response in place to avoid spawning another tokio task
         // FIXME: remove this when async drop is stabilized (https://github.com/rust-lang/rust/issues/126482)
-        if let Some(drop_future) = response.drop() {
-            drop_future.await;
+        if let Some(drop_future) = response.drop()
+            && let Err(error) = drop_future.await
+        {
+            let report = Report::from_error(&error);
+            tracing::debug!(error = %report, "failed to finish response after service handler");
         }
 
         Ok(())
@@ -213,9 +219,9 @@ impl Serve for Service {
 impl tower_service::Service<UnresolvedRequest> for Service {
     type Response = ();
 
-    type Error = MessageStreamError;
+    type Error = HandleError;
 
-    type Future = BoxFuture<'static, Result<(), MessageStreamError>>;
+    type Future = BoxFuture<'static, Result<(), HandleError>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         _ = cx;
@@ -226,6 +232,13 @@ impl tower_service::Service<UnresolvedRequest> for Service {
         let service = self.clone();
         Box::pin(async move { service.handle(req).await })
     }
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum HandleError {
+    #[snafu(display("failed to read request header"))]
+    ReadRequestHeader { source: ReadRequestHeaderError },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
