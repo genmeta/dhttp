@@ -1,13 +1,12 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex},
     task::{Context, Poll},
 };
 
 use ::pyo3::{exceptions::PyRuntimeError, prelude::*};
 use futures::{FutureExt, future::BoxFuture};
-use tokio::sync::Mutex;
 
 fn py_error(error: crate::error::DhttpError) -> PyErr {
     PyRuntimeError::new_err(error.report().to_owned())
@@ -15,6 +14,19 @@ fn py_error(error: crate::error::DhttpError) -> PyErr {
 
 fn dhttp_py_error(operation: &'static str, error: PyErr) -> crate::error::DhttpError {
     crate::error::DhttpError::from_error(operation, error)
+}
+
+static DROP_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("failed to create dhttp pyo3 drop runtime")
+});
+
+fn drop_with_pyo3_runtime<T>(value: T) {
+    let _guard = DROP_RUNTIME.enter();
+    drop(value);
 }
 
 async fn wait_python_result(
@@ -239,6 +251,18 @@ pub struct ClientRequest {
     inner: Arc<Mutex<Option<crate::endpoint::client::Request>>>,
 }
 
+impl Drop for ClientRequest {
+    fn drop(&mut self) {
+        let request = match self.inner.lock() {
+            Ok(mut request) => request.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(request) = request {
+            drop_with_pyo3_runtime(request);
+        }
+    }
+}
+
 impl From<crate::endpoint::client::Request> for ClientRequest {
     fn from(inner: crate::endpoint::client::Request) -> Self {
         Self {
@@ -320,7 +344,7 @@ impl ClientRequest {
 
     pub async fn write(&self, content: Vec<u8>) -> PyResult<()> {
         with_tokio(async {
-            let request = self.shared_request("client_request.write").await?;
+            let request = self.shared_request("client_request.write")?;
             request.write(content).await
         })
         .await
@@ -329,7 +353,7 @@ impl ClientRequest {
 
     pub async fn flush(&self) -> PyResult<()> {
         with_tokio(async {
-            let request = self.shared_request("client_request.flush").await?;
+            let request = self.shared_request("client_request.flush")?;
             request.flush().await
         })
         .await
@@ -338,7 +362,7 @@ impl ClientRequest {
 
     pub async fn close(&self) -> PyResult<()> {
         with_tokio(async {
-            let request = self.shared_request("client_request.close").await?;
+            let request = self.shared_request("client_request.close")?;
             request.close().await
         })
         .await
@@ -347,7 +371,7 @@ impl ClientRequest {
 
     pub async fn cancel(&self, code: u64) -> PyResult<()> {
         with_tokio(async {
-            let request = self.shared_request("client_request.cancel").await?;
+            let request = self.shared_request("client_request.cancel")?;
             request.cancel(code).await
         })
         .await
@@ -356,7 +380,7 @@ impl ClientRequest {
 
     pub async fn response(&self) -> PyResult<ClientResponse> {
         with_tokio(async {
-            let request = self.shared_request("client_request.response").await?;
+            let request = self.shared_request("client_request.response")?;
             request.response().await.map(ClientResponse::from)
         })
         .await
@@ -365,12 +389,22 @@ impl ClientRequest {
 
     pub async fn into_response(&self) -> PyResult<ClientResponse> {
         with_tokio(async {
-            let request = self.inner.lock().await.take().ok_or_else(|| {
-                crate::error::DhttpError::from_message(
-                    "client_request.into_response",
-                    "request is closed",
-                )
-            })?;
+            let request = self
+                .inner
+                .lock()
+                .map_err(|_| {
+                    crate::error::DhttpError::from_message(
+                        "client_request.into_response",
+                        "request mutex is poisoned",
+                    )
+                })?
+                .take()
+                .ok_or_else(|| {
+                    crate::error::DhttpError::from_message(
+                        "client_request.into_response",
+                        "request is closed",
+                    )
+                })?;
             request.into_response().await.map(ClientResponse::from)
         })
         .await
@@ -379,11 +413,13 @@ impl ClientRequest {
 }
 
 impl ClientRequest {
-    async fn shared_request(
+    fn shared_request(
         &self,
         operation: &'static str,
     ) -> crate::endpoint::Result<crate::endpoint::client::Request> {
-        let guard = self.inner.lock().await;
+        let guard = self.inner.lock().map_err(|_| {
+            crate::error::DhttpError::from_message(operation, "request mutex is poisoned")
+        })?;
         let request = guard.as_ref().ok_or_else(|| {
             crate::error::DhttpError::from_message(operation, "request is closed")
         })?;
@@ -395,10 +431,10 @@ impl ClientRequest {
         operation: &'static str,
         f: impl FnOnce(&crate::endpoint::client::Request) -> crate::endpoint::Result<T>,
     ) -> PyResult<T> {
-        let guard = self.inner.try_lock().map_err(|_| {
+        let guard = self.inner.lock().map_err(|_| {
             py_error(crate::error::DhttpError::from_message(
                 operation,
-                "request is busy",
+                "request mutex is poisoned",
             ))
         })?;
         let request = guard.as_ref().ok_or_else(|| {
@@ -639,8 +675,7 @@ impl Drop for ServeHandle {
         let Some(inner) = self.inner.take() else {
             return;
         };
-        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-        drop(inner);
+        drop_with_pyo3_runtime(inner);
     }
 }
 
@@ -679,8 +714,7 @@ impl Drop for Endpoint {
         let Some(inner) = self.inner.take() else {
             return;
         };
-        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-        drop(inner);
+        drop_with_pyo3_runtime(inner);
     }
 }
 
@@ -812,7 +846,7 @@ impl Endpoint {
 }
 
 #[pymodule]
-pub fn dhttp_api(module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn dhttp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
     module.add_class::<Home>()?;
     module.add_class::<IdentityHome>()?;

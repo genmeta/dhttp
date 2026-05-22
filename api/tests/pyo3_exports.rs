@@ -63,14 +63,14 @@ async fn pyo3_minimal_endpoint_api_is_constructible() {
 fn pyo3_async_home_methods_work_from_python_asyncio_without_external_tokio_runtime() {
     Python::initialize();
     Python::attach(|py| {
-        let module = PyModule::new(py, "dhttp_api").unwrap();
-        dhttp_api::pyo3::dhttp_api(&module).unwrap();
+        let module = PyModule::new(py, "dhttp").unwrap();
+        dhttp_api::pyo3::dhttp(&module).unwrap();
         let path = std::env::temp_dir()
             .join(format!("dhttp-api-pyo3-asyncio-{}", std::process::id()))
             .display()
             .to_string();
         let locals = PyDict::new(py);
-        locals.set_item("dhttp_api", module.as_any()).unwrap();
+        locals.set_item("dhttp", module.as_any()).unwrap();
         locals.set_item("path", path).unwrap();
 
         py.run(
@@ -78,9 +78,9 @@ fn pyo3_async_home_methods_work_from_python_asyncio_without_external_tokio_runti
 import asyncio
 
 async def main():
-    home = dhttp_api.Home(path)
+    home = dhttp.Home(path)
     assert await home.identity_exists('missing.pilot') is False
-    endpoint = await dhttp_api.Endpoint.create(None)
+    endpoint = await dhttp.Endpoint.create(None)
 
     async def handler(_request, response):
         response.set_status(204)

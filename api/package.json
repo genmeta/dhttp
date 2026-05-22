@@ -1,5 +1,5 @@
 {
-  "name": "@genmeta/dhttp-api",
+  "name": "dhttp",
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
@@ -19,7 +19,7 @@
     "@napi-rs/cli": "^3.3.5"
   },
   "napi": {
-    "binaryName": "dhttp_api",
+    "binaryName": "dhttp",
     "targets": [
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu",

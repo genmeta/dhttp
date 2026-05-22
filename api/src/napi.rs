@@ -222,11 +222,10 @@ pub struct ClientRequest {
 
 impl Drop for ClientRequest {
     fn drop(&mut self) {
-        let request = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut request| request.take());
+        let request = match self.inner.lock() {
+            Ok(mut request) => request.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
         if let Some(request) = request {
             drop_with_napi_runtime(request);
         }
