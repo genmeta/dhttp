@@ -25,9 +25,6 @@ pub const KEY_FILE_NAME: &str = "privkey.pem";
 pub enum LoadIdentityError {
     #[snafu(display("identity not found in directory {}", io.display()))]
     NotFound { io: PathBuf, source: io::Error },
-
-    #[snafu(display("provided name is not a valid DNS name"))]
-    InvalidDnsName,
 }
 
 #[derive(Snafu, Debug)]
@@ -200,18 +197,6 @@ impl IdentityHome {
     }
 }
 
-fn to_wildcard_dhttp(name: &DhttpName<'_>) -> io::Result<DhttpName<'static>> {
-    let full = name.as_full();
-    if full.starts_with('*') {
-        return Ok(name.to_owned());
-    }
-    let (.., tail) = full
-        .split_once('.')
-        .ok_or(io::Error::from(io::ErrorKind::InvalidInput))?;
-    let wild = format!("*.{tail}");
-    DhttpName::parse(&wild).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
-}
-
 impl DhttpHome {
     pub async fn locate_identity_exactly(&self, name: DhttpName<'_>) -> io::Result<PathBuf> {
         let identity_io = self.join_identity_name(name);
@@ -221,7 +206,7 @@ impl DhttpHome {
     }
 
     pub async fn locate_identity_wildcard(&self, name: DhttpName<'_>) -> io::Result<PathBuf> {
-        let wildcard_name = to_wildcard_dhttp(&name)?;
+        let wildcard_name = name.to_wildcard();
 
         let identity_io = self.join_identity_name(wildcard_name.clone());
         fs::metadata(identity_io.as_path())
@@ -236,7 +221,7 @@ impl DhttpHome {
         match self.locate_identity_exactly(name.clone()).await {
             Ok(location) => Ok((location, name)),
             Err(error) => {
-                let wildcard_name = to_wildcard_dhttp(&name)?;
+                let wildcard_name = name.to_wildcard();
                 match self.locate_identity_wildcard(wildcard_name.clone()).await {
                     Ok(location) => Ok((location, wildcard_name)),
                     Err(_) => Err(error),
@@ -264,7 +249,7 @@ impl DhttpHome {
                             path: entry_path.clone(),
                         })?
                         .is_dir()
-                    && let Ok(name) = DhttpName::parse(name.to_string_lossy().as_ref())
+                    && let Ok(name) = name.to_string_lossy().as_ref().parse::<DhttpName>()
                     && fs::metadata(entry_path.join(SSL_DIR_NAME)).await.is_ok()
                 {
                     return Ok(Some(name));
@@ -318,8 +303,7 @@ impl DhttpHome {
         &self,
         name: DhttpName<'_>,
     ) -> Result<IdentityHome, LoadIdentityError> {
-        let wildcard_name = to_wildcard_dhttp(&name)
-            .map_err(|_| load_identity_error::InvalidDnsNameSnafu.build())?;
+        let wildcard_name = name.to_wildcard();
         let identity_io = self
             .locate_identity_wildcard(wildcard_name.clone())
             .await

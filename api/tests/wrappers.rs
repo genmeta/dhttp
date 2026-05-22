@@ -50,10 +50,10 @@ fn home_identity_home_expands_partial_name_under_home_path() {
 #[test]
 fn invalid_name_returns_dhttp_error_operation() {
     let home = Home::from_path("/tmp/dhttp-home");
-    let error = home.identity_home("singlelabel").unwrap_err();
+    let error = home.identity_home("!!!").unwrap_err();
 
     assert_eq!(error.operation(), "home.identity_home");
-    assert!(error.message().contains("missing required suffix"));
+    assert!(error.message().contains("invalid characters"));
     assert!(!error.report().is_empty());
     assert!(!error.causes().is_empty());
 }
@@ -61,7 +61,7 @@ fn invalid_name_returns_dhttp_error_operation() {
 #[tokio::test]
 async fn identity_exists_reports_invalid_name_operation() {
     let home = Home::from_path("/tmp/dhttp-home");
-    let error = home.identity_exists("singlelabel").await.unwrap_err();
+    let error = home.identity_exists("!!!").await.unwrap_err();
 
     assert_eq!(error.operation(), "home.identity_exists");
 }
@@ -82,7 +82,7 @@ fn identity_der_getters_are_available() {
 
 #[test]
 fn identity_preserves_core_conversions_and_access() {
-    let name = DhttpName::parse("reimu.pilot").unwrap();
+    let name = "reimu.pilot".parse::<DhttpName>().unwrap();
     let core = dhttp::identity::Identity::new(
         name.into_name(),
         vec![CertificateDer::from(vec![7, 8, 9])],

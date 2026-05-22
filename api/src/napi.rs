@@ -731,7 +731,7 @@ impl Endpoint {
 
     #[napi]
     pub async fn load(name: String) -> NapiResult<Endpoint> {
-        crate::endpoint::Endpoint::load(&name)
+        crate::endpoint::Endpoint::load(name)
             .await
             .map(|inner| Self { inner: Some(inner) })
             .map_err(napi_error)

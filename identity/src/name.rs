@@ -22,6 +22,7 @@ struct BytesStr(Bytes);
 impl Deref for BytesStr {
     type Target = str;
 
+    #[inline]
     fn deref(&self) -> &str {
         // SAFETY: constructed only from valid UTF-8 (validated ASCII lowercase)
         unsafe { std::str::from_utf8_unchecked(&self.0) }
@@ -29,6 +30,7 @@ impl Deref for BytesStr {
 }
 
 impl PartialEq for BytesStr {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.deref() == other.deref()
     }
@@ -37,143 +39,110 @@ impl PartialEq for BytesStr {
 impl Eq for BytesStr {}
 
 impl Hash for BytesStr {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         <str as Hash>::hash(Borrow::<str>::borrow(self), state)
     }
 }
 
 impl Borrow<str> for BytesStr {
+    #[inline]
     fn borrow(&self) -> &str {
         self.deref()
     }
 }
 
-// ============================================================================
-// Validation helpers
-// ============================================================================
-
-/// Whether every byte is a non-uppercase ASCII character.
-fn is_ascii_lowercase(bytes: &[u8]) -> bool {
-    bytes.iter().all(|b| !b.is_ascii_uppercase())
-}
-
-/// Owned-path constructor: validate, then lowercase in-place if needed.
-fn from_bytes(bytes: Bytes) -> Result<Name<'static>, InvalidName> {
-    Name::validate(&bytes)?;
-    if is_ascii_lowercase(&bytes) {
-        Ok(Name(Repr::Owned(BytesStr(bytes))))
-    } else {
-        let mut bm = BytesMut::from(bytes);
-        bm.make_ascii_lowercase();
-        Ok(Name(Repr::Owned(BytesStr(bm.freeze()))))
+impl AsRef<str> for BytesStr {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.deref()
     }
 }
 
-// ============================================================================
-// InvalidName — DNS name validation errors
-// ============================================================================
-
-#[derive(Debug, Snafu)]
-pub enum InvalidName {
-    #[snafu(display("name too long (max {} characters)", Name::MAX_LENGTH))]
-    TooLong {},
-    #[snafu(display("label too long (max {} characters)", Name::MAX_LABEL_LENGTH))]
-    LabelTooLong {},
-    #[snafu(display("name contains empty or numeric / hyphen only label"))]
-    EmptyLabel {},
-    #[snafu(display("name contains invalid characters"))]
-    InvalidCharacter {},
-    #[snafu(display("name is missing required suffix {suffix}"))]
-    MissingSuffix { suffix: String },
+impl BytesStr {
+    #[inline]
+    fn modify(&mut self, modify: impl FnOnce(&mut String)) {
+        let mut string = self.as_ref().to_owned();
+        modify(&mut string);
+        self.0 = Bytes::from(string.into_bytes());
+    }
 }
 
-// ============================================================================
-// Name<'a> — DNS name, always lowercase
-// ============================================================================
-
-/// A DNS name stored as either a borrowed `&str` or an owned [`BytesStr`].
-///
-/// All names are normalised to ASCII lowercase. The type implements
-/// [`Borrow<str>`] so that it can be used as a key in `HashMap` / `DashMap`
-/// for O(1) lookups via `&str`.
 #[derive(Clone, Debug)]
-pub struct Name<'a>(Repr<'a>);
+enum CowBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Bytes),
+}
+
+impl AsRef<[u8]> for CowBytes<'_> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
-enum Repr<'a> {
+enum CowBytesStr<'a> {
     Borrowed(&'a str),
     Owned(BytesStr),
 }
 
-impl Name<'_> {
-    pub const MAX_LABEL_LENGTH: usize = 63;
-    pub const MAX_LENGTH: usize = 253;
-
-    /// Return the name as a `&str`.
-    pub fn as_str(&self) -> &str {
-        match &self.0 {
-            Repr::Borrowed(s) => s,
-            Repr::Owned(b) => b.deref(),
+impl CowBytesStr<'_> {
+    #[inline]
+    fn modify(&mut self, modify: impl FnOnce(&mut String)) {
+        match self {
+            Self::Borrowed(value) => {
+                let mut owned = BytesStr(Bytes::from(value.to_owned()));
+                owned.modify(modify);
+                *self = Self::Owned(owned);
+            }
+            Self::Owned(value) => value.modify(modify),
         }
     }
 
-    /// Return the complete DNS name.
-    pub fn as_full(&self) -> &str {
-        self.as_str()
-    }
-
-    /// Clone to an owned [`Name<'static>`].
-    pub fn to_owned(&self) -> Name<'static> {
-        match &self.0 {
-            Repr::Borrowed(s) => Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(s.as_bytes())))),
-            Repr::Owned(b) => Name(Repr::Owned(b.clone())),
+    #[inline]
+    fn into_owned(self) -> CowBytesStr<'static> {
+        match self {
+            Self::Borrowed(value) => CowBytesStr::Owned(BytesStr(Bytes::from(value.to_owned()))),
+            Self::Owned(value) => CowBytesStr::Owned(value),
         }
     }
 
-    /// Consume and return an owned [`Name<'static>`].
-    pub fn into_owned(self) -> Name<'static> {
-        match self.0 {
-            Repr::Borrowed(s) => Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(s.as_bytes())))),
-            Repr::Owned(b) => Name(Repr::Owned(b)),
+    #[inline]
+    fn into_bytes(self) -> Bytes {
+        match self {
+            Self::Borrowed(value) => Bytes::from(value.to_owned()),
+            Self::Owned(value) => value.0,
         }
     }
+}
 
-    /// Replace the first label with `*` to create a wildcard name.
-    ///
-    /// If the name is already a wildcard, returns itself as owned.
-    /// If the name is a single label (no dot), returns itself unchanged.
-    pub fn to_wildcard(self) -> Name<'static> {
-        if self.is_wildcard() {
-            return self.into_owned();
+impl AsRef<str> for CowBytesStr<'_> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value.as_ref(),
         }
-        if let Some((_head, tail)) = self.as_str().split_once('.') {
-            let wild = format!("*.{tail}");
-            return wild.parse().expect("wildcard of valid name must be valid");
-        }
-        // Single label — cannot create wildcard, return as-is.
-        self.into_owned()
     }
+}
 
-    /// Whether the first label is `*`.
-    pub fn is_wildcard(&self) -> bool {
-        self.as_str().starts_with('*')
+#[derive(Clone, Debug)]
+struct DnsName<S>(S);
+
+impl<S: AsRef<str>> AsRef<str> for DnsName<S> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
     }
+}
 
-    /// Exact match or wildcard suffix match.
-    ///
-    /// If `self` is a wildcard name (e.g. `*.example.com`), matches any name
-    /// whose suffix after the first label equals the wildcard's suffix.
-    /// Otherwise, performs exact string comparison.
-    pub fn matches(&self, name: &Name) -> bool {
-        if !self.is_wildcard() {
-            return self == name;
-        }
-
-        let self_tails = &self.as_str()[2..]; // skip `*.`
-        name.as_str()
-            .split_once('.')
-            .is_some_and(|(.., tails)| tails == self_tails)
-    }
+impl<S: AsRef<[u8]>> DnsName<S> {
+    const MAX_LABEL_LENGTH: usize = 63;
+    const MAX_LENGTH: usize = 253;
 
     /// Validate DNS name rules without checking for any suffix.
     ///
@@ -184,7 +153,7 @@ impl Name<'_> {
     ///   starting/ending with hyphen)
     /// - No purely numeric labels
     /// - Only ASCII letters, digits, hyphens, underscores, dots, and leading `*`
-    pub fn validate(input: &[u8]) -> Result<(), InvalidName> {
+    fn validate(input: S) -> Result<S, InvalidName> {
         enum State {
             Start,
             Next,
@@ -196,14 +165,16 @@ impl Name<'_> {
 
         use State::*;
 
-        if input.len() > Self::MAX_LENGTH {
+        let bytes = input.as_ref();
+
+        if bytes.len() > Self::MAX_LENGTH {
             return Err(InvalidName::TooLong {});
         }
 
         let mut state = Start;
         let mut idx = 0;
-        while idx < input.len() {
-            let ch = input[idx];
+        while idx < bytes.len() {
+            let ch = bytes[idx];
             state = match (state, ch) {
                 (Start, b'*') => Wildcard,
                 (Wildcard, b'.') => Next,
@@ -236,15 +207,146 @@ impl Name<'_> {
             return Err(InvalidName::EmptyLabel {});
         }
 
-        Ok(())
+        Ok(input)
+    }
+}
+
+impl<'a> TryFrom<CowBytes<'a>> for DnsName<CowBytesStr<'a>> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(value: CowBytes<'a>) -> Result<Self, Self::Error> {
+        let value = DnsName::<CowBytes>::validate(value)?;
+        Ok(DnsName(match value {
+            CowBytes::Borrowed(bytes) => {
+                // SAFETY: DnsName::validate accepts only ASCII DNS-name bytes,
+                // which are valid UTF-8.
+                CowBytesStr::Borrowed(unsafe { std::str::from_utf8_unchecked(bytes) })
+            }
+            CowBytes::Owned(bytes) => CowBytesStr::Owned(BytesStr(bytes)),
+        }))
+    }
+}
+
+impl<'a> DnsName<CowBytesStr<'a>> {
+    #[inline]
+    fn try_from_static(value: &'static [u8]) -> Result<Self, InvalidName> {
+        DnsName::try_from(CowBytes::Owned(Bytes::from_static(value)))
+    }
+}
+
+// ============================================================================
+// InvalidName — DNS name validation errors
+// ============================================================================
+
+#[derive(Debug, Snafu)]
+pub enum InvalidName {
+    #[snafu(display("name too long (max {} characters)", Name::MAX_LENGTH))]
+    TooLong {},
+    #[snafu(display("label too long (max {} characters)", Name::MAX_LABEL_LENGTH))]
+    LabelTooLong {},
+    #[snafu(display("name contains empty or numeric / hyphen only label"))]
+    EmptyLabel {},
+    #[snafu(display("name contains invalid characters"))]
+    InvalidCharacter {},
+    #[snafu(display("name is missing required suffix {suffix}"))]
+    MissingSuffix { suffix: String },
+}
+
+// ============================================================================
+// Name<'a> — DNS name, always lowercase
+// ============================================================================
+
+/// A DNS name stored as either a borrowed `&str` or an owned [`BytesStr`].
+///
+/// All names are normalised to ASCII lowercase. The type implements
+/// [`Borrow<str>`] so that it can be used as a key in `HashMap` / `DashMap`
+/// for O(1) lookups via `&str`.
+#[derive(Clone, Debug)]
+pub struct Name<'a>(DnsName<CowBytesStr<'a>>);
+
+impl Name<'_> {
+    pub const MAX_LABEL_LENGTH: usize = DnsName::<CowBytes<'static>>::MAX_LABEL_LENGTH;
+    pub const MAX_LENGTH: usize = DnsName::<CowBytes<'static>>::MAX_LENGTH;
+
+    /// Return the name as a `&str`.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
     }
 
-    /// Create a [`Name<'static>`] from a `&'static str`.
+    /// Return the complete DNS name.
+    #[inline]
+    pub fn as_full(&self) -> &str {
+        self.as_str()
+    }
+
+    /// Clone to an owned [`Name<'static>`].
+    #[inline]
+    pub fn to_owned(&self) -> Name<'static> {
+        Name(DnsName(self.0.0.clone().into_owned()))
+    }
+
+    /// Consume and return an owned [`Name<'static>`].
+    #[inline]
+    pub fn into_owned(self) -> Name<'static> {
+        Name(DnsName(self.0.0.into_owned()))
+    }
+
+    /// Consume and return this name as bytes.
     ///
-    /// The static memory is wrapped in `Bytes` (no copy). If the name contains
-    /// uppercase characters, it is lowercased in-place via `BytesMut`.
-    pub fn from_static(s: &'static str) -> Result<Name<'static>, InvalidName> {
-        from_bytes(Bytes::from_static(s.as_bytes()))
+    /// Owned names reuse the existing [`Bytes`] allocation. Borrowed names are
+    /// copied because the returned bytes must own their storage.
+    #[inline]
+    pub fn into_bytes(self) -> Bytes {
+        self.0.0.into_bytes()
+    }
+
+    /// Replace the first label with `*` to create a wildcard name.
+    ///
+    /// If the name is already a wildcard, returns itself as owned.
+    /// If the name is a single label (no dot), returns itself unchanged.
+    #[inline]
+    pub fn to_wildcard(self) -> Name<'static> {
+        if self.is_wildcard() {
+            return self.into_owned();
+        }
+        if let Some((_head, tail)) = self.as_str().split_once('.') {
+            let wild = format!("*.{tail}");
+            return wild.parse().expect("wildcard of valid name must be valid");
+        }
+        // Single label — cannot create wildcard, return as-is.
+        self.into_owned()
+    }
+
+    /// Whether the first label is `*`.
+    #[inline]
+    pub fn is_wildcard(&self) -> bool {
+        self.as_str().starts_with('*')
+    }
+
+    /// Exact match or wildcard suffix match.
+    ///
+    /// If `self` is a wildcard name (e.g. `*.example.com`), matches any name
+    /// whose suffix after the first label equals the wildcard's suffix.
+    /// Otherwise, performs exact string comparison.
+    #[inline]
+    pub fn matches(&self, name: &Name) -> bool {
+        if !self.is_wildcard() {
+            return self == name;
+        }
+
+        let self_tails = &self.as_str()[2..]; // skip `*.`
+        name.as_str()
+            .split_once('.')
+            .is_some_and(|(.., tails)| tails == self_tails)
+    }
+
+    #[inline]
+    pub fn try_from_static(bytes: &'static [u8]) -> Result<Name<'static>, InvalidName> {
+        Ok(Name::from(
+            DnsName::<CowBytesStr<'static>>::try_from_static(bytes)?,
+        ))
     }
 }
 
@@ -253,24 +355,28 @@ impl Name<'_> {
 impl Deref for Name<'_> {
     type Target = str;
 
+    #[inline]
     fn deref(&self) -> &str {
         self.as_str()
     }
 }
 
 impl Hash for Name<'_> {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         <str as Hash>::hash(Borrow::<str>::borrow(self), state)
     }
 }
 
 impl Borrow<str> for Name<'_> {
+    #[inline]
     fn borrow(&self) -> &str {
         self.as_str()
     }
 }
 
 impl PartialEq for Name<'_> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_str() == other.as_str()
     }
@@ -279,12 +385,14 @@ impl PartialEq for Name<'_> {
 impl Eq for Name<'_> {}
 
 impl Display for Name<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
 impl Serialize for Name<'_> {
+    #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -303,41 +411,44 @@ impl<'de> Deserialize<'de> for Name<'static> {
     }
 }
 
-// --- Borrowed-reference conversions (Ref path) ---
-
-/// `TryFrom<&str>` — zero-copy `Repr::Borrowed` when already lowercase.
-impl<'a> TryFrom<&'a str> for Name<'a> {
-    type Error = InvalidName;
-
-    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        Name::validate(s.as_bytes())?;
-        if is_ascii_lowercase(s.as_bytes()) {
-            Ok(Name(Repr::Borrowed(s)))
-        } else {
-            let lower = s.to_ascii_lowercase();
-            Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(
-                lower.as_bytes(),
-            )))))
+impl<'a> From<DnsName<CowBytesStr<'a>>> for Name<'a> {
+    #[inline]
+    fn from(mut value: DnsName<CowBytesStr<'a>>) -> Self {
+        if value.as_ref().bytes().any(|byte| byte.is_ascii_uppercase()) {
+            value.0.modify(|string| string.make_ascii_lowercase());
         }
+        Name(value)
     }
 }
 
-/// `TryFrom<&[u8]>` — zero-copy `Repr::Borrowed` when already lowercase.
+// --- Borrowed-reference conversions (Ref path) ---
+
+/// `TryFrom<&str>` — zero-copy when the validated name is already lowercase.
+impl<'a> TryFrom<&'a str> for Name<'a> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+        Name::try_from(s.as_bytes())
+    }
+}
+
+/// `TryFrom<&[u8]>` — zero-copy when the validated name is already lowercase.
 impl<'a> TryFrom<&'a [u8]> for Name<'a> {
     type Error = InvalidName;
 
+    #[inline]
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        Name::validate(bytes)?;
-        if is_ascii_lowercase(bytes) {
-            // SAFETY: Name::validate ensures only ASCII subset characters
-            // (letters, digits, hyphens, underscores, dots, leading `*`),
-            // all of which are valid UTF-8.
-            let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-            Ok(Name(Repr::Borrowed(s)))
-        } else {
-            let lower = bytes.to_ascii_lowercase();
-            Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(&lower)))))
-        }
+        DnsName::try_from(CowBytes::Borrowed(bytes)).map(Name::from)
+    }
+}
+
+impl<'a, const N: usize> TryFrom<&'a [u8; N]> for Name<'a> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(bytes: &'a [u8; N]) -> Result<Self, Self::Error> {
+        Name::try_from(&bytes[..])
     }
 }
 
@@ -347,65 +458,61 @@ impl<'a> TryFrom<&'a [u8]> for Name<'a> {
 impl FromStr for Name<'static> {
     type Err = InvalidName;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Name::validate(s.as_bytes())?;
-        if is_ascii_lowercase(s.as_bytes()) {
-            Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(
-                s.as_bytes(),
-            )))))
-        } else {
-            let lower = s.to_ascii_lowercase();
-            Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(
-                lower.as_bytes(),
-            )))))
+        Name::try_from(s).map(Name::into_owned)
+    }
+}
+
+impl TryFrom<String> for Name<'_> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Name::try_from(s.into_bytes())
+    }
+}
+
+impl TryFrom<Vec<u8>> for Name<'_> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
+        Name::try_from(Bytes::from(v))
+    }
+}
+
+impl TryFrom<Bytes> for Name<'_> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(bytes: Bytes) -> Result<Self, Self::Error> {
+        DnsName::try_from(CowBytes::Owned(bytes)).map(Name::from)
+    }
+}
+
+/// `TryFrom<Cow<str>>` — borrows borrowed input when possible and reuses owned
+/// input storage.
+impl<'a> TryFrom<Cow<'a, str>> for Name<'a> {
+    type Error = InvalidName;
+
+    #[inline]
+    fn try_from(cow: Cow<'a, str>) -> Result<Self, Self::Error> {
+        match cow {
+            Cow::Borrowed(s) => Name::try_from(s),
+            Cow::Owned(s) => Name::try_from(s),
         }
     }
 }
 
-impl TryFrom<String> for Name<'static> {
+impl<'a> TryFrom<Cow<'a, [u8]>> for Name<'a> {
     type Error = InvalidName;
 
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        from_bytes(Bytes::from(s.into_bytes()))
-    }
-}
-
-impl TryFrom<Vec<u8>> for Name<'static> {
-    type Error = InvalidName;
-
-    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
-        from_bytes(Bytes::from(v))
-    }
-}
-
-impl TryFrom<Bytes> for Name<'static> {
-    type Error = InvalidName;
-
-    fn try_from(bytes: Bytes) -> Result<Self, Self::Error> {
-        from_bytes(bytes)
-    }
-}
-
-/// `TryFrom<Cow<str>>` — always returns `Name<'static>`.
-impl<'a> TryFrom<Cow<'a, str>> for Name<'static> {
-    type Error = InvalidName;
-
-    fn try_from(cow: Cow<'a, str>) -> Result<Self, Self::Error> {
+    #[inline]
+    fn try_from(cow: Cow<'a, [u8]>) -> Result<Self, Self::Error> {
         match cow {
-            Cow::Borrowed(s) => {
-                Name::validate(s.as_bytes())?;
-                if is_ascii_lowercase(s.as_bytes()) {
-                    Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(
-                        s.as_bytes(),
-                    )))))
-                } else {
-                    let lower = s.to_ascii_lowercase();
-                    Ok(Name(Repr::Owned(BytesStr(Bytes::copy_from_slice(
-                        lower.as_bytes(),
-                    )))))
-                }
-            }
-            Cow::Owned(s) => Name::try_from(s),
+            Cow::Borrowed(bytes) => Name::try_from(bytes),
+            Cow::Owned(bytes) => Name::try_from(bytes),
         }
     }
 }
@@ -422,7 +529,7 @@ pub enum InvalidDhttpName {
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum ExpandUriError {
+pub enum ExpandAuthorityError {
     #[snafu(transparent)]
     InvalidName { source: InvalidDhttpName },
     #[snafu(display("cannot expand bare dhttp shorthand without a base name"))]
@@ -432,6 +539,13 @@ pub enum ExpandUriError {
         authority: String,
         source: http::uri::InvalidUri,
     },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ExpandUriError {
+    #[snafu(display("failed to expand dhttp shorthand in uri authority"))]
+    Authority { source: ExpandAuthorityError },
     #[snafu(display("failed to reconstruct uri with expanded dhttp name"))]
     ReconstructUri { source: http::uri::InvalidUriParts },
 }
@@ -442,8 +556,8 @@ pub enum ExpandUriError {
 
 /// A [`Name`] guaranteed to end with `.genmeta.net`.
 ///
-/// Created via [`DhttpName::parse`], which handles `~` shorthand expansion
-/// and appends the suffix when missing.
+/// Created via [`FromStr`] or [`TryFrom`], which handle `~` shorthand expansion
+/// and append the suffix when missing.
 #[derive(Clone, Debug)]
 pub struct DhttpName<'a>(Name<'a>);
 
@@ -451,99 +565,27 @@ impl DhttpName<'_> {
     pub const SUFFIX: &'static str = ".genmeta.net";
 
     /// Validate DHttp name rules, including the mandatory suffix.
+    #[inline]
     pub fn validate(input: &[u8]) -> Result<(), InvalidDhttpName> {
         if !input.ends_with(Self::SUFFIX.as_bytes()) {
-            return Err(InvalidDhttpName::InvalidName {
-                source: InvalidName::MissingSuffix {
-                    suffix: Self::SUFFIX.to_string(),
-                },
-            });
+            return Err(InvalidName::MissingSuffix {
+                suffix: Self::SUFFIX.to_string(),
+            }
+            .into());
         }
-        match Name::validate(input) {
-            Ok(()) => Ok(()),
-            Err(source) => Err(InvalidDhttpName::InvalidName { source }),
+        match DnsName::<&[u8]>::validate(input) {
+            Ok(_) => Ok(()),
+            Err(source) => Err(source.into()),
         }
     }
 
-    /// Parse and validate a [`DhttpName`].
-    ///
-    /// # Expansion rules
-    ///
-    /// 1. Input already ends with `.genmeta.net` → validate and accept as-is
-    /// 2. Input ends with `~` → strip `~`, append `.genmeta.net`
-    /// 3. Input contains a dot (multi-label partial) → append `.genmeta.net`
-    /// 4. Otherwise → error (single label without suffix or tilde)
-    ///
-    /// After expansion, the resulting name is validated with
-    /// [`Name::validate`].
-    pub fn parse(input: &str) -> Result<DhttpName<'static>, InvalidDhttpName> {
-        let processed = if input.ends_with(Self::SUFFIX) {
-            input.to_owned()
-        } else if let Some(partial) = input.strip_suffix('~') {
-            format!("{partial}{}", Self::SUFFIX)
-        } else if input.contains('.') {
-            format!("{input}{}", Self::SUFFIX)
-        } else {
-            return Err(InvalidDhttpName::InvalidName {
-                source: InvalidName::MissingSuffix {
-                    suffix: Self::SUFFIX.to_string(),
-                },
-            });
-        };
-
-        let name = match Name::try_from(processed) {
-            Ok(name) => name,
-            Err(source) => return Err(InvalidDhttpName::InvalidName { source }),
-        };
-        Ok(DhttpName(name))
-    }
-
-    /// Parse a DHttp name, accepting either a full `.genmeta.net` name or a
-    /// partial multi-label name.
-    pub fn try_from_str<'a>(input: impl Into<Cow<'a, str>>) -> Result<Self, InvalidDhttpName> {
-        Self::parse(input.into().as_ref())
-    }
-
-    /// Parse and validate a full DHttp name.
-    pub fn try_from_str_full<'a>(input: impl Into<Cow<'a, str>>) -> Result<Self, InvalidDhttpName> {
-        let input = input.into();
-        if !input.ends_with(Self::SUFFIX) {
-            return Err(InvalidDhttpName::InvalidName {
-                source: InvalidName::MissingSuffix {
-                    suffix: Self::SUFFIX.to_string(),
-                },
-            });
-        }
-        Self::parse(input.as_ref())
-    }
-
-    /// Parse a partial name by appending the DHttp suffix.
-    pub fn try_from_str_partial<'a>(
-        input: impl Into<Cow<'a, str>>,
-    ) -> Result<Self, InvalidDhttpName> {
-        let input = input.into();
-        Self::parse(&format!("{}{}", input.as_ref(), Self::SUFFIX))
-    }
-
-    /// Expand only explicit DHttp forms.
-    ///
-    /// Returns `Some` for already-full names and `~` shorthand, and `None` for
-    /// ordinary host names that should pass through unchanged.
-    pub fn try_expand_from<'a>(
-        input: impl Into<Cow<'a, str>>,
-    ) -> Result<Option<Self>, InvalidDhttpName> {
-        let input = input.into();
-        if input.ends_with(Self::SUFFIX) {
-            return Self::try_from_str_full(input).map(Some);
-        }
-        if let Some(partial) = input.strip_suffix('~') {
-            return Self::try_from_str_partial(partial).map(Some);
-        }
-
-        Ok(None)
+    #[inline]
+    pub fn try_from_static(input: &'static [u8]) -> Result<DhttpName<'static>, InvalidDhttpName> {
+        DhttpName::try_from(Bytes::from_static(input))
     }
 
     /// Consume and return the inner [`Name`].
+    #[inline]
     pub fn into_name(self) -> Name<'static> {
         self.0.into_owned()
     }
@@ -554,24 +596,34 @@ impl DhttpName<'_> {
     ///
     /// Panics in debug if the name does not end with the suffix (should never
     /// happen — the constructor guarantees it).
+    #[inline]
     pub fn as_partial(&self) -> &str {
         debug_assert!(self.0.as_str().ends_with(Self::SUFFIX));
         &self.0.as_str()[..self.0.as_str().len() - Self::SUFFIX.len()]
     }
 
     /// Return the full name including the `.genmeta.net` suffix.
+    #[inline]
     pub fn as_full(&self) -> &str {
         self.0.as_str()
     }
 
     /// Return a reference to the inner [`Name`].
+    #[inline]
     pub fn as_name(&self) -> &Name<'_> {
         &self.0
     }
 
     /// Return a borrowed DHttp name.
+    #[inline]
     pub fn borrow(&self) -> DhttpName<'_> {
-        DhttpName(Name(Repr::Borrowed(self.0.as_str())))
+        DhttpName(Name(DnsName(CowBytesStr::Borrowed(self.0.as_str()))))
+    }
+
+    /// Replace the first label with `*` to create a wildcard DHttp name.
+    #[inline]
+    pub fn to_wildcard(self) -> DhttpName<'static> {
+        DhttpName(self.0.to_wildcard())
     }
 
     /// Expand DHttp shorthand in the authority of `uri`.
@@ -579,8 +631,66 @@ impl DhttpName<'_> {
     /// The bare host `~` expands to this name. A host ending with `~` expands
     /// to the same host with the DHttp suffix appended. Ordinary host names
     /// pass through unchanged.
+    #[inline]
     pub fn expand_uri(&self, uri: http::Uri) -> Result<http::Uri, ExpandUriError> {
         Self::expand_uri_with_base(Some(self), uri)
+    }
+
+    /// Expand DHttp shorthand in `authority` with an optional base name.
+    ///
+    /// The bare host `~` expands to `base` and fails when `base` is absent. A host
+    /// ending with `~` expands to the same host with the DHttp suffix appended and
+    /// does not require `base`. Ordinary host names pass through unchanged.
+    pub fn expand_authority_with_base(
+        base: Option<&DhttpName<'_>>,
+        authority: http::uri::Authority,
+    ) -> Result<http::uri::Authority, ExpandAuthorityError> {
+        let raw = authority.as_str();
+        let host = authority.host();
+
+        let replacement = if host == "~" {
+            base.context(expand_authority_error::MissingBaseNameSnafu)?
+                .to_owned()
+        } else if let Some(partial) = host.strip_suffix('~') {
+            DhttpName::try_from(partial)?.into_owned()
+        } else if host.len() >= Self::SUFFIX.len()
+            && host[host.len() - Self::SUFFIX.len()..].eq_ignore_ascii_case(Self::SUFFIX)
+        {
+            let name = match Name::try_from(host) {
+                Ok(name) => name,
+                Err(source) => {
+                    return Err(ExpandAuthorityError::InvalidName {
+                        source: InvalidDhttpName::InvalidName { source },
+                    });
+                }
+            };
+            DhttpName::try_from(name)?.into_owned()
+        } else {
+            return Ok(authority);
+        };
+
+        if raw == host {
+            let authority = replacement.as_full().to_owned();
+            return http::uri::Authority::from_maybe_shared(replacement.into_name().into_bytes())
+                .context(expand_authority_error::ParseAuthoritySnafu { authority });
+        }
+
+        let user_info_len = raw
+            .split_once('@')
+            .map(|(user_info, ..)| user_info.len() + 1)
+            .unwrap_or_default();
+        let host_len = host.len();
+        let authority = format!(
+            "{user_info}{host}{port}",
+            user_info = &raw[..user_info_len],
+            host = replacement.as_full(),
+            port = &raw[user_info_len + host_len..],
+        );
+        authority
+            .parse()
+            .context(expand_authority_error::ParseAuthoritySnafu {
+                authority: &authority,
+            })
     }
 
     /// Expand DHttp shorthand in the authority of `uri` with an optional base name.
@@ -594,41 +704,11 @@ impl DhttpName<'_> {
     ) -> Result<http::Uri, ExpandUriError> {
         let mut parts = uri.into_parts();
 
-        let Some(authority) = &parts.authority else {
-            return http::Uri::from_parts(parts).context(expand_uri_error::ReconstructUriSnafu);
-        };
-
-        let host = authority.host();
-        let expanded = if host == "~" {
-            Some(
-                base.context(expand_uri_error::MissingBaseNameSnafu)?
-                    .as_full()
-                    .to_owned(),
-            )
-        } else {
-            DhttpName::try_expand_from(host)?.map(|name| name.as_full().to_owned())
-        };
-
-        if let Some(expanded) = expanded
-            && expanded.as_str() != host
-        {
-            let user_info_len = authority
-                .as_str()
-                .split_once('@')
-                .map(|(user_info, ..)| user_info.len() + 1)
-                .unwrap_or_default();
-            let host_len = host.len();
-            let authority = format!(
-                "{user_info}{host}{port}",
-                user_info = &authority.as_str()[..user_info_len],
-                host = expanded,
-                port = &authority.as_str()[user_info_len + host_len..],
+        if let Some(authority) = parts.authority {
+            parts.authority = Some(
+                Self::expand_authority_with_base(base, authority)
+                    .context(expand_uri_error::AuthoritySnafu)?,
             );
-            parts.authority = Some(authority.parse().context(
-                expand_uri_error::ParseAuthoritySnafu {
-                    authority: &authority,
-                },
-            )?);
         }
 
         http::Uri::from_parts(parts).context(expand_uri_error::ReconstructUriSnafu)
@@ -640,6 +720,7 @@ impl DhttpName<'_> {
 impl<'a> Deref for DhttpName<'a> {
     type Target = Name<'a>;
 
+    #[inline]
     fn deref(&self) -> &Name<'a> {
         &self.0
     }
@@ -648,21 +729,24 @@ impl<'a> Deref for DhttpName<'a> {
 /// Formats the name without the `.genmeta.net` suffix.
 ///
 /// `Display` and [`Serialize`] both output the partial name (e.g. `reimu.pilot`),
-/// while [`Deserialize`] and [`DhttpName::parse`] accept both partial and full forms.
+/// while [`Deserialize`] and [`FromStr`] accept both partial and full forms.
 /// Use [`DhttpName::as_full`] to obtain the complete name including the suffix.
 impl Display for DhttpName<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_partial())
     }
 }
 
 impl From<DhttpName<'static>> for Name<'static> {
+    #[inline]
     fn from(dn: DhttpName<'static>) -> Self {
         dn.0
     }
 }
 
 impl PartialEq for DhttpName<'_> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
@@ -671,12 +755,14 @@ impl PartialEq for DhttpName<'_> {
 impl Eq for DhttpName<'_> {}
 
 impl Hash for DhttpName<'_> {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
     }
 }
 
 impl Serialize for DhttpName<'_> {
+    #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -691,49 +777,154 @@ impl<'de> Deserialize<'de> for DhttpName<'static> {
         D: serde::Deserializer<'de>,
     {
         let s: String = String::deserialize(deserializer)?;
-        DhttpName::parse(&s).map_err(serde::de::Error::custom)
+        DhttpName::try_from(s).map_err(serde::de::Error::custom)
     }
 }
 
-impl FromStr for DhttpName<'_> {
+impl FromStr for DhttpName<'static> {
     type Err = InvalidDhttpName;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        DhttpName::parse(s)
+        DhttpName::try_from(s).map(DhttpName::into_owned)
     }
 }
 
-impl TryFrom<&str> for DhttpName<'static> {
+impl<'a> TryFrom<&'a str> for DhttpName<'a> {
     type Error = InvalidDhttpName;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        DhttpName::parse(value)
+    #[inline]
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        DhttpName::try_from(value.as_bytes())
     }
 }
 
-impl TryFrom<String> for DhttpName<'static> {
+impl<'a> TryFrom<String> for DhttpName<'a> {
     type Error = InvalidDhttpName;
 
+    #[inline]
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        DhttpName::parse(&value)
+        DhttpName::try_from(value.into_bytes())
     }
 }
 
-impl<'a> TryFrom<Cow<'a, str>> for DhttpName<'static> {
+impl<'a> TryFrom<&'a [u8]> for DhttpName<'a> {
     type Error = InvalidDhttpName;
 
+    #[inline]
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        DhttpName::try_from(CowBytes::Borrowed(value))
+    }
+}
+
+impl<'a, const N: usize> TryFrom<&'a [u8; N]> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(value: &'a [u8; N]) -> Result<Self, Self::Error> {
+        DhttpName::try_from(&value[..])
+    }
+}
+
+impl<'a> TryFrom<Bytes> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        DhttpName::try_from(CowBytes::Owned(value))
+    }
+}
+
+impl<'a> TryFrom<Vec<u8>> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        DhttpName::try_from(Bytes::from(value))
+    }
+}
+
+impl<'a> TryFrom<Name<'a>> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(value: Name<'a>) -> Result<Self, Self::Error> {
+        if !value.as_str().ends_with(Self::SUFFIX) {
+            return Err(InvalidName::MissingSuffix {
+                suffix: DhttpName::SUFFIX.to_string(),
+            }
+            .into());
+        }
+        Ok(DhttpName(value))
+    }
+}
+
+impl<'a> TryFrom<CowBytes<'a>> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(input: CowBytes<'a>) -> Result<Self, Self::Error> {
+        if input.as_ref().ends_with(Self::SUFFIX.as_bytes()) {
+            return match input {
+                CowBytes::Borrowed(input) => match Name::try_from(input) {
+                    Ok(name) => Ok(DhttpName(name)),
+                    Err(source) => Err(source.into()),
+                },
+                CowBytes::Owned(input) => match Name::try_from(input) {
+                    Ok(name) => Ok(DhttpName(name)),
+                    Err(source) => Err(source.into()),
+                },
+            };
+        }
+
+        let mut input = match input {
+            CowBytes::Borrowed(input) => BytesMut::from(input),
+            CowBytes::Owned(input) => BytesMut::from(input),
+        };
+        if input.ends_with(b"~") {
+            input.truncate(input.len() - 1);
+        }
+        input.extend_from_slice(Self::SUFFIX.as_bytes());
+        match Name::try_from(input.freeze()) {
+            Ok(name) => Ok(DhttpName(name)),
+            Err(source) => Err(source.into()),
+        }
+    }
+}
+
+impl<'a> TryFrom<Cow<'a, str>> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
     fn try_from(value: Cow<'a, str>) -> Result<Self, Self::Error> {
-        DhttpName::parse(value.as_ref())
+        match value {
+            Cow::Borrowed(value) => DhttpName::try_from(value),
+            Cow::Owned(value) => DhttpName::try_from(value),
+        }
+    }
+}
+
+impl<'a> TryFrom<Cow<'a, [u8]>> for DhttpName<'a> {
+    type Error = InvalidDhttpName;
+
+    #[inline]
+    fn try_from(value: Cow<'a, [u8]>) -> Result<Self, Self::Error> {
+        match value {
+            Cow::Borrowed(value) => DhttpName::try_from(value),
+            Cow::Owned(value) => DhttpName::try_from(value),
+        }
     }
 }
 
 impl DhttpName<'_> {
     /// Clone to an owned [`DhttpName<'static>`].
+    #[inline]
     pub fn to_owned(&self) -> DhttpName<'static> {
         DhttpName(self.0.to_owned())
     }
 
     /// Consume and return an owned [`DhttpName<'static>`].
+    #[inline]
     pub fn into_owned(self) -> DhttpName<'static> {
         DhttpName(self.0.into_owned())
     }
@@ -745,28 +936,35 @@ mod tests {
     use std::borrow::Cow;
 
     #[test]
-    fn name_from_static_lowercase() {
-        let n = Name::from_static("example.com").unwrap();
+    fn name_try_from_static_lowercase() {
+        let n = Name::try_from_static(b"example.com").unwrap();
         assert_eq!(n.as_str(), "example.com");
     }
 
     #[test]
-    fn name_from_static_mixed_case() {
-        let n = Name::from_static("Example.COM").unwrap();
+    fn name_try_from_static_mixed_case() {
+        let n = Name::try_from_static(b"Example.COM").unwrap();
         assert_eq!(n.as_str(), "example.com");
     }
 
     #[test]
-    fn name_from_static_wildcard() {
-        let n = Name::from_static("*.example.com").unwrap();
+    fn name_try_from_static_wildcard() {
+        let n = Name::try_from_static(b"*.example.com").unwrap();
         assert!(n.is_wildcard());
         assert_eq!(n.as_str(), "*.example.com");
     }
 
     #[test]
-    fn name_from_static_invalid() {
-        let err = Name::from_static("!!!").unwrap_err();
+    fn name_try_from_static_invalid() {
+        let err = Name::try_from_static(b"!!!").unwrap_err();
         assert!(matches!(err, InvalidName::InvalidCharacter {}));
+    }
+
+    #[test]
+    fn name_try_from_static_bytes_reuses_static_bytes_path() {
+        let name = Name::try_from_static(b"Example.COM").unwrap();
+
+        assert_eq!(name.as_str(), "example.com");
     }
 
     #[test]
@@ -917,37 +1115,34 @@ mod tests {
         assert_eq!(n.as_str(), "example.com");
     }
 
-    #[test]
-    fn name_try_from_ref_str_with_lifetime() {
-        let owned = String::from("hello.world");
-        let n = Name::try_from(owned.as_str()).unwrap();
-        assert_eq!(n.as_str(), "hello.world");
-    }
-
     // --- TryFrom<&[u8]> tests ---
 
     #[test]
     fn name_try_from_ref_bytes_lowercase() {
-        let n = Name::try_from(b"example.com" as &[u8]).unwrap();
+        let input: &[u8] = b"example.com";
+        let n = Name::try_from(input).unwrap();
         assert_eq!(n.as_str(), "example.com");
     }
 
     #[test]
     fn name_try_from_ref_bytes_mixed_case() {
-        let n = Name::try_from(b"Example.COM" as &[u8]).unwrap();
+        let input: &[u8] = b"Example.COM";
+        let n = Name::try_from(input).unwrap();
         assert_eq!(n.as_str(), "example.com");
     }
 
     #[test]
     fn name_try_from_ref_bytes_wildcard() {
-        let n = Name::try_from(b"*.example.com" as &[u8]).unwrap();
+        let input: &[u8] = b"*.example.com";
+        let n = Name::try_from(input).unwrap();
         assert!(n.is_wildcard());
         assert_eq!(n.as_str(), "*.example.com");
     }
 
     #[test]
     fn name_try_from_ref_bytes_invalid() {
-        let err = Name::try_from(b"!!!" as &[u8]).unwrap_err();
+        let input: &[u8] = b"!!!";
+        let err = Name::try_from(input).unwrap_err();
         assert!(matches!(err, InvalidName::InvalidCharacter {}));
     }
 
@@ -1031,36 +1226,44 @@ mod tests {
         assert!(matches!(err, InvalidName::InvalidCharacter {}));
     }
 
+    #[test]
+    fn name_try_from_cow_bytes_borrowed_and_owned() {
+        let borrowed = Cow::<[u8]>::Borrowed(b"Example.COM");
+        let owned: Cow<'_, [u8]> = Cow::Owned(b"Reimu.Pilot".to_vec());
+
+        let borrowed_name = Name::try_from(borrowed).unwrap();
+        let owned_name = Name::try_from(owned).unwrap();
+
+        assert_eq!(borrowed_name.as_str(), "example.com");
+        assert_eq!(owned_name.as_str(), "reimu.pilot");
+    }
+
     // --- DhttpName tests ---
 
     #[test]
     fn dhttp_name_parse_full() {
-        let dn = DhttpName::parse("hello.genmeta.net").unwrap();
+        let dn = "hello.genmeta.net".parse::<DhttpName>().unwrap();
         assert_eq!(dn.as_full(), "hello.genmeta.net");
         assert_eq!(dn.as_partial(), "hello");
     }
 
     #[test]
     fn dhttp_name_parse_partial_multi_label() {
-        let dn = DhttpName::parse("reimu.pilot").unwrap();
+        let dn = "reimu.pilot".parse::<DhttpName>().unwrap();
         assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
         assert_eq!(dn.as_partial(), "reimu.pilot");
     }
 
     #[test]
     fn dhttp_name_parse_partial_single_label_rejected() {
-        let err = DhttpName::parse("hello").unwrap_err();
-        assert!(matches!(
-            err,
-            InvalidDhttpName::InvalidName {
-                source: InvalidName::MissingSuffix { .. }
-            }
-        ));
+        let name = "hello".parse::<DhttpName>().unwrap();
+
+        assert_eq!(name.as_full(), "hello.genmeta.net");
     }
 
     #[test]
     fn dhttp_name_serialize() {
-        let dn = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
+        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
         let json = serde_json::to_string(&dn).unwrap();
         assert_eq!(json, "\"reimu.pilot\"");
     }
@@ -1086,8 +1289,8 @@ mod tests {
     #[test]
     fn dhttp_name_hash_consistent_with_name() {
         use std::hash::{DefaultHasher, Hasher};
-        let dn = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
-        let n = Name::from_static("reimu.pilot.genmeta.net").unwrap();
+        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let n = Name::try_from_static(b"reimu.pilot.genmeta.net").unwrap();
         let hash_dn = {
             let mut h = DefaultHasher::new();
             dn.hash(&mut h);
@@ -1103,16 +1306,16 @@ mod tests {
 
     #[test]
     fn dhttp_name_eq() {
-        let a = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
-        let b = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
-        let c = DhttpName::parse("other.pilot.genmeta.net").unwrap();
+        let a = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let b = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let c = "other.pilot.genmeta.net".parse::<DhttpName>().unwrap();
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
     fn dhttp_name_to_owned_and_clone() {
-        let dn = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
+        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
         let owned = dn.to_owned();
         assert_eq!(owned.as_full(), "reimu.pilot.genmeta.net");
         let cloned = owned.clone();
@@ -1121,9 +1324,18 @@ mod tests {
 
     #[test]
     fn dhttp_name_into_owned() {
-        let dn = DhttpName::parse("reimu.pilot.genmeta.net").unwrap();
+        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
         let owned = dn.into_owned();
         assert_eq!(owned.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_to_wildcard_replaces_first_label() {
+        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+
+        let wildcard = dn.to_wildcard();
+
+        assert_eq!(wildcard.as_full(), "*.pilot.genmeta.net");
     }
 
     #[test]
@@ -1139,33 +1351,8 @@ mod tests {
     }
 
     #[test]
-    fn dhttp_name_legacy_partial_constructor() {
-        let dn = DhttpName::try_from_str_partial("reimu.pilot").unwrap();
-        assert_eq!(dn.as_partial(), "reimu.pilot");
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
-    }
-
-    #[test]
-    fn dhttp_name_legacy_full_constructor() {
-        let dn = DhttpName::try_from_str_full("reimu.pilot.genmeta.net").unwrap();
-        assert_eq!(dn.as_partial(), "reimu.pilot");
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
-    }
-
-    #[test]
-    fn dhttp_name_legacy_expand_constructor() {
-        let dn = DhttpName::try_expand_from("reimu.pilot~")
-            .unwrap()
-            .expect("tilde shorthand should expand");
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
-
-        let none = DhttpName::try_expand_from("example.com").unwrap();
-        assert!(none.is_none());
-    }
-
-    #[test]
     fn dhttp_name_legacy_borrow_method() {
-        let dn = DhttpName::parse("reimu.pilot").unwrap();
+        let dn = "reimu.pilot".parse::<DhttpName>().unwrap();
         let borrowed = dn.borrow();
         assert_eq!(borrowed.as_full(), dn.as_full());
     }
@@ -1189,8 +1376,48 @@ mod tests {
     }
 
     #[test]
+    fn dhttp_name_try_from_bytes_and_cow_bytes_append_suffix() {
+        let from_bytes = DhttpName::try_from(Bytes::from_static(b"Reimu.Pilot")).unwrap();
+        let from_cow: DhttpName<'_> =
+            DhttpName::try_from(Cow::<[u8]>::Borrowed(b"Device")).unwrap();
+
+        assert_eq!(from_bytes.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(from_cow.as_full(), "device.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_try_from_static_bytes_appends_suffix() {
+        let name = DhttpName::try_from_static(b"Device").unwrap();
+
+        assert_eq!(name.as_full(), "device.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_try_from_name_accepts_full_name_without_reparsing_string() {
+        let name = Name::try_from("reimu.pilot.genmeta.net").unwrap();
+
+        let dhttp_name = DhttpName::try_from(name).unwrap();
+
+        assert_eq!(dhttp_name.as_full(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn dhttp_name_try_from_name_rejects_missing_suffix() {
+        let name = Name::try_from("example.com").unwrap();
+
+        let error = DhttpName::try_from(name).unwrap_err();
+
+        assert!(matches!(
+            error,
+            InvalidDhttpName::InvalidName {
+                source: InvalidName::MissingSuffix { .. }
+            }
+        ));
+    }
+
+    #[test]
     fn expand_uri_replaces_bare_tilde_with_self_name() {
-        let name = DhttpName::parse("reimu.pilot").unwrap();
+        let name = "reimu.pilot".parse::<DhttpName>().unwrap();
         let uri = "https://~/api?q=1".parse().unwrap();
 
         let expanded = name.expand_uri(uri).unwrap();
@@ -1203,7 +1430,7 @@ mod tests {
 
     #[test]
     fn expand_uri_expands_tilde_suffix_and_preserves_userinfo_port() {
-        let name = DhttpName::parse("self.host").unwrap();
+        let name = "self.host".parse::<DhttpName>().unwrap();
         let uri = "https://alice@reimu.pilot~:443/api".parse().unwrap();
 
         let expanded = name.expand_uri(uri).unwrap();
@@ -1215,8 +1442,54 @@ mod tests {
     }
 
     #[test]
+    fn expand_authority_expands_tilde_suffix_and_preserves_userinfo_port() {
+        let name = "self.host".parse::<DhttpName>().unwrap();
+        let authority = "alice@reimu.pilot~:443".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(Some(&name), authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "alice@reimu.pilot.genmeta.net:443");
+    }
+
+    #[test]
+    fn expand_authority_canonicalizes_mixed_case_host_only_dhttp_name() {
+        let authority = "Reimu.Pilot.Genmeta.Net".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn expand_authority_canonicalizes_mixed_case_decorated_dhttp_name() {
+        let authority = "alice@Reimu.Pilot.Genmeta.Net:443".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "alice@reimu.pilot.genmeta.net:443");
+    }
+
+    #[test]
+    fn expand_authority_host_only_partial_uses_canonical_name() {
+        let authority = "Reimu.Pilot~".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "reimu.pilot.genmeta.net");
+    }
+
+    #[test]
+    fn expand_authority_with_base_requires_base_name_for_bare_tilde() {
+        let authority = "~".parse().unwrap();
+
+        let error = DhttpName::expand_authority_with_base(None, authority).unwrap_err();
+
+        assert!(matches!(error, ExpandAuthorityError::MissingBaseName));
+    }
+
+    #[test]
     fn expand_uri_leaves_plain_host_unchanged() {
-        let name = DhttpName::parse("self.host").unwrap();
+        let name = "self.host".parse::<DhttpName>().unwrap();
         let uri: http::Uri = "https://example.com/api".parse().unwrap();
 
         let expanded = name.expand_uri(uri.clone()).unwrap();
@@ -1226,12 +1499,17 @@ mod tests {
 
     #[test]
     fn expand_uri_rejects_invalid_expanded_name() {
-        let name = DhttpName::parse("self.host").unwrap();
+        let name = "self.host".parse::<DhttpName>().unwrap();
         let uri = "https://123~/api".parse().unwrap();
 
         let error = name.expand_uri(uri).unwrap_err();
 
-        assert!(matches!(error, ExpandUriError::InvalidName { .. }));
+        assert!(matches!(
+            error,
+            ExpandUriError::Authority {
+                source: ExpandAuthorityError::InvalidName { .. }
+            }
+        ));
     }
 
     #[test]
@@ -1249,6 +1527,11 @@ mod tests {
 
         let error = DhttpName::expand_uri_with_base(None, uri).unwrap_err();
 
-        assert!(matches!(error, ExpandUriError::MissingBaseName));
+        assert!(matches!(
+            error,
+            ExpandUriError::Authority {
+                source: ExpandAuthorityError::MissingBaseName
+            }
+        ));
     }
 }

@@ -703,7 +703,7 @@ impl Endpoint {
 
     #[staticmethod]
     pub async fn load(name: String) -> PyResult<Self> {
-        with_tokio(crate::endpoint::Endpoint::load(&name))
+        with_tokio(crate::endpoint::Endpoint::load(name))
             .await
             .map(|inner| Self { inner: Some(inner) })
             .map_err(py_error)

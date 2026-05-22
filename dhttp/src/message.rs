@@ -4,6 +4,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use http::{
     HeaderMap, Uri,
     header::{InvalidHeaderName, InvalidHeaderValue},
+    uri::Authority,
 };
 use snafu::{ResultExt, Snafu};
 
@@ -28,55 +29,144 @@ pub trait IntoBody {
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
+pub enum IntoAuthorityError {
+    #[snafu(display("failed to parse authority"))]
+    Parse { source: http::uri::InvalidUri },
+    #[snafu(display("failed to expand dhttp shorthand in authority"))]
+    Expand {
+        source: crate::name::ExpandAuthorityError,
+    },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
 pub enum IntoUriError {
     #[snafu(display("failed to parse uri"))]
     Parse { source: http::uri::InvalidUri },
+    #[snafu(display("failed to normalize uri authority"))]
+    Authority { source: IntoAuthorityError },
+    #[snafu(display("failed to reconstruct uri"))]
+    Reconstruct { source: http::uri::InvalidUriParts },
 }
 
-/// Converts common URI input types into an [`http::Uri`].
+/// Converts common authority input types into a normalized [`http::uri::Authority`].
+pub trait IntoAuthority {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError>;
+}
+
+/// Converts common URI input types into a normalized [`http::Uri`].
 pub trait IntoUri {
-    fn into_uri(self) -> Result<Uri, IntoUriError>;
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError>;
+}
+
+impl IntoAuthority for Authority {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError> {
+        crate::name::DhttpName::expand_authority_with_base(self_name, self)
+            .context(into_authority_error::ExpandSnafu)
+    }
+}
+
+impl IntoAuthority for &Authority {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError> {
+        self.clone().into_authority(self_name)
+    }
+}
+
+impl IntoAuthority for &str {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError> {
+        Authority::try_from(self)
+            .context(into_authority_error::ParseSnafu)?
+            .into_authority(self_name)
+    }
+}
+
+impl IntoAuthority for String {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError> {
+        Authority::try_from(self)
+            .context(into_authority_error::ParseSnafu)?
+            .into_authority(self_name)
+    }
+}
+
+impl IntoAuthority for &String {
+    fn into_authority(
+        self,
+        self_name: Option<&crate::name::DhttpName<'_>>,
+    ) -> Result<Authority, IntoAuthorityError> {
+        self.as_str().into_authority(self_name)
+    }
 }
 
 impl IntoUri for Uri {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Ok(self)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        let mut parts = self.into_parts();
+        if let Some(authority) = parts.authority {
+            parts.authority = Some(
+                authority
+                    .into_authority(self_name)
+                    .context(into_uri_error::AuthoritySnafu)?,
+            );
+        }
+        Uri::from_parts(parts).context(into_uri_error::ReconstructSnafu)
     }
 }
 
 impl IntoUri for &Uri {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Ok(self.clone())
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        self.clone().into_uri(self_name)
     }
 }
 
 impl IntoUri for &str {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self)
+            .context(into_uri_error::ParseSnafu)?
+            .into_uri(self_name)
     }
 }
 
 impl IntoUri for String {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self)
+            .context(into_uri_error::ParseSnafu)?
+            .into_uri(self_name)
     }
 }
 
 impl IntoUri for &String {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        self.as_str().into_uri(self_name)
     }
 }
 
 impl IntoUri for &[u8] {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self)
+            .context(into_uri_error::ParseSnafu)?
+            .into_uri(self_name)
     }
 }
 
 impl IntoUri for Vec<u8> {
-    fn into_uri(self) -> Result<Uri, IntoUriError> {
-        Uri::try_from(self).context(into_uri_error::ParseSnafu)
+    fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
+        Uri::try_from(self)
+            .context(into_uri_error::ParseSnafu)?
+            .into_uri(self_name)
     }
 }
 
@@ -1066,7 +1156,9 @@ mod tests {
 
     use crate::h3x::message::stream::WriteStream;
 
-    use super::{Body, BodyState, IntoBody, IntoUri, IntoUriError};
+    use super::{
+        Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
+    };
 
     struct NonSendBody(Rc<Vec<u8>>);
 
@@ -1150,29 +1242,71 @@ mod tests {
     fn into_uri_accepts_common_owned_and_borrowed_types() {
         let expected: http::Uri = "https://example.com/api".parse().unwrap();
 
-        assert_eq!("https://example.com/api".into_uri().unwrap(), expected);
+        assert_eq!("https://example.com/api".into_uri(None).unwrap(), expected);
         assert_eq!(
-            String::from("https://example.com/api").into_uri().unwrap(),
+            String::from("https://example.com/api")
+                .into_uri(None)
+                .unwrap(),
             expected
         );
         let owned = String::from("https://example.com/api");
-        assert_eq!((&owned).into_uri().unwrap(), expected);
+        assert_eq!((&owned).into_uri(None).unwrap(), expected);
         assert_eq!(
-            b"https://example.com/api".as_slice().into_uri().unwrap(),
+            b"https://example.com/api"
+                .as_slice()
+                .into_uri(None)
+                .unwrap(),
             expected
         );
         assert_eq!(
-            b"https://example.com/api".to_vec().into_uri().unwrap(),
+            b"https://example.com/api".to_vec().into_uri(None).unwrap(),
             expected
         );
-        assert_eq!(expected.clone().into_uri().unwrap(), expected);
-        assert_eq!((&expected).into_uri().unwrap(), expected);
+        assert_eq!(expected.clone().into_uri(None).unwrap(), expected);
+        assert_eq!((&expected).into_uri(None).unwrap(), expected);
     }
 
     #[test]
     fn into_uri_preserves_parse_error_type() {
-        let error = "://not a uri".into_uri().unwrap_err();
+        let error = "://not a uri".into_uri(None).unwrap_err();
 
         assert!(matches!(error, IntoUriError::Parse { .. }));
+    }
+
+    #[test]
+    fn into_authority_expands_dhttp_shorthand_with_base() {
+        let self_name = "self.host".parse::<crate::name::DhttpName>().unwrap();
+
+        let authority = "alice@reimu.pilot~:443"
+            .into_authority(Some(&self_name))
+            .unwrap();
+
+        assert_eq!(authority.as_str(), "alice@reimu.pilot.genmeta.net:443");
+    }
+
+    #[test]
+    fn into_authority_rejects_bare_tilde_without_base() {
+        let error = "~".into_authority(None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            IntoAuthorityError::Expand {
+                source: crate::name::ExpandAuthorityError::MissingBaseName
+            }
+        ));
+    }
+
+    #[test]
+    fn into_uri_normalizes_authority_and_reconstructs_uri() {
+        let self_name = "self.host".parse::<crate::name::DhttpName>().unwrap();
+
+        let uri = "https://alice@reimu.pilot~:443/api?q=1"
+            .into_uri(Some(&self_name))
+            .unwrap();
+
+        assert_eq!(
+            uri.to_string(),
+            "https://alice@reimu.pilot.genmeta.net:443/api?q=1"
+        );
     }
 }

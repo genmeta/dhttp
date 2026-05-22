@@ -72,7 +72,7 @@ impl IdentityHome {
         let file_name = file_name
             .to_str()
             .context(NonUtf8FileNameSnafu { path: &path })?;
-        let name = DhttpName::parse(file_name).context(InvalidNameSnafu)?;
+        let name = file_name.parse::<DhttpName>().context(InvalidNameSnafu)?;
         Ok(Self { path, name })
     }
 }

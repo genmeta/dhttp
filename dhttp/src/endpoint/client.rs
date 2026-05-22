@@ -23,7 +23,6 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use dhttp_identity::identity as agent;
-use dhttp_identity::name::{DhttpName, ExpandUriError, InvalidDhttpName};
 use futures::{Stream, StreamExt, future::BoxFuture};
 use http::{
     HeaderMap, HeaderValue, Method, Uri,
@@ -57,10 +56,6 @@ type RequestInitResult = Result<(), RequestError>;
 pub enum MalformedRequestError {
     #[snafu(display("failed to convert request uri"))]
     Uri { source: IntoUriError },
-    #[snafu(display("failed to expand dhttp shorthand in request uri"))]
-    ExpandUri { source: ExpandUriError },
-    #[snafu(display("endpoint identity is not a dhttp name"))]
-    EndpointName { source: InvalidDhttpName },
     #[snafu(display("request authority is frozen"))]
     AuthorityFrozen { source: AuthorityFrozen },
     #[snafu(display("request message operation `{operation}` failed"))]
@@ -281,30 +276,17 @@ impl RequestState {
         });
     }
 
-    fn local_dhttp_name(&self) -> Result<Option<DhttpName<'static>>, MalformedRequestError> {
-        self.endpoint
-            .quic()
-            .identity()
-            .map(|identity| {
-                DhttpName::try_from_str_full(identity.name().as_str())
-                    .context(malformed_request_error::EndpointNameSnafu)
-            })
-            .transpose()
+    fn local_dhttp_name(&self) -> Option<dhttp_identity::name::DhttpName<'static>> {
+        self.endpoint.quic().identity().map(|identity| {
+            crate::endpoint::Endpoint::name_from_identity(&identity)
+                .expect("BUG: dhttp endpoint identity must be a valid dhttp name")
+        })
     }
 
     fn normalize_request_uri(&self, uri: impl IntoUri) -> Result<Uri, MalformedRequestError> {
-        let uri = uri.into_uri().context(malformed_request_error::UriSnafu)?;
-        let base = if uri
-            .authority()
-            .is_some_and(|authority| authority.host() == "~")
-        {
-            self.local_dhttp_name()?
-        } else {
-            None
-        };
-
-        DhttpName::expand_uri_with_base(base.as_ref(), uri)
-            .context(malformed_request_error::ExpandUriSnafu)
+        let base = self.local_dhttp_name();
+        uri.into_uri(base.as_ref())
+            .context(malformed_request_error::UriSnafu)
     }
 
     async fn ensure_stream_init(&self) -> Result<(), RequestError> {

@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use bon::bon;
 use http::uri::Authority;
+use snafu::ResultExt;
 
 use crate::ddns::DnsScheme;
 use crate::ddns::resolvers::Resolvers;
@@ -12,17 +13,12 @@ use crate::dquic::{
 use crate::h3x::connection::ConnectionBuilder;
 use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
-use crate::message::Message;
+use crate::message::{IntoAuthority, IntoAuthorityError, IntoUri, Message};
 
 use http::Method;
 
 pub mod client;
 pub mod server;
-
-pub use crate::message::{
-    Body, BodyState, IntoBody, IntoUri, IntoUriError, MalformedMessageError, MessageStage,
-    MessageWriteFlow, MessageWriteGoal, ReadToStringError,
-};
 
 use self::client::Request;
 
@@ -39,10 +35,22 @@ pub struct Endpoint {
     inner: Arc<DquicH3Endpoint>,
 }
 
-impl From<Arc<DquicH3Endpoint>> for Endpoint {
-    fn from(inner: Arc<DquicH3Endpoint>) -> Self {
-        Self { inner }
+impl TryFrom<Arc<DquicH3Endpoint>> for Endpoint {
+    type Error = InvalidEndpointIdentityError;
+
+    fn try_from(inner: Arc<DquicH3Endpoint>) -> Result<Self, Self::Error> {
+        Self::validate_identity(inner.quic().identity().as_deref())?;
+        Ok(Self { inner })
     }
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(invalid_endpoint_identity_error))]
+pub enum InvalidEndpointIdentityError {
+    #[snafu(display("endpoint identity is not a dhttp name"))]
+    InvalidName {
+        source: dhttp_identity::name::InvalidDhttpName,
+    },
 }
 
 /// Default STUN server for NAT traversal.
@@ -96,6 +104,9 @@ impl Endpoint {
         resolver: Option<Arc<dyn Resolve + Send + Sync>>,
         #[builder(default)] connection_builder: Arc<ConnectionBuilder<QuicConnection>>,
     ) -> Self {
+        Self::validate_identity(identity.as_deref())
+            .expect("BUG: dhttp endpoint identity must be a valid dhttp name");
+
         let network = network.unwrap_or_else(|| {
             Network::builder()
                 .stun_server(Arc::<str>::from(STUN_SERVER))
@@ -199,7 +210,32 @@ pub enum LoadEndpointFromPathError {
     },
 }
 
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(connect_error))]
+pub enum ConnectError {
+    #[snafu(display("failed to convert connection authority"))]
+    Authority { source: IntoAuthorityError },
+    #[snafu(display("failed to connect endpoint"))]
+    Connect {
+        source: crate::h3x::pool::ConnectError<crate::dquic::ConnectError>,
+    },
+}
+
 impl Endpoint {
+    fn validate_identity(identity: Option<&Identity>) -> Result<(), InvalidEndpointIdentityError> {
+        if let Some(identity) = identity {
+            Self::name_from_identity(identity)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn name_from_identity(
+        identity: &Identity,
+    ) -> Result<dhttp_identity::name::DhttpName<'static>, InvalidEndpointIdentityError> {
+        dhttp_identity::name::DhttpName::try_from(identity.name().clone())
+            .context(invalid_endpoint_identity_error::InvalidNameSnafu)
+    }
+
     fn request(&self) -> Request {
         let msg = Message::unresolved_request();
         let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
@@ -219,6 +255,14 @@ impl Endpoint {
     /// Return the TLS identity used by this endpoint, if any.
     pub fn identity(&self) -> Option<Arc<Identity>> {
         self.inner.quic().identity()
+    }
+
+    /// Return the DHttp name used by this endpoint, if any.
+    pub fn name(&self) -> Option<dhttp_identity::name::DhttpName<'static>> {
+        self.identity().map(|identity| {
+            Self::name_from_identity(&identity)
+                .expect("BUG: dhttp endpoint identity must be a valid dhttp name")
+        })
     }
 
     /// Return the DNS resolver set used by this endpoint.
@@ -259,9 +303,9 @@ impl Endpoint {
     /// `~/.dhttp/<name>/ssl/`, and constructs a QUIC endpoint with
     /// [`DnsScheme::H3`], [`DnsScheme::Mdns`], and [`DnsScheme::System`]
     /// DNS resolution schemes and a default network configuration.
-    pub async fn load<N>(name: N) -> Result<Self, LoadEndpointError<N::Error>>
+    pub async fn load<'a, N>(name: N) -> Result<Self, LoadEndpointError<N::Error>>
     where
-        N: TryInto<dhttp_identity::name::DhttpName<'static>>,
+        N: TryInto<dhttp_identity::name::DhttpName<'a>>,
         N::Error: std::error::Error + Send + Sync + 'static,
     {
         use snafu::ResultExt;
@@ -370,12 +414,19 @@ impl Endpoint {
 
     pub async fn connect(
         &self,
-        authority: Authority,
+        authority: impl IntoAuthority,
     ) -> Result<
         Arc<crate::h3x::connection::Connection<crate::dquic::connection::Connection>>,
-        crate::h3x::pool::ConnectError<crate::dquic::ConnectError>,
+        ConnectError,
     > {
-        self.inner.connect(authority).await
+        let name = self.name();
+        let authority = authority
+            .into_authority(name.as_ref())
+            .context(connect_error::AuthoritySnafu)?;
+        self.inner
+            .connect(authority)
+            .await
+            .context(connect_error::ConnectSnafu)
     }
 
     /// Serve HTTP/3 requests on this endpoint.
@@ -454,8 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_invalid_name() {
-        // Single label without suffix/~/dot should fail at DhttpName::parse
-        match Endpoint::load("invalid_single_label").await {
+        match Endpoint::load("!!!").await {
             Err(LoadEndpointError::InvalidName { .. }) => {}
             Err(error) => panic!("expected invalid name error, got {error:?}"),
             Ok(_) => panic!("expected invalid name error, got endpoint"),
@@ -465,7 +515,7 @@ mod tests {
     #[test]
     fn load_valid_name_parses() {
         // Valid multi-label name should parse (may fail at I/O but not at parse)
-        let dname = crate::name::DhttpName::parse("reimu.pilot");
+        let dname = "reimu.pilot".parse::<crate::name::DhttpName>();
         assert!(dname.is_ok());
     }
 
@@ -521,7 +571,7 @@ mod tests {
         use rustls::pki_types::PrivateKeyDer;
 
         let identity = Identity::new(
-            "publisher.example.com".parse().unwrap(),
+            "publisher.example.com.genmeta.net".parse().unwrap(),
             Vec::new(),
             PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
         );
@@ -538,6 +588,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn endpoint_name_returns_dhttp_identity_name() {
+        use rustls::pki_types::PrivateKeyDer;
+
+        let identity = Identity::new(
+            "client.example.com.genmeta.net".parse().unwrap(),
+            Vec::new(),
+            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
+        );
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .build()
+            .await;
+
+        let name = endpoint.name().expect("named endpoint has a dhttp name");
+
+        assert_eq!(name.as_full(), "client.example.com.genmeta.net");
+    }
+
+    #[tokio::test]
     async fn request_uri_accepts_str_and_returns_bare_tilde_error_on_first_io() {
         let endpoint = Endpoint::builder().build().await;
 
@@ -548,8 +617,14 @@ mod tests {
 
         match error {
             client::RequestError::MalformedRequest { source } => match source.as_ref() {
-                client::MalformedRequestError::ExpandUri {
-                    source: crate::name::ExpandUriError::MissingBaseName,
+                client::MalformedRequestError::Uri {
+                    source:
+                        crate::message::IntoUriError::Authority {
+                            source:
+                                crate::message::IntoAuthorityError::Expand {
+                                    source: crate::name::ExpandAuthorityError::MissingBaseName,
+                                },
+                        },
                 } => {}
                 other => panic!("expected dhttp uri expansion error, got {other:?}"),
             },

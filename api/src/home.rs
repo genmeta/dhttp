@@ -120,5 +120,6 @@ impl From<IdentityHome> for dhttp::home::identity::IdentityHome {
 }
 
 fn parse_name(operation: &'static str, name: &str) -> Result<dhttp::name::DhttpName<'static>> {
-    dhttp::name::DhttpName::parse(name).map_err(|error| DhttpError::from_error(operation, error))
+    name.parse::<dhttp::name::DhttpName>()
+        .map_err(|error| DhttpError::from_error(operation, error))
 }

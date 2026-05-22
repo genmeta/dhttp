@@ -107,8 +107,8 @@ impl Endpoint {
         })
     }
 
-    pub async fn load(name: &str) -> Result<Self> {
-        dhttp::endpoint::Endpoint::load(name)
+    pub async fn load(name: impl Into<String>) -> Result<Self> {
+        dhttp::endpoint::Endpoint::load(name.into())
             .await
             .map(|endpoint| Self {
                 inner: Arc::new(endpoint),
