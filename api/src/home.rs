@@ -7,20 +7,20 @@ use crate::{error::DhttpError, identity::Identity};
 type Result<T> = std::result::Result<T, DhttpError>;
 
 #[derive(Debug, Clone)]
-pub struct Home(dhttp::home::DhttpHome);
+pub struct Home(dhttp::config::DhttpConfig);
 
 #[derive(Debug, Clone)]
-pub struct IdentityHome(dhttp::home::identity::IdentityHome);
+pub struct IdentityHome(dhttp::config::identity::IdentityConfig);
 
 impl Home {
     pub fn load() -> Result<Self> {
-        dhttp::home::DhttpHome::load_from_environment()
+        dhttp::config::DhttpConfig::load_from_environment()
             .map(Self)
             .map_err(|error| DhttpError::from_error("home.load", error))
     }
 
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
-        Self(dhttp::home::DhttpHome::new(path.into()))
+        Self(dhttp::config::DhttpConfig::new(path.into()))
     }
 
     pub fn path(&self) -> PathBuf {
@@ -29,7 +29,7 @@ impl Home {
 
     pub fn identity_home(&self, name: &str) -> Result<IdentityHome> {
         let name = parse_name("home.identity_home", name)?;
-        Ok(IdentityHome(self.0.identity_home(name)))
+        Ok(IdentityHome(self.0.identity_config(name)))
     }
 
     pub async fn load_identity(&self, name: &str) -> Result<IdentityHome> {
@@ -59,19 +59,19 @@ impl Home {
     }
 }
 
-impl AsRef<dhttp::home::DhttpHome> for Home {
-    fn as_ref(&self) -> &dhttp::home::DhttpHome {
+impl AsRef<dhttp::config::DhttpConfig> for Home {
+    fn as_ref(&self) -> &dhttp::config::DhttpConfig {
         &self.0
     }
 }
 
-impl From<dhttp::home::DhttpHome> for Home {
-    fn from(home: dhttp::home::DhttpHome) -> Self {
+impl From<dhttp::config::DhttpConfig> for Home {
+    fn from(home: dhttp::config::DhttpConfig) -> Self {
         Self(home)
     }
 }
 
-impl From<Home> for dhttp::home::DhttpHome {
+impl From<Home> for dhttp::config::DhttpConfig {
     fn from(home: Home) -> Self {
         home.0
     }
@@ -79,7 +79,7 @@ impl From<Home> for dhttp::home::DhttpHome {
 
 impl IdentityHome {
     pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
-        dhttp::home::identity::IdentityHome::try_from(path.into())
+        dhttp::config::identity::IdentityConfig::try_from(path.into())
             .map(Self)
             .map_err(|error| DhttpError::from_error("identity_home.from_path", error))
     }
@@ -101,19 +101,19 @@ impl IdentityHome {
     }
 }
 
-impl AsRef<dhttp::home::identity::IdentityHome> for IdentityHome {
-    fn as_ref(&self) -> &dhttp::home::identity::IdentityHome {
+impl AsRef<dhttp::config::identity::IdentityConfig> for IdentityHome {
+    fn as_ref(&self) -> &dhttp::config::identity::IdentityConfig {
         &self.0
     }
 }
 
-impl From<dhttp::home::identity::IdentityHome> for IdentityHome {
-    fn from(home: dhttp::home::identity::IdentityHome) -> Self {
+impl From<dhttp::config::identity::IdentityConfig> for IdentityHome {
+    fn from(home: dhttp::config::identity::IdentityConfig) -> Self {
         Self(home)
     }
 }
 
-impl From<IdentityHome> for dhttp::home::identity::IdentityHome {
+impl From<IdentityHome> for dhttp::config::identity::IdentityConfig {
     fn from(home: IdentityHome) -> Self {
         home.0
     }

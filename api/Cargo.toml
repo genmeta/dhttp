@@ -12,7 +12,7 @@ napi = ["dep:napi", "dep:napi-derive"]
 pyo3 = ["dep:pyo3", "dep:pyo3-async-runtimes"]
 
 [dependencies]
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
 tracing = { workspace = true }
 tower-service = { workspace = true }
 http = { workspace = true }
@@ -22,7 +22,7 @@ ddns = { workspace = true }
 h3x = { workspace = true }
 futures = { workspace = true }
 snafu = { workspace = true }
-napi = { version = "3.9.0", default-features = false, features = ["napi4", "async", "dyn-symbols"], optional = true }
+napi = { version = "3.9.0", default-features = false, features = ["napi4", "async", "dyn-symbols", "tokio_rt"], optional = true }
 napi-derive = { version = "3.5.6", optional = true }
 pyo3 = { version = "0.28.3", features = ["experimental-async"], optional = true }
 pyo3-async-runtimes = { version = "0.28.0", features = ["tokio-runtime"], optional = true }

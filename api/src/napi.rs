@@ -1,20 +1,32 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use ::napi::{
-    Error, Status,
+    Env, Error, Status,
     bindgen_prelude::{
-        Either, FnArgs, Function, Promise, Result as NapiResult, within_runtime_if_available,
+        Buffer, Either, FnArgs, Function, Promise, PromiseRaw, Result as NapiResult,
+        within_runtime_if_available,
     },
 };
 use napi_derive::napi;
-use tokio::sync::Mutex;
-
 fn napi_error(error: crate::error::DhttpError) -> Error {
     Error::new(Status::GenericFailure, error.report().to_owned())
 }
 
 fn dhttp_napi_error(operation: &'static str, error: Error) -> crate::error::DhttpError {
     crate::error::DhttpError::from_error(operation, error)
+}
+
+static DROP_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("failed to create dhttp napi drop runtime")
+});
+
+fn drop_with_napi_runtime<T>(value: T) {
+    let _guard = DROP_RUNTIME.enter();
+    drop(value);
 }
 
 type ServerHandlerArgs = FnArgs<(ServerRequest, ServerResponse)>;
@@ -208,6 +220,19 @@ pub struct ClientRequest {
     inner: Arc<Mutex<Option<crate::endpoint::client::Request>>>,
 }
 
+impl Drop for ClientRequest {
+    fn drop(&mut self) {
+        let request = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut request| request.take());
+        if let Some(request) = request {
+            drop_with_napi_runtime(request);
+        }
+    }
+}
+
 impl From<crate::endpoint::client::Request> for ClientRequest {
     fn from(inner: crate::endpoint::client::Request) -> Self {
         Self {
@@ -239,7 +264,7 @@ impl ClientRequest {
     }
 
     #[napi]
-    pub fn body(&self, content: Vec<u8>) -> NapiResult<()> {
+    pub fn body(&self, content: Buffer) -> NapiResult<()> {
         self.set_body(content)
     }
 
@@ -280,9 +305,9 @@ impl ClientRequest {
     }
 
     #[napi]
-    pub fn set_body(&self, content: Vec<u8>) -> NapiResult<()> {
+    pub fn set_body(&self, content: Buffer) -> NapiResult<()> {
         self.with_ref("client_request.set_body", |request| {
-            request.set_body(content);
+            request.set_body(content.to_vec());
             Ok(())
         })
     }
@@ -302,19 +327,18 @@ impl ClientRequest {
     }
 
     #[napi]
-    pub async fn write(&self, content: Vec<u8>) -> NapiResult<()> {
+    pub fn write<'env>(&self, env: &'env Env, content: Buffer) -> NapiResult<PromiseRaw<'env, ()>> {
+        let content = content.to_vec();
         let request = self
             .shared_request("client_request.write")
-            .await
             .map_err(napi_error)?;
-        request.write(content).await.map_err(napi_error)
+        env.spawn_future(async move { request.write(content).await.map_err(napi_error) })
     }
 
     #[napi]
     pub async fn flush(&self) -> NapiResult<()> {
         let request = self
             .shared_request("client_request.flush")
-            .await
             .map_err(napi_error)?;
         request.flush().await.map_err(napi_error)
     }
@@ -323,7 +347,6 @@ impl ClientRequest {
     pub async fn close(&self) -> NapiResult<()> {
         let request = self
             .shared_request("client_request.close")
-            .await
             .map_err(napi_error)?;
         request.close().await.map_err(napi_error)
     }
@@ -332,7 +355,6 @@ impl ClientRequest {
     pub async fn cancel(&self, code: u32) -> NapiResult<()> {
         let request = self
             .shared_request("client_request.cancel")
-            .await
             .map_err(napi_error)?;
         request.cancel(u64::from(code)).await.map_err(napi_error)
     }
@@ -341,7 +363,6 @@ impl ClientRequest {
     pub async fn response(&self) -> NapiResult<ClientResponse> {
         let request = self
             .shared_request("client_request.response")
-            .await
             .map_err(napi_error)?;
         request
             .response()
@@ -352,12 +373,22 @@ impl ClientRequest {
 
     #[napi]
     pub async fn into_response(&self) -> NapiResult<ClientResponse> {
-        let request = self.inner.lock().await.take().ok_or_else(|| {
-            napi_error(crate::error::DhttpError::from_message(
-                "client_request.into_response",
-                "request is closed",
-            ))
-        })?;
+        let request = self
+            .inner
+            .lock()
+            .map_err(|_| {
+                napi_error(crate::error::DhttpError::from_message(
+                    "client_request.into_response",
+                    "request mutex is poisoned",
+                ))
+            })?
+            .take()
+            .ok_or_else(|| {
+                napi_error(crate::error::DhttpError::from_message(
+                    "client_request.into_response",
+                    "request is closed",
+                ))
+            })?;
         request
             .into_response()
             .await
@@ -370,10 +401,10 @@ impl ClientRequest {
         operation: &'static str,
         f: impl FnOnce(&crate::endpoint::client::Request) -> crate::endpoint::Result<T>,
     ) -> NapiResult<T> {
-        let guard = self.inner.try_lock().map_err(|_| {
+        let guard = self.inner.lock().map_err(|_| {
             napi_error(crate::error::DhttpError::from_message(
                 operation,
-                "request is busy",
+                "request mutex is poisoned",
             ))
         })?;
         let request = guard.as_ref().ok_or_else(|| {
@@ -385,11 +416,13 @@ impl ClientRequest {
         f(request).map_err(napi_error)
     }
 
-    async fn shared_request(
+    fn shared_request(
         &self,
         operation: &'static str,
     ) -> crate::endpoint::Result<crate::endpoint::client::Request> {
-        let guard = self.inner.lock().await;
+        let guard = self.inner.lock().map_err(|_| {
+            crate::error::DhttpError::from_message(operation, "request mutex is poisoned")
+        })?;
         let request = guard.as_ref().ok_or_else(|| {
             crate::error::DhttpError::from_message(operation, "request is closed")
         })?;
@@ -595,13 +628,15 @@ impl ServerResponse {
     }
 
     #[napi]
-    pub fn set_body(&self, content: Vec<u8>) -> NapiResult<()> {
-        self.inner.set_body(content).map_err(napi_error)
+    pub fn set_body(&self, content: Buffer) -> NapiResult<()> {
+        self.inner.set_body(content.to_vec()).map_err(napi_error)
     }
 
     #[napi]
-    pub async fn write(&self, content: Vec<u8>) -> NapiResult<()> {
-        self.inner.write(content).await.map_err(napi_error)
+    pub fn write<'env>(&self, env: &'env Env, content: Buffer) -> NapiResult<PromiseRaw<'env, ()>> {
+        let content = content.to_vec();
+        let response = self.inner.shared_handle();
+        env.spawn_future(async move { response.write(content).await.map_err(napi_error) })
     }
 
     #[napi]
@@ -665,7 +700,7 @@ pub struct ServeHandle {
 impl Drop for ServeHandle {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
-            within_runtime_if_available(|| drop(inner));
+            drop_with_napi_runtime(inner);
         }
     }
 }
@@ -707,7 +742,7 @@ pub struct Endpoint {
 impl Drop for Endpoint {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
-            within_runtime_if_available(|| drop(inner));
+            drop_with_napi_runtime(inner);
         }
     }
 }

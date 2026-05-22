@@ -1,5 +1,6 @@
 #![cfg(feature = "napi")]
 
+use napi::bindgen_prelude::Buffer;
 use napi::bindgen_prelude::{Either, FnArgs, Function, Promise};
 
 type ServerHandlerArgs = FnArgs<(
@@ -49,7 +50,7 @@ async fn napi_minimal_endpoint_api_is_constructible() {
     request
         .set_headers(vec![("accept".to_string(), "application/json".to_string())])
         .unwrap();
-    request.body(b"hello".to_vec()).unwrap();
+    request.body(Buffer::from(b"hello".to_vec())).unwrap();
     request
         .trailer("x-trailer".to_string(), "done".to_string())
         .unwrap();
@@ -69,7 +70,6 @@ async fn napi_client_response_api_is_exposed(
     request: dhttp_api::napi::ClientRequest,
     response: &dhttp_api::napi::ClientResponse,
 ) {
-    request.write(b"chunk".to_vec()).await.unwrap();
     request.flush().await.unwrap();
     request.close().await.unwrap();
     request.cancel(0).await.unwrap();
@@ -121,8 +121,7 @@ async fn napi_server_api_is_exposed<'env>(
     response
         .set_header("content-type".to_string(), "text/plain".to_string())
         .unwrap();
-    response.set_body(b"hello".to_vec()).unwrap();
-    response.write(b"chunk".to_vec()).await.unwrap();
+    response.set_body(Buffer::from(b"hello".to_vec())).unwrap();
     response.flush().await.unwrap();
     let _trailers = response.trailers().unwrap();
     response
