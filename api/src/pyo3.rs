@@ -285,6 +285,12 @@ impl ClientRequest {
         })
     }
 
+    pub fn set_headers(&self, headers: Vec<(String, String)>) -> PyResult<()> {
+        self.with_ref("client_request.set_headers", |request| {
+            request.set_headers(headers)
+        })
+    }
+
     pub fn set_body(&self, content: Vec<u8>) -> PyResult<()> {
         self.with_ref("client_request.set_body", |request| {
             request.set_body(content);
@@ -295,6 +301,12 @@ impl ClientRequest {
     pub fn set_trailer(&self, name: String, value: String) -> PyResult<()> {
         self.with_ref("client_request.set_trailer", |request| {
             request.set_trailer(&name, &value)
+        })
+    }
+
+    pub fn set_trailers(&self, trailers: Vec<(String, String)>) -> PyResult<()> {
+        self.with_ref("client_request.set_trailers", |request| {
+            request.set_trailers(trailers)
         })
     }
 
