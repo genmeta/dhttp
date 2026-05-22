@@ -36,11 +36,20 @@ async fn pyo3_minimal_endpoint_api_is_constructible() {
         .header("content-type".to_string(), "text/plain".to_string())
         .unwrap();
     request
+        .headers(vec![(
+            "user-agent".to_string(),
+            "dhttp-api-test".to_string(),
+        )])
+        .unwrap();
+    request
         .set_headers(vec![("accept".to_string(), "application/json".to_string())])
         .unwrap();
     request.body(b"hello".to_vec()).unwrap();
     request
         .trailer("x-trailer".to_string(), "done".to_string())
+        .unwrap();
+    request
+        .trailers(vec![("x-checksum".to_string(), "ok".to_string())])
         .unwrap();
     request
         .set_trailers(vec![("x-finished".to_string(), "true".to_string())])

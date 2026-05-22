@@ -261,12 +261,20 @@ impl ClientRequest {
         self.set_header(name, value)
     }
 
+    pub fn headers(&self, headers: Vec<(String, String)>) -> PyResult<()> {
+        self.set_headers(headers)
+    }
+
     pub fn body(&self, content: Vec<u8>) -> PyResult<()> {
         self.set_body(content)
     }
 
     pub fn trailer(&self, name: String, value: String) -> PyResult<()> {
         self.set_trailer(name, value)
+    }
+
+    pub fn trailers(&self, trailers: Vec<(String, String)>) -> PyResult<()> {
+        self.set_trailers(trailers)
     }
 
     pub fn set_method(&self, method: String) -> PyResult<()> {

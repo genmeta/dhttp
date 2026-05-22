@@ -234,6 +234,11 @@ impl ClientRequest {
     }
 
     #[napi]
+    pub fn headers(&self, headers: Vec<(String, String)>) -> NapiResult<()> {
+        self.set_headers(headers)
+    }
+
+    #[napi]
     pub fn body(&self, content: Vec<u8>) -> NapiResult<()> {
         self.set_body(content)
     }
@@ -241,6 +246,11 @@ impl ClientRequest {
     #[napi]
     pub fn trailer(&self, name: String, value: String) -> NapiResult<()> {
         self.set_trailer(name, value)
+    }
+
+    #[napi]
+    pub fn trailers(&self, trailers: Vec<(String, String)>) -> NapiResult<()> {
+        self.set_trailers(trailers)
     }
 
     #[napi]
