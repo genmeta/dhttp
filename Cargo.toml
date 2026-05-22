@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dhttp", "identity", "config", "api"]
+members = ["dhttp", "identity", "config", "api", "access"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,15 @@ tracing = "0.1"
 x509-parser = "0.18"
 bon = "3"
 http = "1"
+serde_json = "1"
+sea-orm-migration = { version = "1", features = ["runtime-tokio-rustls"] }
+sea-orm = { version = "1", features = ["runtime-tokio-rustls"] }
+regex = "1"
+peg = "0.8"
+globset = "0.4"
+derive_more = "2"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # Keep workspace-local identity/config crates as path dependencies.
 # They are part of this workspace's public type surface; resolving them through
@@ -29,9 +38,11 @@ http = "1"
 # only: downstream crates that depend on `dhttp` via git do not inherit it.
 dhttp-identity = { path = "identity" }
 config = { package = "dhttp-config", path = "config" }
+dhttp-config = { path = "config" }
 ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
 dhttp = { path = "dhttp" }
+dhttp-access = { path = "access" }
 
 # Workspace-local identity/config unification.
 # The dhttp workspace exposes these crates as part of the same public type

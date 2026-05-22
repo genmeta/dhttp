@@ -1,0 +1,36 @@
+[package]
+name = "dhttp-access"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+cli = ["dep:clap"]
+orm = [
+    "dep:chrono",
+    "dep:dhttp-config",
+    "dep:sea-orm",
+    "dep:tokio",
+    "dep:tracing",
+]
+migration = ["orm", "dep:sea-orm-migration"]
+http = ["dep:http"]
+peg-trace = ["peg/trace"]
+
+[dependencies]
+clap = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+derive_more = { workspace = true, features = ["display", "from", "into", "as_ref"] }
+dhttp-config = { workspace = true, optional = true }
+dhttp-identity = { workspace = true }
+globset = { workspace = true }
+http = { workspace = true, optional = true }
+peg = { workspace = true }
+regex = { workspace = true }
+sea-orm = { workspace = true, features = ["sqlx-sqlite"], optional = true }
+sea-orm-migration = { workspace = true, features = ["sqlx-sqlite"], optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+snafu = { workspace = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
