@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dhttp", "identity", "home", "api"]
+members = ["dhttp", "identity", "config", "api"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,24 +22,24 @@ x509-parser = "0.18"
 bon = "3"
 http = "1"
 
-# Keep workspace-local identity/home crates as path dependencies.
+# Keep workspace-local identity/config crates as path dependencies.
 # They are part of this workspace's public type surface; resolving them through
 # the git dhttp repository while building this workspace would create duplicate
-# identity/home crate instances and incompatible types. This is workspace-local
+# identity/config crate instances and incompatible types. This is workspace-local
 # only: downstream crates that depend on `dhttp` via git do not inherit it.
 dhttp-identity = { path = "identity" }
-home = { package = "dhttp-home", path = "home" }
+config = { package = "dhttp-config", path = "config" }
 ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
 dhttp = { path = "dhttp" }
 
-# Workspace-local identity/home unification.
+# Workspace-local identity/config unification.
 # The dhttp workspace exposes these crates as part of the same public type
 # surface. Transitive git dependencies (for example h3x/ddns) may also depend
-# on dhttp-identity or dhttp-home; while building this workspace, patch those
+# on dhttp-identity or dhttp-config; while building this workspace, patch those
 # git crates back to the local members so all code sees the same concrete
 # types. Cargo patches are root-only, so downstream crates that depend on
 # `dhttp` via git do not inherit this override.
 [patch."ssh://git@github.com/genmeta/dhttp.git"]
 dhttp-identity = { path = "identity" }
-dhttp-home = { path = "home" }
+dhttp-config = { path = "config" }

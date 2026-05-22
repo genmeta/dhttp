@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::DhttpHome;
+use crate::DhttpConfig;
 use snafu::{OptionExt, ResultExt, Snafu};
 
 use dhttp_identity::name::{DhttpName, InvalidDhttpName};
@@ -10,25 +10,25 @@ pub mod default;
 #[cfg(feature = "ssl")]
 pub mod ssl;
 
-/// An identity home directory (e.g. `.dhttp/reimu.pilot/`).
+/// An identity config directory (e.g. `.dhttp/reimu.pilot/`).
 #[derive(Debug, Clone)]
-pub struct IdentityHome {
+pub struct IdentityConfig {
     pub(crate) path: PathBuf,
     pub(crate) name: DhttpName<'static>,
 }
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum IdentityHomeFromPathError {
-    #[snafu(display("identity home path has no directory name: {}", path.display()))]
+pub enum IdentityConfigFromPathError {
+    #[snafu(display("identity config path has no directory name: {}", path.display()))]
     MissingFileName { path: PathBuf },
-    #[snafu(display("identity home directory name is not valid unicode: {}", path.display()))]
+    #[snafu(display("identity config directory name is not valid unicode: {}", path.display()))]
     NonUtf8FileName { path: PathBuf },
-    #[snafu(display("failed to parse identity home directory name as dhttp name"))]
+    #[snafu(display("failed to parse identity config directory name as dhttp name"))]
     InvalidName { source: InvalidDhttpName },
 }
 
-impl IdentityHome {
+impl IdentityConfig {
     pub const LOGS_DIR: &'static str = "logs";
     pub const ACCESS_LOG_FILE: &'static str = "access.log";
     pub const DB_DIR: &'static str = "db";
@@ -63,8 +63,8 @@ impl IdentityHome {
         self.join(Self::SERVER_CONF_FILE)
     }
 
-    fn try_from_path(path: PathBuf) -> Result<Self, IdentityHomeFromPathError> {
-        use identity_home_from_path_error::*;
+    fn try_from_path(path: PathBuf) -> Result<Self, IdentityConfigFromPathError> {
+        use identity_config_from_path_error::*;
 
         let file_name = path
             .file_name()
@@ -77,29 +77,29 @@ impl IdentityHome {
     }
 }
 
-impl TryFrom<PathBuf> for IdentityHome {
-    type Error = IdentityHomeFromPathError;
+impl TryFrom<PathBuf> for IdentityConfig {
+    type Error = IdentityConfigFromPathError;
 
     fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
         Self::try_from_path(path)
     }
 }
 
-impl TryFrom<&Path> for IdentityHome {
-    type Error = IdentityHomeFromPathError;
+impl TryFrom<&Path> for IdentityConfig {
+    type Error = IdentityConfigFromPathError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         Self::try_from_path(path.to_path_buf())
     }
 }
 
-impl DhttpHome {
+impl DhttpConfig {
     pub fn join_identity_name(&self, name: DhttpName<'_>) -> PathBuf {
         self.join(name.as_partial())
     }
 
-    pub fn identity_home(&self, name: DhttpName<'_>) -> IdentityHome {
-        IdentityHome {
+    pub fn identity_config(&self, name: DhttpName<'_>) -> IdentityConfig {
+        IdentityConfig {
             path: self.join_identity_name(name.clone()),
             name: name.to_owned(),
         }
@@ -111,30 +111,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_home_from_path_uses_directory_name_as_dhttp_name() {
-        let home = IdentityHome::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
+    fn identity_config_from_path_uses_directory_name_as_dhttp_name() {
+        let config = IdentityConfig::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
 
-        assert_eq!(home.path(), Path::new("/tmp/reimu.pilot"));
-        assert_eq!(home.name().as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(config.path(), Path::new("/tmp/reimu.pilot"));
+        assert_eq!(config.name().as_full(), "reimu.pilot.genmeta.net");
     }
 
     #[test]
-    fn identity_home_from_path_rejects_path_without_directory_name() {
-        let error = IdentityHome::try_from(Path::new("/")).unwrap_err();
+    fn identity_config_from_path_rejects_path_without_directory_name() {
+        let error = IdentityConfig::try_from(Path::new("/")).unwrap_err();
 
         assert!(matches!(
             error,
-            IdentityHomeFromPathError::MissingFileName { .. }
+            IdentityConfigFromPathError::MissingFileName { .. }
         ));
     }
 
     #[test]
-    fn identity_home_from_path_rejects_invalid_directory_name() {
-        let error = IdentityHome::try_from(Path::new("/tmp/123")).unwrap_err();
+    fn identity_config_from_path_rejects_invalid_directory_name() {
+        let error = IdentityConfig::try_from(Path::new("/tmp/123")).unwrap_err();
 
         assert!(matches!(
             error,
-            IdentityHomeFromPathError::InvalidName { .. }
+            IdentityConfigFromPathError::InvalidName { .. }
         ));
     }
 }

@@ -9,6 +9,6 @@ pub mod name {
 }
 pub mod trust;
 
+pub use config;
 pub use h3x;
 pub use h3x::dquic;
-pub use home;

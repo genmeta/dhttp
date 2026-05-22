@@ -14,7 +14,7 @@ use x509_parser::prelude::Pem;
 
 use dhttp_identity::{identity::Identity, name::DhttpName};
 
-use crate::{DhttpHome, identity::IdentityHome};
+use crate::{DhttpConfig, identity::IdentityConfig};
 
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
@@ -90,7 +90,7 @@ pub enum ListIdentitiesError {
     ReadFty { path: PathBuf, source: io::Error },
 }
 
-impl IdentityHome {
+impl IdentityConfig {
     pub fn ssl_dir(&self) -> PathBuf {
         self.join(SSL_DIR_NAME)
     }
@@ -197,7 +197,7 @@ impl IdentityHome {
     }
 }
 
-impl DhttpHome {
+impl DhttpConfig {
     pub async fn locate_identity_exactly(&self, name: DhttpName<'_>) -> io::Result<PathBuf> {
         let identity_io = self.join_identity_name(name);
         fs::metadata(identity_io.as_path())
@@ -288,12 +288,12 @@ impl DhttpHome {
     pub async fn load_identity_exactly(
         &self,
         name: DhttpName<'_>,
-    ) -> Result<IdentityHome, LoadIdentityError> {
+    ) -> Result<IdentityConfig, LoadIdentityError> {
         let identity_io = self
             .locate_identity_exactly(name.clone())
             .await
             .context(load_identity_error::NotFoundSnafu { io: self.as_path() })?;
-        Ok(IdentityHome {
+        Ok(IdentityConfig {
             path: identity_io,
             name: name.to_owned(),
         })
@@ -302,13 +302,13 @@ impl DhttpHome {
     pub async fn load_identity_wildcard(
         &self,
         name: DhttpName<'_>,
-    ) -> Result<IdentityHome, LoadIdentityError> {
+    ) -> Result<IdentityConfig, LoadIdentityError> {
         let wildcard_name = name.to_wildcard();
         let identity_io = self
             .locate_identity_wildcard(wildcard_name.clone())
             .await
             .context(load_identity_error::NotFoundSnafu { io: self.as_path() })?;
-        Ok(IdentityHome {
+        Ok(IdentityConfig {
             path: identity_io,
             name: wildcard_name,
         })
@@ -317,12 +317,12 @@ impl DhttpHome {
     pub async fn load_identity(
         &self,
         name: DhttpName<'_>,
-    ) -> Result<IdentityHome, LoadIdentityError> {
+    ) -> Result<IdentityConfig, LoadIdentityError> {
         let (identity_io, name) = self
             .locate_identity(name)
             .await
             .context(load_identity_error::NotFoundSnafu { io: self.as_path() })?;
-        Ok(IdentityHome {
+        Ok(IdentityConfig {
             path: identity_io,
             name: name.to_owned(),
         })
@@ -337,9 +337,9 @@ mod default_config_integration {
 
     use super::LoadIdentityError;
     use crate::{
-        DhttpHome,
+        DhttpConfig,
         identity::{
-            IdentityHome,
+            IdentityConfig,
             default::{DefaultConfigFile, FileLineCol, LoadDefaultConfigError},
         },
     };
@@ -370,12 +370,12 @@ mod default_config_integration {
     impl DefaultConfigFile {
         pub async fn load_default_identity(
             &self,
-            dhttp_home: &DhttpHome,
-        ) -> Option<Result<IdentityHome, LoadDefaultIdentityFromConfigError>> {
+            dhttp_config: &DhttpConfig,
+        ) -> Option<Result<IdentityConfig, LoadDefaultIdentityFromConfigError>> {
             let name = self.config().name.as_ref()?;
 
             Some(
-                dhttp_home
+                dhttp_config
                     .load_identity(name.as_ref().clone())
                     .await
                     .context(
@@ -387,10 +387,10 @@ mod default_config_integration {
         }
     }
 
-    impl DhttpHome {
+    impl DhttpConfig {
         pub async fn load_default_identity(
             &self,
-        ) -> Result<IdentityHome, LoadDefaultIdentityError> {
+        ) -> Result<IdentityConfig, LoadDefaultIdentityError> {
             Ok(self
                 .load_identity_default_config()
                 .await?

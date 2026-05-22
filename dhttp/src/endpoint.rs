@@ -183,30 +183,30 @@ where
 {
     #[snafu(display("failed to parse dhttp name"))]
     InvalidName { source: E },
-    #[snafu(display("failed to locate dhttp home"))]
-    NoHome {
-        source: crate::home::LocateDhttpHomeError,
+    #[snafu(display("failed to locate dhttp config"))]
+    NoConfig {
+        source: crate::config::LocateDhttpConfigError,
     },
-    #[snafu(display("failed to load identity home"))]
+    #[snafu(display("failed to load identity config"))]
     LoadIdentity {
-        source: crate::home::identity::ssl::LoadIdentityError,
+        source: crate::config::identity::ssl::LoadIdentityError,
     },
     #[snafu(display("failed to load certificate and key"))]
     LoadSsl {
-        source: crate::home::identity::ssl::LoadIdentitySslError,
+        source: crate::config::identity::ssl::LoadIdentitySslError,
     },
 }
 
 #[derive(Debug, snafu::Snafu)]
 #[snafu(module(load_endpoint_from_path_error))]
 pub enum LoadEndpointFromPathError {
-    #[snafu(display("failed to construct identity home from path"))]
-    IdentityHome {
-        source: crate::home::identity::IdentityHomeFromPathError,
+    #[snafu(display("failed to construct identity config from path"))]
+    IdentityConfig {
+        source: crate::config::identity::IdentityConfigFromPathError,
     },
     #[snafu(display("failed to load certificate and key"))]
     LoadSsl {
-        source: crate::home::identity::ssl::LoadIdentitySslError,
+        source: crate::config::identity::ssl::LoadIdentitySslError,
     },
 }
 
@@ -299,7 +299,7 @@ impl Endpoint {
     /// Load an endpoint from a domain name.
     ///
     /// Accepts a [`dhttp_identity::name::DhttpName`], locates the `.dhttp`
-    /// home directory, loads the TLS identity from
+    /// config directory, loads the TLS identity from
     /// `~/.dhttp/<name>/ssl/`, and constructs a QUIC endpoint with
     /// [`DnsScheme::H3`], [`DnsScheme::Mdns`], and [`DnsScheme::System`]
     /// DNS resolution schemes and a default network configuration.
@@ -313,15 +313,15 @@ impl Endpoint {
         let name = name
             .try_into()
             .context(load_endpoint_error::InvalidNameSnafu)?;
-        let home = crate::home::DhttpHome::load_from_environment()
-            .context(load_endpoint_error::NoHomeSnafu)?;
+        let config = crate::config::DhttpConfig::load_from_environment()
+            .context(load_endpoint_error::NoConfigSnafu)?;
 
-        let identity_home = home
+        let identity_config = config
             .load_identity(name)
             .await
             .context(load_endpoint_error::LoadIdentitySnafu)?;
 
-        let identity = identity_home
+        let identity = identity_config
             .identity()
             .await
             .context(load_endpoint_error::LoadSslSnafu)?;
@@ -340,9 +340,9 @@ impl Endpoint {
     pub async fn load_from(path: impl Into<PathBuf>) -> Result<Self, LoadEndpointFromPathError> {
         use snafu::ResultExt;
 
-        let identity_home = crate::home::identity::IdentityHome::try_from(path.into())
-            .context(load_endpoint_from_path_error::IdentityHomeSnafu)?;
-        let identity = identity_home
+        let identity_config = crate::config::identity::IdentityConfig::try_from(path.into())
+            .context(load_endpoint_from_path_error::IdentityConfigSnafu)?;
+        let identity = identity_config
             .identity()
             .await
             .context(load_endpoint_from_path_error::LoadSslSnafu)?;
@@ -520,11 +520,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_from_rejects_invalid_identity_home_path() {
+    async fn load_from_rejects_invalid_identity_config_path() {
         match Endpoint::load_from("/tmp/123").await {
-            Err(LoadEndpointFromPathError::IdentityHome { .. }) => {}
-            Err(error) => panic!("expected identity home error, got {error:?}"),
-            Ok(_) => panic!("expected identity home error, got endpoint"),
+            Err(LoadEndpointFromPathError::IdentityConfig { .. }) => {}
+            Err(error) => panic!("expected identity config error, got {error:?}"),
+            Ok(_) => panic!("expected identity config error, got endpoint"),
         }
     }
 

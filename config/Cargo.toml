@@ -1,5 +1,5 @@
 [package]
-name = "dhttp-home"
+name = "dhttp-config"
 version.workspace = true
 edition.workspace = true
 

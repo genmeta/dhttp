@@ -9,7 +9,7 @@ use toml::Spanned;
 
 use dhttp_identity::name::DhttpName;
 
-use crate::DhttpHome;
+use crate::DhttpConfig;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultConfig {
@@ -175,7 +175,7 @@ impl DefaultConfigFile {
     }
 }
 
-impl DhttpHome {
+impl DhttpConfig {
     pub fn identity_default_config_path(&self) -> PathBuf {
         self.join(DefaultConfig::FILE_NAME)
     }

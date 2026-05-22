@@ -15,7 +15,7 @@ tokio = { workspace = true, features = ["sync"] }
 tower-service = { workspace = true }
 tracing = { workspace = true }
 dhttp-identity = { workspace = true }
-home = { workspace = true }
+config = { workspace = true }
 ddns = { workspace = true }
 h3x = { workspace = true }
 
