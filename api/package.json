@@ -1,0 +1,30 @@
+{
+  "name": "@genmeta/dhttp-api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform -- --features napi",
+    "build:release": "napi build --platform --release -- --features napi",
+    "smoke": "node -e \"const dhttp = require('./index.js'); const home = new dhttp.Home('/tmp/dhttp-api-node-smoke'); if (home.path() !== '/tmp/dhttp-api-node-smoke') throw new Error('unexpected home path')\""
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.3.5"
+  },
+  "napi": {
+    "binaryName": "dhttp_api",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "dhttp-api"
+dynamic = ["version"]
+requires-python = ">=3.10"
+
+[tool.maturin]
+module-name = "dhttp_api"
+features = ["pyo3", "pyo3/extension-module"]

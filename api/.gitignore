@@ -1,0 +1,7 @@
+/dist/
+/.venv/
+/node_modules/
+/*.node
+/index.d.ts
+/index.js
+/uv.lock
