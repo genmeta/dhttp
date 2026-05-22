@@ -12,6 +12,7 @@
   "scripts": {
     "build": "napi build --platform -- --features napi",
     "build:release": "napi build --platform --release -- --features napi",
+    "prepare": "npm run build",
     "smoke": "node -e \"const dhttp = require('./index.js'); const home = new dhttp.Home('/tmp/dhttp-api-node-smoke'); if (home.path() !== '/tmp/dhttp-api-node-smoke') throw new Error('unexpected home path')\""
   },
   "devDependencies": {
