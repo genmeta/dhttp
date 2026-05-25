@@ -24,7 +24,10 @@ use tracing::Instrument;
 
 use crate::{error::DhttpError, http as api_http, identity::Identity};
 
+use connection::Connection;
+
 pub mod client;
+pub mod connection;
 pub mod server;
 
 pub type Result<T> = std::result::Result<T, DhttpError>;
@@ -143,6 +146,14 @@ impl Endpoint {
 
     pub fn request(&self) -> client::Request {
         client::Request::new(self.inner.new_request())
+    }
+
+    pub async fn connect(&self, authority: &str) -> Result<Connection> {
+        self.inner
+            .connect(authority)
+            .await
+            .map(Connection::new)
+            .map_err(|error| DhttpError::from_error("endpoint.connect", error))
     }
 
     pub fn get(&self, uri: &str) -> Result<client::Request> {

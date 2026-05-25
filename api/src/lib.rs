@@ -3,6 +3,7 @@ pub mod endpoint;
 pub mod error;
 pub mod http;
 pub mod identity;
+pub mod stream;
 
 #[cfg(feature = "napi")]
 pub mod napi;
