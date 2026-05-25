@@ -170,10 +170,18 @@ fn node_wrapper_rejects_missing_pseudo_headers_instead_of_defaulting() {
 fn node_wrapper_exports_match_type_declarations_and_hide_native_entry() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+    let dts = std::fs::read_to_string(manifest_dir.join("js/index.d.ts")).unwrap();
     let package_json = std::fs::read_to_string(manifest_dir.join("package.json")).unwrap();
 
     assert!(js.contains("Identity: native.Identity"));
     assert!(js.contains("ServeHandle: native.ServeHandle"));
+    assert!(js.contains("function endpointOptionsFrom"));
+    assert!(dts.contains("interface EndpointCreateOptions"));
+    assert!(dts.contains("dnsSchemes?: Iterable<string>"));
+    assert!(dts.contains("bindPatterns?: Iterable<string>"));
+    assert!(
+        dts.contains("static create(options?: EndpointOptions | EndpointCreateOptions | null)")
+    );
     assert!(package_json.contains("\"exports\""));
     assert!(package_json.contains("\"./js/index.js\""));
     assert!(!package_json.contains("\"./index.js\""));

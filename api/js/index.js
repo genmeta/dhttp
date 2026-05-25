@@ -27,6 +27,27 @@ function toRequest(input, init) {
   return new Request(input, init);
 }
 
+function endpointOptionsFrom(options) {
+  if (options == null) {
+    return null;
+  }
+  if (options instanceof native.EndpointOptions) {
+    return options;
+  }
+
+  const endpointOptions = new native.EndpointOptions();
+  if (options.identity != null) {
+    endpointOptions.setIdentity(options.identity);
+  }
+  for (const scheme of options.dnsSchemes ?? []) {
+    endpointOptions.addDnsScheme(scheme);
+  }
+  for (const pattern of options.bindPatterns ?? []) {
+    endpointOptions.addBindPattern(pattern);
+  }
+  return endpointOptions;
+}
+
 function requestHeaderFields(request) {
   const url = new URL(request.url);
   const path = `${url.pathname}${url.search}` || '/';
@@ -239,7 +260,7 @@ class Endpoint {
   }
 
   static async create(options = null) {
-    return new Endpoint(await native.Endpoint.create(options));
+    return new Endpoint(await native.Endpoint.create(endpointOptionsFrom(options)));
   }
 
   static async load(name) {

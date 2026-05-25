@@ -165,6 +165,10 @@ fn python_wrapper_uses_aiohttp_like_request_and_body_helpers() {
     let endpoint = std::fs::read_to_string(manifest_dir.join("python/dhttp/endpoint.py")).unwrap();
     let response = std::fs::read_to_string(manifest_dir.join("python/dhttp/response.py")).unwrap();
 
+    assert!(endpoint.contains("def _endpoint_options"));
+    assert!(endpoint.contains("dns_schemes"));
+    assert!(endpoint.contains("bind_patterns"));
+    assert!(endpoint.contains("pass either options or keyword configuration, not both"));
     assert!(endpoint.contains("json: Any = None"));
     assert!(endpoint.contains("content: BodyInput = None"));
     assert!(endpoint.contains("only one of data, json, or content may be provided"));

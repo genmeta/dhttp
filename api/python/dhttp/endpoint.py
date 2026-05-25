@@ -74,6 +74,31 @@ def _request_body_and_headers(
     return pairs, _json.dumps(json).encode("utf-8")
 
 
+def _endpoint_options(
+    options: Any = None,
+    *,
+    identity: Any = None,
+    dns_schemes: Iterable[str] | None = None,
+    bind_patterns: Iterable[str] | None = None,
+):
+    has_keywords = identity is not None or dns_schemes is not None or bind_patterns is not None
+    if options is not None:
+        if has_keywords:
+            raise ValueError("pass either options or keyword configuration, not both")
+        return options
+    if not has_keywords:
+        return None
+
+    options = _native.EndpointOptions()
+    if identity is not None:
+        options.set_identity(identity)
+    for scheme in dns_schemes or ():
+        options.add_dns_scheme(scheme)
+    for pattern in bind_patterns or ():
+        options.add_bind_pattern(pattern)
+    return options
+
+
 def _response_header_fields(response: Response) -> list[tuple[bytes, bytes]]:
     fields = [header_field(":status", response.status)]
     fields.extend(header_fields(response.headers.items()))
@@ -198,8 +223,24 @@ class Endpoint:
         self._inner = inner
 
     @classmethod
-    async def create(cls, options: Any = None) -> "Endpoint":
-        return cls(await _native.Endpoint.create(options))
+    async def create(
+        cls,
+        options: Any = None,
+        *,
+        identity: Any = None,
+        dns_schemes: Iterable[str] | None = None,
+        bind_patterns: Iterable[str] | None = None,
+    ) -> "Endpoint":
+        return cls(
+            await _native.Endpoint.create(
+                _endpoint_options(
+                    options,
+                    identity=identity,
+                    dns_schemes=dns_schemes,
+                    bind_patterns=bind_patterns,
+                )
+            )
+        )
 
     @classmethod
     async def load(cls, name: str) -> "Endpoint":

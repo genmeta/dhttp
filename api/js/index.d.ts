@@ -1,6 +1,12 @@
 export type FetchInput = string | URL | Request;
 export type FetchHandler = (request: Request) => Response | Promise<Response>;
 
+export interface EndpointCreateOptions {
+  identity?: Identity | null;
+  dnsSchemes?: Iterable<string>;
+  bindPatterns?: Iterable<string>;
+}
+
 export class Config {
   constructor(path: string);
   static load(): Config;
@@ -45,7 +51,7 @@ export class ServeHandle {
 }
 
 export class Endpoint {
-  static create(options?: EndpointOptions | null): Promise<Endpoint>;
+  static create(options?: EndpointOptions | EndpointCreateOptions | null): Promise<Endpoint>;
   static load(name: string): Promise<Endpoint>;
   static loadFrom(path: string): Promise<Endpoint>;
   identity(): Identity | null;
