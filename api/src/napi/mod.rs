@@ -370,24 +370,45 @@ impl Default for EndpointOptions {
 
 #[napi(js_name = "ReadStream")]
 pub struct ReadStream {
-    inner: Mutex<Option<crate::stream::ReadStream>>,
-    closed: AtomicBool,
+    state: Mutex<ReadStreamState>,
+}
+
+struct ActiveRead {
+    stop: StopCodeSender,
+    done: StopDoneReceiver,
+}
+
+type StopCodeSender = tokio::sync::oneshot::Sender<u64>;
+type StopCodeReceiver = tokio::sync::oneshot::Receiver<u64>;
+type StopDoneSender =
+    tokio::sync::oneshot::Sender<std::result::Result<(), crate::error::DhttpError>>;
+type StopDoneReceiver =
+    tokio::sync::oneshot::Receiver<std::result::Result<(), crate::error::DhttpError>>;
+type StartedRead = (crate::stream::ReadStream, StopCodeReceiver, StopDoneSender);
+
+struct ReadStreamState {
+    inner: Option<crate::stream::ReadStream>,
+    active: Option<ActiveRead>,
+    closed: bool,
 }
 
 impl From<crate::stream::ReadStream> for ReadStream {
     fn from(inner: crate::stream::ReadStream) -> Self {
         Self {
-            inner: Mutex::new(Some(inner)),
-            closed: AtomicBool::new(false),
+            state: Mutex::new(ReadStreamState {
+                inner: Some(inner),
+                active: None,
+                closed: false,
+            }),
         }
     }
 }
 
 impl Drop for ReadStream {
     fn drop(&mut self) {
-        let inner = match self.inner.get_mut() {
-            Ok(inner) => inner.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
+        let inner = match self.state.get_mut() {
+            Ok(state) => state.inner.take(),
+            Err(poisoned) => poisoned.into_inner().inner.take(),
         };
         if let Some(inner) = inner {
             drop_with_napi_runtime(inner);
@@ -396,28 +417,106 @@ impl Drop for ReadStream {
 }
 
 impl ReadStream {
-    fn take_inner(&self, operation: &'static str) -> NapiResult<crate::stream::ReadStream> {
-        let mut guard = self.inner.try_lock().map_err(|error| match error {
+    fn start_read(&self, operation: &'static str) -> NapiResult<StartedRead> {
+        let mut state = self.state.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => state_error(operation, "read stream is busy"),
             std::sync::TryLockError::Poisoned(_) => {
                 state_error(operation, "read stream mutex is poisoned")
             }
         })?;
-        guard.take().ok_or_else(|| {
-            if self.closed.load(Ordering::SeqCst) {
+        let inner = state.inner.take().ok_or_else(|| {
+            if state.closed {
                 state_error(operation, "read stream is closed")
             } else {
                 state_error(operation, "read stream is busy")
             }
-        })
+        })?;
+        let (stop, stop_requested) = tokio::sync::oneshot::channel();
+        let (done, done_requested) = tokio::sync::oneshot::channel();
+        state.active = Some(ActiveRead {
+            stop,
+            done: done_requested,
+        });
+        Ok((inner, stop_requested, done))
     }
 
-    fn restore_inner(&self, inner: crate::stream::ReadStream) {
-        let mut guard = self
-            .inner
+    fn finish_read(&self, inner: crate::stream::ReadStream) {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(inner);
+        state.active = None;
+        state.inner = Some(inner);
+    }
+
+    fn close_after_stop(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active = None;
+        state.inner = None;
+        state.closed = true;
+    }
+
+    async fn interrupt_active_or_stop_inner(
+        &self,
+        operation: &'static str,
+        code: u64,
+    ) -> NapiResult<()> {
+        enum StopTarget {
+            Inner(crate::stream::ReadStream),
+            Active(ActiveRead),
+        }
+
+        let target = {
+            let mut state = self.state.try_lock().map_err(|error| match error {
+                std::sync::TryLockError::WouldBlock => {
+                    state_error(operation, "read stream is busy")
+                }
+                std::sync::TryLockError::Poisoned(_) => {
+                    state_error(operation, "read stream mutex is poisoned")
+                }
+            })?;
+
+            if let Some(inner) = state.inner.take() {
+                StopTarget::Inner(inner)
+            } else if let Some(active) = state.active.take() {
+                StopTarget::Active(active)
+            } else if state.closed {
+                return Err(state_error(operation, "read stream is closed"));
+            } else {
+                return Err(state_error(operation, "read stream is busy"));
+            }
+        };
+
+        match target {
+            StopTarget::Inner(mut inner) => {
+                let result = inner.stop(code).await;
+                self.close_after_stop();
+                result.map_err(napi_error)
+            }
+            StopTarget::Active(active) => {
+                _ = active.stop.send(code);
+                match active.done.await {
+                    Ok(result) => result.map_err(napi_error),
+                    Err(_) => Err(state_error(operation, "read stream stop was interrupted")),
+                }
+            }
+        }
+    }
+
+    async fn finish_interrupted_read(
+        &self,
+        mut inner: crate::stream::ReadStream,
+        code: u64,
+        done: StopDoneSender,
+    ) -> NapiResult<()> {
+        let result = inner.stop(code).await;
+        self.close_after_stop();
+        let read_result = result.clone();
+        _ = done.send(result);
+        read_result.map_err(napi_error)
     }
 }
 
@@ -426,39 +525,47 @@ impl ReadStream {
     #[napi]
     pub async fn read_data_frame_chunk(&self) -> NapiResult<Option<Vec<u8>>> {
         let operation = "read_stream.read_data_frame_chunk";
-        let mut inner = self.take_inner(operation)?;
-        let result = inner.read_data_frame_chunk().await;
-        self.restore_inner(inner);
-        result.map_err(napi_error)
+        let (mut inner, stop_requested, done) = self.start_read(operation)?;
+        tokio::select! {
+            biased;
+            code = stop_requested => {
+                let code = code.unwrap_or(0);
+                self.finish_interrupted_read(inner, code, done).await?;
+                Ok(None)
+            }
+            result = inner.read_data_frame_chunk() => {
+                self.finish_read(inner);
+                result.map_err(napi_error)
+            }
+        }
     }
 
     #[napi]
     pub async fn read_header_frame(&self) -> NapiResult<Option<Vec<HeaderField>>> {
         let operation = "read_stream.read_header_frame";
-        let mut inner = self.take_inner(operation)?;
-        let result = inner.read_header_frame().await;
-        self.restore_inner(inner);
-        result
-            .map(|headers| {
-                headers.map(|headers| headers.into_iter().map(HeaderField::from_pair).collect())
-            })
-            .map_err(napi_error)
+        let (mut inner, stop_requested, done) = self.start_read(operation)?;
+        tokio::select! {
+            biased;
+            code = stop_requested => {
+                let code = code.unwrap_or(0);
+                self.finish_interrupted_read(inner, code, done).await?;
+                Ok(None)
+            }
+            result = inner.read_header_frame() => {
+                self.finish_read(inner);
+                result
+                    .map(|headers| {
+                        headers.map(|headers| headers.into_iter().map(HeaderField::from_pair).collect())
+                    })
+                    .map_err(napi_error)
+            }
+        }
     }
 
     #[napi]
     pub async fn stop(&self, code: u32) -> NapiResult<()> {
-        let operation = "read_stream.stop";
-        let mut inner = self.take_inner(operation)?;
-        match inner.stop(u64::from(code)).await {
-            Ok(()) => {
-                self.closed.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-            Err(error) => {
-                self.restore_inner(inner);
-                Err(napi_error(error))
-            }
-        }
+        self.interrupt_active_or_stop_inner("read_stream.stop", u64::from(code))
+            .await
     }
 }
 

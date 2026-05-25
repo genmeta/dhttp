@@ -192,3 +192,15 @@ fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_cancel() {
     assert!(source.contains("await requestState.stopBody()"));
     assert!(source.contains("await writeStream.cancel(0)"));
 }
+
+#[test]
+fn napi_read_stream_stop_can_interrupt_in_flight_read() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let napi_source = std::fs::read_to_string(manifest_dir.join("src/napi/mod.rs")).unwrap();
+    let js_source = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+
+    assert!(napi_source.contains("struct ActiveRead"));
+    assert!(napi_source.contains("active: Option<ActiveRead>"));
+    assert!(napi_source.contains("tokio::select!"));
+    assert!(!js_source.contains("if (activePull != null) {\n      return;\n    }"));
+}

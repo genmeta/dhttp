@@ -124,9 +124,6 @@ function streamFromRead(readStream) {
 
   async function requestStop() {
     cancelled = true;
-    if (activePull != null) {
-      return;
-    }
     await stopNow();
   }
 
