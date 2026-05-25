@@ -28,9 +28,7 @@ pub enum ClientIdentityPolicy {
 pub fn dhttp_root_cert_store() -> &'static Arc<RootCertStore> {
     static STORE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
         let mut store = RootCertStore::empty();
-        store.add_parsable_certificates(
-            include_bytes!(concat!(env!("OUT_DIR"), "/root.crt")).to_certificate(),
-        );
+        store.add_parsable_certificates(crate::bootstrap::DHTTP_ROOT_CA.to_certificate());
         Arc::new(store)
     });
     &STORE

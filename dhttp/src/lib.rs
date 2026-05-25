@@ -1,3 +1,5 @@
+mod bootstrap;
+
 pub mod ddns;
 pub mod endpoint;
 pub mod message;

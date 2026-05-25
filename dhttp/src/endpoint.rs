@@ -59,7 +59,7 @@ pub enum InvalidEndpointIdentityError {
 /// part of the query. TODO: separate the network STUN resolver from the
 /// endpoint H3 resolver so the Network default can resolve this through DHTTP
 /// DNS without a construction cycle.
-pub const STUN_SERVER: &str = "nat.genmeta.net:20004";
+pub const STUN_SERVER: &str = crate::bootstrap::DHTTP_STUN_SERVER;
 
 /// Build an [`H3Resolver`] backed by a dedicated DNS-only [`QuicEndpoint`].
 ///
@@ -482,6 +482,13 @@ mod tests {
     use super::*;
     use crate::ddns::DnsScheme;
     use std::fmt;
+
+    #[test]
+    fn stun_server_comes_from_compile_time_environment() {
+        if let Some(expected) = option_env!("DHTTP_STUN_SERVER") {
+            assert_eq!(STUN_SERVER, expected);
+        }
+    }
 
     #[tokio::test]
     async fn check_builder_api() {
