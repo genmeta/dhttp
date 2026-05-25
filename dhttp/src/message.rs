@@ -11,7 +11,6 @@ use snafu::{ResultExt, Snafu};
 use crate::h3x::{
     buflist::{BufList, BuflistCursor},
     connection,
-    dhttp::frame::Frame,
     error::{Code, H3FrameUnexpected, H3MessageError},
     message::stream::{MessageStreamError, ReadStream, WriteStream},
     qpack::field::{
@@ -574,10 +573,7 @@ async fn send_data_to(
     stream: &mut WriteStream,
     data: impl Buf + Send,
 ) -> Result<(), MessageStreamError> {
-    let frame = Frame::new(Frame::DATA_FRAME_TYPE, data)?;
-    stream
-        .try_stream_io(async |stream| Ok(stream.send_frame(frame).await?))
-        .await
+    stream.write_data(data).await
 }
 
 impl Message {
@@ -613,7 +609,7 @@ impl Message {
 
         self.header = self
             .try_read_io(stream, async |stream, message| {
-                let Some(field_section) = stream.read_header_frame().await.transpose()? else {
+                let Some(field_section) = stream.read_header_frame().await? else {
                     if stream.peek_frame().await.transpose()?.is_some() {
                         return Err(H3FrameUnexpected::UnexpectedFrameType.into());
                     } else {
@@ -672,7 +668,7 @@ impl Message {
         }
 
         let try_read_next_chunk = self.try_read_io(stream, async |stream, message| {
-            match stream.read_data_frame_chunk().await.transpose()? {
+            match stream.read_data_frame_chunk().await? {
                 Some(chunk) => Ok(Some(chunk)),
                 None => {
                     if stream.peek_frame().await.transpose()?.is_some() {
@@ -716,7 +712,7 @@ impl Message {
         while self.stage == MessageStage::Body {
             let next = self
                 .try_read_io(stream, async |stream, message| {
-                    match stream.read_data_frame_chunk().await.transpose()? {
+                    match stream.read_data_frame_chunk().await? {
                         Some(chunk) => Ok(Some(chunk)),
                         None => {
                             if stream.peek_frame().await.transpose()?.is_some() {
@@ -788,7 +784,7 @@ impl Message {
 
         self.trailer = self
             .try_read_io(stream, async |stream, _| {
-                let Some(field_section) = stream.read_header_frame().await.transpose()? else {
+                let Some(field_section) = stream.read_header_frame().await? else {
                     if stream.peek_frame().await.transpose()?.is_some() {
                         return Err(H3FrameUnexpected::UnexpectedFrameDuringTrailer.into());
                     } else {
