@@ -1,6 +1,5 @@
 use dhttp_api::{
     endpoint::{Endpoint, EndpointOptions},
-    error::DhttpError,
     identity::Identity,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -48,32 +47,18 @@ async fn endpoint_create_uses_options_and_exposes_identity_and_binds() {
 }
 
 #[tokio::test]
-async fn endpoint_builds_client_requests_without_network_io() {
-    let endpoint = Endpoint::create(None).await.unwrap();
-
-    let request = endpoint.request();
-    request.set_method("POST").unwrap();
-    request.set_uri("https://example.com/api").unwrap();
-    request.set_header("content-type", "text/plain").unwrap();
-    request.set_body(b"hello".to_vec());
-    request.set_trailer("x-trailer", "done").unwrap();
-
-    let _get = endpoint.get("https://example.com/");
-    let _post = endpoint.post("https://example.com/");
-}
-
-#[tokio::test]
 async fn endpoint_serve_returns_abortable_handle() {
     let endpoint = Endpoint::create(None).await.unwrap();
 
-    let handle = endpoint.serve(|_request, response| {
-        Box::pin(async move {
-            response.set_status(204)?;
-            Ok::<_, DhttpError>(())
-        })
-    });
+    let handle = endpoint.serve_streams(|_incoming| Box::pin(async { Ok(()) }));
 
     handle.abort();
+}
+
+#[allow(dead_code)]
+async fn endpoint_low_level_client_stream_api_is_exposed(endpoint: &Endpoint) {
+    let connection = endpoint.connect("example.com").await.unwrap();
+    let (_read_stream, _write_stream) = connection.open_request_stream().await.unwrap();
 }
 
 fn test_identity() -> Identity {
@@ -88,7 +73,7 @@ fn test_identity() -> Identity {
 #[tokio::test]
 async fn serve_handle_closed_does_not_require_mut_binding() {
     let endpoint = Endpoint::create(None).await.unwrap();
-    let handle = endpoint.serve(|_request, _response| Box::pin(async { Ok::<_, DhttpError>(()) }));
+    let handle = endpoint.serve_streams(|_incoming| Box::pin(async { Ok(()) }));
 
     handle.abort();
     handle.closed().await.unwrap();

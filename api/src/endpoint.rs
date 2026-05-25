@@ -14,7 +14,6 @@ use h3x::{
     quic::Listen,
     varint::VarInt,
 };
-use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use tokio::{
     sync::Mutex as AsyncMutex,
     task::{AbortHandle, JoinHandle},
@@ -22,14 +21,12 @@ use tokio::{
 use tower_service::Service;
 use tracing::Instrument;
 
-use crate::{error::DhttpError, http as api_http, identity::Identity};
+use crate::{error::DhttpError, identity::Identity};
 
 use connection::Connection;
 
-pub mod client;
 pub mod connection;
 pub mod incoming;
-pub mod server;
 
 pub type Result<T> = std::result::Result<T, DhttpError>;
 
@@ -145,74 +142,12 @@ impl Endpoint {
             .collect()
     }
 
-    pub fn request(&self) -> client::Request {
-        client::Request::new(self.inner.new_request())
-    }
-
     pub async fn connect(&self, authority: &str) -> Result<Connection> {
         self.inner
             .connect(authority)
             .await
             .map(Connection::new)
             .map_err(|error| DhttpError::from_error("endpoint.connect", error))
-    }
-
-    pub fn get(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::GET, uri, "endpoint.get")
-    }
-
-    pub fn post(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::POST, uri, "endpoint.post")
-    }
-
-    pub fn put(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::PUT, uri, "endpoint.put")
-    }
-
-    pub fn delete(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::DELETE, uri, "endpoint.delete")
-    }
-
-    pub fn patch(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::PATCH, uri, "endpoint.patch")
-    }
-
-    pub fn head(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::HEAD, uri, "endpoint.head")
-    }
-
-    pub fn options(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::OPTIONS, uri, "endpoint.options")
-    }
-
-    pub fn trace(&self, uri: &str) -> Result<client::Request> {
-        self.method_request(Method::TRACE, uri, "endpoint.trace")
-    }
-
-    fn method_request(
-        &self,
-        method: Method,
-        uri: &str,
-        operation: &'static str,
-    ) -> Result<client::Request> {
-        let request = self.request();
-        request.set_method_value(method);
-        request.set_uri_value(parse_uri(operation, uri)?);
-        Ok(request)
-    }
-
-    pub fn serve<H>(&self, handler: H) -> ServeHandle
-    where
-        H: for<'a> Fn(&'a server::Request, &'a server::Response) -> BoxFuture<'a, Result<()>>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-    {
-        let endpoint = self.inner.clone();
-        let service = HandlerService { handler };
-        let task = tokio::spawn(async move { endpoint.serve(service).await }.in_current_span());
-        ServeHandle::new(self.inner.clone(), task)
     }
 
     pub fn serve_streams<H>(&self, handler: H) -> ServeHandle
@@ -326,11 +261,6 @@ impl Drop for ServeHandle {
 }
 
 #[derive(Clone)]
-struct HandlerService<H> {
-    handler: H,
-}
-
-#[derive(Clone)]
 struct IncomingStreamService<H> {
     handler: H,
 }
@@ -355,101 +285,6 @@ where
         let handler = self.handler.clone();
         Box::pin(async move { handler(incoming::IncomingStream::new(req)).await })
     }
-}
-
-impl<H> Service<dhttp::endpoint::server::UnresolvedRequest> for HandlerService<H>
-where
-    H: for<'a> Fn(&'a server::Request, &'a server::Response) -> BoxFuture<'a, Result<()>>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
-    type Response = ();
-    type Error = DhttpError;
-    type Future = BoxFuture<'static, Result<()>>;
-
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<()>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: dhttp::endpoint::server::UnresolvedRequest) -> Self::Future {
-        let handler = self.handler.clone();
-        Box::pin(async move {
-            let (request, response) = dhttp::endpoint::server::resolve(req)
-                .await
-                .map_err(|error| DhttpError::from_error("server.resolve", error))?;
-            let request = server::Request::new(request);
-            let response = server::Response::new(response);
-
-            if let Err(error) = handler(&request, &response).await {
-                tracing::warn!(error = %error.report(), "dhttp handler failed");
-                if let Err(cancel_error) = response.cancel_code(Code::H3_INTERNAL_ERROR).await {
-                    tracing::warn!(error = %cancel_error.report(), "failed to cancel response after handler failure");
-                }
-            } else if let Err(error) = response.finish_if_open().await {
-                tracing::warn!(error = %error.report(), "failed to finish response after handler completion");
-            }
-
-            request.take().await;
-            response.take().await;
-            Ok(())
-        })
-    }
-}
-
-pub(crate) fn parse_method(operation: &'static str, method: &str) -> Result<Method> {
-    Method::from_bytes(method.as_bytes()).map_err(|error| DhttpError::from_error(operation, error))
-}
-
-pub(crate) fn parse_uri(operation: &'static str, uri: &str) -> Result<Uri> {
-    uri.parse()
-        .map_err(|error| DhttpError::from_error(operation, error))
-}
-
-pub(crate) fn parse_status(
-    operation: &'static str,
-    status: api_http::Status,
-) -> Result<StatusCode> {
-    StatusCode::from_u16(status).map_err(|error| DhttpError::from_error(operation, error))
-}
-
-pub(crate) fn parse_header_name(operation: &'static str, name: &str) -> Result<HeaderName> {
-    HeaderName::from_bytes(name.as_bytes())
-        .map_err(|error| DhttpError::from_error(operation, error))
-}
-
-pub(crate) fn parse_header_value(operation: &'static str, value: &str) -> Result<HeaderValue> {
-    HeaderValue::from_str(value).map_err(|error| DhttpError::from_error(operation, error))
-}
-
-pub(crate) fn parse_headers(
-    operation: &'static str,
-    headers: api_http::HeaderPairs,
-) -> Result<HeaderMap> {
-    let mut map = HeaderMap::new();
-    for (name, value) in headers {
-        map.append(
-            parse_header_name(operation, &name)?,
-            parse_header_value(operation, &value)?,
-        );
-    }
-    Ok(map)
-}
-
-pub(crate) fn header_pairs(
-    operation: &'static str,
-    headers: &HeaderMap,
-) -> Result<api_http::HeaderPairs> {
-    headers
-        .iter()
-        .map(|(name, value)| {
-            let value = value
-                .to_str()
-                .map_err(|error| DhttpError::from_error(operation, error))?;
-            Ok((name.to_string(), value.to_owned()))
-        })
-        .collect()
 }
 
 pub(crate) fn code_from_u64(operation: &'static str, code: u64) -> Result<Code> {

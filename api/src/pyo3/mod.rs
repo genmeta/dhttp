@@ -253,25 +253,15 @@ impl Default for EndpointOptions {
     }
 }
 
-#[allow(dead_code)]
-fn keep_rust_wrapper_shared_handles_reachable(
-    request: &crate::endpoint::client::Request,
-    server_request: &crate::endpoint::server::Request,
-    server_response: &crate::endpoint::server::Response,
-) {
-    let _ = request.shared_handle();
-    let _ = server_request.shared_handle();
-    let _ = server_response.shared_handle();
-}
-
 #[pyclass(name = "ReadStream")]
 pub struct ReadStream {
     state: Mutex<ReadStreamState>,
 }
 
 struct ActiveRead {
-    stop: StopCodeSender,
-    done: StopDoneReceiver,
+    stop: Option<StopCodeSender>,
+    done: Option<StopDoneReceiver>,
+    stop_requested: Option<u64>,
 }
 
 type StopCodeSender = tokio::sync::oneshot::Sender<u64>;
@@ -286,6 +276,11 @@ struct ReadStreamState {
     inner: Option<crate::stream::ReadStream>,
     active: Option<ActiveRead>,
     closed: bool,
+}
+
+enum FinishRead {
+    Restored,
+    Stop(crate::stream::ReadStream, u64),
 }
 
 struct ActiveReadCleanup<'a> {
@@ -385,19 +380,29 @@ impl ReadStream {
         let (stop, stop_requested) = tokio::sync::oneshot::channel();
         let (done, done_requested) = tokio::sync::oneshot::channel();
         state.active = Some(ActiveRead {
-            stop,
-            done: done_requested,
+            stop: Some(stop),
+            done: Some(done_requested),
+            stop_requested: None,
         });
         Ok((inner, stop_requested, done))
     }
 
-    fn finish_read(&self, inner: crate::stream::ReadStream) {
+    fn finish_read(&self, inner: crate::stream::ReadStream) -> FinishRead {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(code) = state
+            .active
+            .as_ref()
+            .and_then(|active| active.stop_requested)
+        {
+            state.active = None;
+            return FinishRead::Stop(inner, code);
+        }
         state.active = None;
         state.inner = Some(inner);
+        FinishRead::Restored
     }
 
     fn close_after_stop(&self) {
@@ -417,23 +422,34 @@ impl ReadStream {
     ) -> PyResult<()> {
         enum StopTarget {
             Inner(crate::stream::ReadStream),
-            Active(ActiveRead),
+            Active {
+                stop: Option<StopCodeSender>,
+                done: StopDoneReceiver,
+            },
         }
 
         let target = {
-            let mut state = self.state.try_lock().map_err(|error| match error {
-                std::sync::TryLockError::WouldBlock => {
-                    state_error(operation, "read stream is busy")
-                }
-                std::sync::TryLockError::Poisoned(_) => {
-                    state_error(operation, "read stream mutex is poisoned")
-                }
-            })?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| state_error(operation, "read stream mutex is poisoned"))?;
 
             if let Some(inner) = state.inner.take() {
                 StopTarget::Inner(inner)
-            } else if let Some(active) = state.active.take() {
-                StopTarget::Active(active)
+            } else if let Some(active) = state.active.as_mut() {
+                if active.stop_requested.is_some() {
+                    return Err(state_error(
+                        operation,
+                        "read stream stop is already pending",
+                    ));
+                }
+                active.stop_requested = Some(code);
+                let stop = active.stop.take();
+                let done = active
+                    .done
+                    .take()
+                    .ok_or_else(|| state_error(operation, "read stream stop is already pending"))?;
+                StopTarget::Active { stop, done }
             } else if state.closed {
                 return Err(state_error(operation, "read stream is closed"));
             } else {
@@ -447,9 +463,11 @@ impl ReadStream {
                 self.close_after_stop();
                 result.map_err(py_error)
             }
-            StopTarget::Active(active) => {
-                _ = active.stop.send(code);
-                match active.done.await {
+            StopTarget::Active { stop, done } => {
+                if let Some(stop) = stop {
+                    _ = stop.send(code);
+                }
+                match done.await {
                     Ok(result) => result.map_err(py_error),
                     Err(_) => Err(state_error(operation, "read stream stop was interrupted")),
                 }
@@ -488,9 +506,18 @@ impl ReadStream {
                     Ok(None)
                 }
                 result = inner.read_data_frame_chunk() => {
-                    self.finish_read(inner);
-                    cleanup.disarm();
-                    result.map_err(py_error)
+                    match self.finish_read(inner) {
+                        FinishRead::Restored => {
+                            cleanup.disarm();
+                            result.map_err(py_error)
+                        }
+                        FinishRead::Stop(inner, code) => {
+                            let done = cleanup.take_done()?;
+                            self.finish_interrupted_read(inner, code, done).await?;
+                            cleanup.disarm();
+                            Ok(None)
+                        }
+                    }
                 }
             }
         })
@@ -512,9 +539,18 @@ impl ReadStream {
                     Ok(None)
                 }
                 result = inner.read_header_frame() => {
-                    self.finish_read(inner);
-                    cleanup.disarm();
-                    result.map_err(py_error)
+                    match self.finish_read(inner) {
+                        FinishRead::Restored => {
+                            cleanup.disarm();
+                            result.map_err(py_error)
+                        }
+                        FinishRead::Stop(inner, code) => {
+                            let done = cleanup.take_done()?;
+                            self.finish_interrupted_read(inner, code, done).await?;
+                            cleanup.disarm();
+                            Ok(None)
+                        }
+                    }
                 }
             }
         })

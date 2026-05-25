@@ -134,15 +134,15 @@ fn napi_public_surface_has_no_legacy_request_response_wrappers() {
     .join("\n");
 
     for forbidden in [
-        "ClientRequest",
-        "ClientResponse",
-        "ServerRequest",
-        "ServerResponse",
-        "RawRequest",
-        "RawResponse",
-        "fetchRaw",
-        "requestRaw",
-        "request_raw",
+        concat!("Client", "Request"),
+        concat!("Client", "Response"),
+        concat!("Server", "Request"),
+        concat!("Server", "Response"),
+        concat!("Raw", "Request"),
+        concat!("Raw", "Response"),
+        concat!("fetch", "Raw"),
+        concat!("request", "Raw"),
+        concat!("request", "_raw"),
     ] {
         assert!(
             !sources.contains(forbidden),
@@ -201,6 +201,8 @@ fn napi_read_stream_stop_can_interrupt_in_flight_read() {
 
     assert!(napi_source.contains("struct ActiveRead"));
     assert!(napi_source.contains("active: Option<ActiveRead>"));
+    assert!(napi_source.contains("stop_requested: Option<u64>"));
+    assert!(napi_source.contains("struct ActiveReadCleanup"));
     assert!(napi_source.contains("tokio::select!"));
     assert!(!js_source.contains("if (activePull != null) {\n      return;\n    }"));
 }

@@ -40,17 +40,6 @@ fn drop_with_napi_runtime<T>(value: T) {
 type StreamHandlerArgs = FnArgs<(IncomingStream,)>;
 type StreamHandlerResult = Either<Promise<()>, ()>;
 
-#[allow(dead_code)]
-fn keep_rust_wrapper_shared_handles_reachable(
-    request: &crate::endpoint::client::Request,
-    server_request: &crate::endpoint::server::Request,
-    server_response: &crate::endpoint::server::Response,
-) {
-    let _ = request.shared_handle();
-    let _ = server_request.shared_handle();
-    let _ = server_response.shared_handle();
-}
-
 #[napi(object)]
 pub struct HeaderField {
     pub name: Buffer,
@@ -374,8 +363,9 @@ pub struct ReadStream {
 }
 
 struct ActiveRead {
-    stop: StopCodeSender,
-    done: StopDoneReceiver,
+    stop: Option<StopCodeSender>,
+    done: Option<StopDoneReceiver>,
+    stop_requested: Option<u64>,
 }
 
 type StopCodeSender = tokio::sync::oneshot::Sender<u64>;
@@ -390,6 +380,66 @@ struct ReadStreamState {
     inner: Option<crate::stream::ReadStream>,
     active: Option<ActiveRead>,
     closed: bool,
+}
+
+enum FinishRead {
+    Restored,
+    Stop(crate::stream::ReadStream, u64),
+}
+
+struct ActiveReadCleanup<'a> {
+    stream: &'a ReadStream,
+    operation: &'static str,
+    done: Option<StopDoneSender>,
+    armed: bool,
+}
+
+impl<'a> ActiveReadCleanup<'a> {
+    fn new(stream: &'a ReadStream, operation: &'static str, done: StopDoneSender) -> Self {
+        Self {
+            stream,
+            operation,
+            done: Some(done),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+        self.done = None;
+    }
+
+    fn take_done(&mut self) -> NapiResult<StopDoneSender> {
+        self.done
+            .take()
+            .ok_or_else(|| state_error(self.operation, "read stream stop completion is missing"))
+    }
+}
+
+impl Drop for ActiveReadCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        {
+            let mut state = self
+                .stream
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.active = None;
+            state.inner = None;
+            state.closed = true;
+        }
+
+        if let Some(done) = self.done.take() {
+            _ = done.send(Err(crate::error::DhttpError::from_message(
+                self.operation,
+                "read stream read was cancelled",
+            )));
+        }
+    }
 }
 
 impl From<crate::stream::ReadStream> for ReadStream {
@@ -434,19 +484,29 @@ impl ReadStream {
         let (stop, stop_requested) = tokio::sync::oneshot::channel();
         let (done, done_requested) = tokio::sync::oneshot::channel();
         state.active = Some(ActiveRead {
-            stop,
-            done: done_requested,
+            stop: Some(stop),
+            done: Some(done_requested),
+            stop_requested: None,
         });
         Ok((inner, stop_requested, done))
     }
 
-    fn finish_read(&self, inner: crate::stream::ReadStream) {
+    fn finish_read(&self, inner: crate::stream::ReadStream) -> FinishRead {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(code) = state
+            .active
+            .as_ref()
+            .and_then(|active| active.stop_requested)
+        {
+            state.active = None;
+            return FinishRead::Stop(inner, code);
+        }
         state.active = None;
         state.inner = Some(inner);
+        FinishRead::Restored
     }
 
     fn close_after_stop(&self) {
@@ -466,23 +526,34 @@ impl ReadStream {
     ) -> NapiResult<()> {
         enum StopTarget {
             Inner(crate::stream::ReadStream),
-            Active(ActiveRead),
+            Active {
+                stop: Option<StopCodeSender>,
+                done: StopDoneReceiver,
+            },
         }
 
         let target = {
-            let mut state = self.state.try_lock().map_err(|error| match error {
-                std::sync::TryLockError::WouldBlock => {
-                    state_error(operation, "read stream is busy")
-                }
-                std::sync::TryLockError::Poisoned(_) => {
-                    state_error(operation, "read stream mutex is poisoned")
-                }
-            })?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| state_error(operation, "read stream mutex is poisoned"))?;
 
             if let Some(inner) = state.inner.take() {
                 StopTarget::Inner(inner)
-            } else if let Some(active) = state.active.take() {
-                StopTarget::Active(active)
+            } else if let Some(active) = state.active.as_mut() {
+                if active.stop_requested.is_some() {
+                    return Err(state_error(
+                        operation,
+                        "read stream stop is already pending",
+                    ));
+                }
+                active.stop_requested = Some(code);
+                let stop = active.stop.take();
+                let done = active
+                    .done
+                    .take()
+                    .ok_or_else(|| state_error(operation, "read stream stop is already pending"))?;
+                StopTarget::Active { stop, done }
             } else if state.closed {
                 return Err(state_error(operation, "read stream is closed"));
             } else {
@@ -496,9 +567,11 @@ impl ReadStream {
                 self.close_after_stop();
                 result.map_err(napi_error)
             }
-            StopTarget::Active(active) => {
-                _ = active.stop.send(code);
-                match active.done.await {
+            StopTarget::Active { stop, done } => {
+                if let Some(stop) = stop {
+                    _ = stop.send(code);
+                }
+                match done.await {
                     Ok(result) => result.map_err(napi_error),
                     Err(_) => Err(state_error(operation, "read stream stop was interrupted")),
                 }
@@ -526,16 +599,29 @@ impl ReadStream {
     pub async fn read_data_frame_chunk(&self) -> NapiResult<Option<Vec<u8>>> {
         let operation = "read_stream.read_data_frame_chunk";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
+        let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         tokio::select! {
             biased;
             code = stop_requested => {
                 let code = code.unwrap_or(0);
+                let done = cleanup.take_done()?;
                 self.finish_interrupted_read(inner, code, done).await?;
+                cleanup.disarm();
                 Ok(None)
             }
             result = inner.read_data_frame_chunk() => {
-                self.finish_read(inner);
-                result.map_err(napi_error)
+                match self.finish_read(inner) {
+                    FinishRead::Restored => {
+                        cleanup.disarm();
+                        result.map_err(napi_error)
+                    }
+                    FinishRead::Stop(inner, code) => {
+                        let done = cleanup.take_done()?;
+                        self.finish_interrupted_read(inner, code, done).await?;
+                        cleanup.disarm();
+                        Ok(None)
+                    }
+                }
             }
         }
     }
@@ -544,20 +630,33 @@ impl ReadStream {
     pub async fn read_header_frame(&self) -> NapiResult<Option<Vec<HeaderField>>> {
         let operation = "read_stream.read_header_frame";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
+        let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         tokio::select! {
             biased;
             code = stop_requested => {
                 let code = code.unwrap_or(0);
+                let done = cleanup.take_done()?;
                 self.finish_interrupted_read(inner, code, done).await?;
+                cleanup.disarm();
                 Ok(None)
             }
             result = inner.read_header_frame() => {
-                self.finish_read(inner);
-                result
-                    .map(|headers| {
-                        headers.map(|headers| headers.into_iter().map(HeaderField::from_pair).collect())
-                    })
-                    .map_err(napi_error)
+                match self.finish_read(inner) {
+                    FinishRead::Restored => {
+                        cleanup.disarm();
+                        result
+                            .map(|headers| {
+                                headers.map(|headers| headers.into_iter().map(HeaderField::from_pair).collect())
+                            })
+                            .map_err(napi_error)
+                    }
+                    FinishRead::Stop(inner, code) => {
+                        let done = cleanup.take_done()?;
+                        self.finish_interrupted_read(inner, code, done).await?;
+                        cleanup.disarm();
+                        Ok(None)
+                    }
+                }
             }
         }
     }

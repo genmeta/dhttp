@@ -131,14 +131,14 @@ fn pyo3_native_surface_does_not_export_removed_request_response_wrappers() {
     let source = std::fs::read_to_string(format!("{}/src/pyo3/mod.rs", env!("CARGO_MANIFEST_DIR")))
         .expect("pyo3 module source should be readable");
     for removed in [
-        "ClientRequest",
-        "ClientResponse",
-        "ServerRequest",
-        "ServerResponse",
-        "RawRequest",
-        "RawResponse",
-        "request_raw",
-        "fetch_raw",
+        concat!("Client", "Request"),
+        concat!("Client", "Response"),
+        concat!("Server", "Request"),
+        concat!("Server", "Response"),
+        concat!("Raw", "Request"),
+        concat!("Raw", "Response"),
+        concat!("request", "_raw"),
+        concat!("fetch", "_raw"),
     ] {
         assert!(
             !source.contains(removed),
@@ -154,6 +154,8 @@ fn pyo3_read_stream_stop_can_interrupt_in_flight_read() {
 
     assert!(source.contains("struct ActiveRead"));
     assert!(source.contains("active: Option<ActiveRead>"));
+    assert!(source.contains("stop_requested: Option<u64>"));
+    assert!(source.contains("struct ActiveReadCleanup"));
     assert!(source.contains("tokio::select!"));
 }
 
