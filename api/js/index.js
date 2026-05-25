@@ -51,9 +51,13 @@ function responseHeaderFields(response) {
 }
 
 function parseResponseHeader(fields) {
-  let status = 200;
+  if (fields == null) {
+    throw new Error('response header frame is missing');
+  }
+
+  let status = null;
   const headers = new Headers();
-  for (const headerField of fields ?? []) {
+  for (const headerField of fields) {
     const name = fieldName(headerField);
     const value = fieldValue(headerField);
     if (name === ':status') {
@@ -62,13 +66,20 @@ function parseResponseHeader(fields) {
       headers.append(name, value);
     }
   }
+  if (status == null) {
+    throw new Error('response status pseudo-header is missing');
+  }
   return { status, headers };
 }
 
 function parseRequestHeader(fields) {
+  if (fields == null) {
+    throw new Error('request header frame is missing');
+  }
+
   const pseudo = new Map();
   const headers = new Headers();
-  for (const headerField of fields ?? []) {
+  for (const headerField of fields) {
     const name = fieldName(headerField);
     const value = fieldValue(headerField);
     if (name.startsWith(':')) {
@@ -77,17 +88,35 @@ function parseRequestHeader(fields) {
       headers.append(name, value);
     }
   }
-  const method = pseudo.get(':method') ?? 'GET';
-  const scheme = pseudo.get(':scheme') ?? 'https';
-  const authority = pseudo.get(':authority') ?? 'localhost';
-  const path = pseudo.get(':path') ?? '/';
+  const method = pseudo.get(':method');
+  const scheme = pseudo.get(':scheme');
+  const authority = pseudo.get(':authority');
+  const path = pseudo.get(':path');
+  if (method == null || scheme == null || authority == null || path == null) {
+    throw new Error('request pseudo-headers are missing');
+  }
   return { method, url: `${scheme}://${authority}${path}`, headers };
 }
 
 function streamFromRead(readStream) {
+  let cancelled = false;
+
+  async function stopReadStream() {
+    await readStream.stop(0);
+  }
+
   return new ReadableStream({
     async pull(controller) {
+      if (cancelled) {
+        controller.close();
+        return;
+      }
       const chunk = await readStream.readDataFrameChunk();
+      if (cancelled) {
+        await stopReadStream();
+        controller.close();
+        return;
+      }
       if (chunk == null) {
         controller.close();
         return;
@@ -95,11 +124,8 @@ function streamFromRead(readStream) {
       controller.enqueue(new Uint8Array(chunk));
     },
     async cancel() {
-      try {
-        await readStream.stop(0);
-      } catch (_) {
-        // best-effort cancellation; the native stream may already be closed
-      }
+      cancelled = true;
+      await stopReadStream();
     },
   });
 }
@@ -189,9 +215,20 @@ class Endpoint {
 
   serve(handler) {
     return this.#inner.serveStreams(async (incoming) => {
-      const request = await requestFromIncoming(incoming);
-      const response = await handler(request);
-      await writeResponse(incoming.writeStream, request.method, response);
+      const writeStream = incoming.writeStream;
+      let request = null;
+      try {
+        request = await requestFromIncoming(incoming);
+        const response = await handler(request);
+        await writeResponse(writeStream, request.method, response);
+      } catch (error) {
+        try {
+          await writeStream.cancel(0);
+        } catch (_) {
+          // Preserve the original handler/write error; the stream may already be closed.
+        }
+        throw error;
+      }
     });
   }
 }
@@ -200,5 +237,7 @@ module.exports = {
   Endpoint,
   Config: native.Config,
   IdentityConfig: native.IdentityConfig,
+  Identity: native.Identity,
   EndpointOptions: native.EndpointOptions,
+  ServeHandle: native.ServeHandle,
 };

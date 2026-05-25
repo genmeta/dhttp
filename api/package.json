@@ -4,6 +4,13 @@
   "private": true,
   "main": "js/index.js",
   "types": "js/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./js/index.d.ts",
+      "require": "./js/index.js",
+      "default": "./js/index.js"
+    }
+  },
   "files": [
     "js/index.js",
     "js/index.d.ts",
