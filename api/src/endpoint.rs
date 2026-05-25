@@ -28,6 +28,7 @@ use connection::Connection;
 
 pub mod client;
 pub mod connection;
+pub mod incoming;
 pub mod server;
 
 pub type Result<T> = std::result::Result<T, DhttpError>;
@@ -213,6 +214,20 @@ impl Endpoint {
         let task = tokio::spawn(async move { endpoint.serve(service).await }.in_current_span());
         ServeHandle::new(self.inner.clone(), task)
     }
+
+    pub fn serve_streams<H>(&self, handler: H) -> ServeHandle
+    where
+        H: Fn(incoming::IncomingStream) -> BoxFuture<'static, Result<()>>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        let endpoint = self.inner.clone();
+        let service = IncomingStreamService { handler };
+        let task = tokio::spawn(async move { endpoint.serve(service).await }.in_current_span());
+        ServeHandle::new(self.inner.clone(), task)
+    }
 }
 
 impl AsRef<dhttp::endpoint::Endpoint> for Endpoint {
@@ -313,6 +328,33 @@ impl Drop for ServeHandle {
 #[derive(Clone)]
 struct HandlerService<H> {
     handler: H,
+}
+
+#[derive(Clone)]
+struct IncomingStreamService<H> {
+    handler: H,
+}
+
+impl<H> Service<dhttp::endpoint::server::UnresolvedRequest> for IncomingStreamService<H>
+where
+    H: Fn(incoming::IncomingStream) -> BoxFuture<'static, Result<()>>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    type Response = ();
+    type Error = DhttpError;
+    type Future = BoxFuture<'static, Result<()>>;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: dhttp::endpoint::server::UnresolvedRequest) -> Self::Future {
+        let handler = self.handler.clone();
+        Box::pin(async move { handler(incoming::IncomingStream::new(req)).await })
+    }
 }
 
 impl<H> Service<dhttp::endpoint::server::UnresolvedRequest> for HandlerService<H>
