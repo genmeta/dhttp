@@ -5,3 +5,6 @@
 /index.d.ts
 /index.js
 /uv.lock
+/python/dhttp/__pycache__/
+/python/dhttp/_native*.so
+/python/dhttp.egg-info/

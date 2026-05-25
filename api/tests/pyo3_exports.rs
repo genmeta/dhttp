@@ -26,51 +26,21 @@ async fn pyo3_minimal_endpoint_api_is_constructible() {
 
     let endpoint = dhttp_api::pyo3::Endpoint::create(None).await.unwrap();
     assert!(endpoint.identity().is_none());
-
-    let request = endpoint.request();
-    request.set_method("POST".to_string()).unwrap();
-    request
-        .set_uri("https://example.com/api".to_string())
-        .unwrap();
-    request
-        .header("content-type".to_string(), "text/plain".to_string())
-        .unwrap();
-    request
-        .headers(vec![(
-            "user-agent".to_string(),
-            "dhttp-api-test".to_string(),
-        )])
-        .unwrap();
-    request
-        .set_headers(vec![("accept".to_string(), "application/json".to_string())])
-        .unwrap();
-    request.body(b"hello".to_vec()).unwrap();
-    request
-        .trailer("x-trailer".to_string(), "done".to_string())
-        .unwrap();
-    request
-        .trailers(vec![("x-checksum".to_string(), "ok".to_string())])
-        .unwrap();
-    request
-        .set_trailers(vec![("x-finished".to_string(), "true".to_string())])
-        .unwrap();
-
-    let _get = endpoint.get("https://example.com/".to_string()).unwrap();
-    let _post = endpoint.post("https://example.com/".to_string()).unwrap();
+    let _bind_patterns = endpoint.bind_patterns();
 }
 
 #[test]
 fn pyo3_async_config_methods_work_from_python_asyncio_without_external_tokio_runtime() {
     Python::initialize();
     Python::attach(|py| {
-        let module = PyModule::new(py, "dhttp").unwrap();
-        dhttp_api::pyo3::dhttp(&module).unwrap();
+        let module = PyModule::new(py, "_native").unwrap();
+        dhttp_api::pyo3::_native(&module).unwrap();
         let path = std::env::temp_dir()
             .join(format!("dhttp-api-pyo3-asyncio-{}", std::process::id()))
             .display()
             .to_string();
         let locals = PyDict::new(py);
-        locals.set_item("dhttp", module.as_any()).unwrap();
+        locals.set_item("dhttp_native", module.as_any()).unwrap();
         locals.set_item("path", path).unwrap();
 
         py.run(
@@ -78,14 +48,15 @@ fn pyo3_async_config_methods_work_from_python_asyncio_without_external_tokio_run
 import asyncio
 
 async def main():
-    config = dhttp.Config(path)
+    config = dhttp_native.Config(path)
     assert await config.identity_exists('missing.pilot') is False
-    endpoint = await dhttp.Endpoint.create(None)
+    endpoint = await dhttp_native.Endpoint.create(None)
 
-    async def handler(_request, response):
-        response.set_status(204)
+    async def handler(incoming):
+        await incoming.write_stream.cancel(0)
+        await incoming.read_stream.stop(0)
 
-    handle = endpoint.serve(handler)
+    handle = endpoint.serve_streams(handler)
     handle.abort()
     await handle.closed()
 
@@ -99,78 +70,38 @@ asyncio.run(main())
 }
 
 #[allow(dead_code)]
-async fn pyo3_client_response_api_is_exposed(
-    request: dhttp_api::pyo3::ClientRequest,
-    response: &dhttp_api::pyo3::ClientResponse,
-) {
-    request.write(b"chunk".to_vec()).await.unwrap();
-    request.flush().await.unwrap();
-    request.close().await.unwrap();
-    request.cancel(0).await.unwrap();
-
-    let _response = request.response().await.unwrap();
-    let _response = request.into_response().await.unwrap();
-
-    response.next_response().await.unwrap();
-    let _status = response.status().unwrap();
-    let _headers = response.headers().unwrap();
-    let _header = response.header("content-type".to_string()).unwrap();
-    let _body = response.read().await.unwrap();
-    let _body = response.read_to_bytes().await.unwrap();
-    let _text = response.read_to_string().await.unwrap();
-    let _trailers = response.trailers().await.unwrap();
-    response.stop(0).await.unwrap();
-    let _agent_name = response.agent_name().unwrap();
-}
-
-#[allow(dead_code)]
-async fn pyo3_server_api_is_exposed(
+async fn pyo3_native_stream_primitive_api_is_exposed(
     endpoint: &dhttp_api::pyo3::Endpoint,
-    handler: Py<PyAny>,
-    request: &dhttp_api::pyo3::ServerRequest,
-    response: &dhttp_api::pyo3::ServerResponse,
+    connection: &dhttp_api::pyo3::Connection,
+    read_stream: &dhttp_api::pyo3::ReadStream,
+    write_stream: &dhttp_api::pyo3::WriteStream,
+    incoming: &dhttp_api::pyo3::IncomingStream,
     handle: &dhttp_api::pyo3::ServeHandle,
+    handler: Py<PyAny>,
 ) {
-    let _handle = endpoint.serve(handler).unwrap();
+    let _connection = endpoint.connect("example.com".to_string()).await.unwrap();
+    let pair = connection.open_request_stream().await.unwrap();
+    let _read_stream = pair.read_stream().unwrap();
+    let _write_stream = pair.write_stream().unwrap();
 
-    let _method = request.method().unwrap();
-    let _uri = request.uri().unwrap();
-    let _scheme = request.scheme().unwrap();
-    let _authority = request.authority().unwrap();
-    let _path = request.path().unwrap();
-    let _protocol = request.protocol().unwrap();
-    let _headers = request.headers().unwrap();
-    let _header = request.header("content-type".to_string()).unwrap();
-    let _body = request.read().await.unwrap();
-    let _body = request.read_to_bytes().await.unwrap();
-    let _text = request.read_to_string().await.unwrap();
-    let _trailers = request.trailers().await.unwrap();
-    request.stop(0).await.unwrap();
-    let _agent_name = request.agent_name().unwrap();
-    let _stream_id = request.stream_id().unwrap();
+    let _chunk = read_stream.read_data_frame_chunk().await.unwrap();
+    let _headers: Option<Vec<(Vec<u8>, Vec<u8>)>> = read_stream.read_header_frame().await.unwrap();
+    read_stream.stop(0).await.unwrap();
 
-    let _status = response.status().unwrap();
-    response.set_status(204).unwrap();
-    let _headers = response.headers().unwrap();
-    response
-        .set_header("content-type".to_string(), "text/plain".to_string())
+    write_stream
+        .send_header(vec![(b":method".to_vec(), b"GET".to_vec())])
+        .await
         .unwrap();
-    response.set_body(b"hello".to_vec()).unwrap();
-    response.write(b"chunk".to_vec()).await.unwrap();
-    response.flush().await.unwrap();
-    let _trailers = response.trailers().unwrap();
-    response
-        .set_trailer("x-trailer".to_string(), "done".to_string())
-        .unwrap();
-    response
-        .set_trailers(vec![("x-trailer".to_string(), "done".to_string())])
-        .unwrap();
-    response.close().await.unwrap();
-    response.cancel(0).await.unwrap();
-    let _agent_name = response.agent_name().unwrap();
-    let _stream_id = response.stream_id().unwrap();
-    response.finish().await.unwrap();
+    write_stream.send_data(b"hello".to_vec()).await.unwrap();
+    write_stream.flush().await.unwrap();
+    write_stream.close().await.unwrap();
+    write_stream.cancel(0).await.unwrap();
 
+    let _stream_id = incoming.stream_id();
+    let _read_stream = incoming.read_stream().unwrap();
+    let _write_stream = incoming.write_stream().unwrap();
+
+    let _handle = endpoint.serve_streams(handler).unwrap();
     handle.shutdown().await.unwrap();
     handle.abort();
     let _is_finished = handle.is_finished();
@@ -193,4 +124,49 @@ async fn pyo3_config_identity_api_is_exposed(
     let _identity = identity_config.identity().await.unwrap();
     let _certs = identity.cert_chain_der();
     let _public_key = identity.public_key_der();
+}
+
+#[test]
+fn pyo3_native_surface_does_not_export_removed_request_response_wrappers() {
+    let source = std::fs::read_to_string(format!("{}/src/pyo3/mod.rs", env!("CARGO_MANIFEST_DIR")))
+        .expect("pyo3 module source should be readable");
+    for removed in [
+        "ClientRequest",
+        "ClientResponse",
+        "ServerRequest",
+        "ServerResponse",
+        "RawRequest",
+        "RawResponse",
+        "request_raw",
+        "fetch_raw",
+    ] {
+        assert!(
+            !source.contains(removed),
+            "removed pyo3 symbol should not appear in native source: {removed}"
+        );
+    }
+}
+
+#[test]
+fn pyo3_read_stream_stop_can_interrupt_in_flight_read() {
+    let source = std::fs::read_to_string(format!("{}/src/pyo3/mod.rs", env!("CARGO_MANIFEST_DIR")))
+        .expect("pyo3 module source should be readable");
+
+    assert!(source.contains("struct ActiveRead"));
+    assert!(source.contains("active: Option<ActiveRead>"));
+    assert!(source.contains("tokio::select!"));
+}
+
+#[test]
+fn python_wrapper_uses_aiohttp_like_request_and_body_helpers() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let endpoint = std::fs::read_to_string(manifest_dir.join("python/dhttp/endpoint.py")).unwrap();
+    let response = std::fs::read_to_string(manifest_dir.join("python/dhttp/response.py")).unwrap();
+
+    assert!(endpoint.contains("json: Any = None"));
+    assert!(endpoint.contains("content: BodyInput = None"));
+    assert!(endpoint.contains("only one of data, json, or content may be provided"));
+    assert!(response.contains("class StreamContent"));
+    assert!(response.contains("async def iter_chunked"));
+    assert!(response.contains("async def json"));
 }
