@@ -100,34 +100,86 @@ function parseRequestHeader(fields) {
 
 function streamFromRead(readStream) {
   let cancelled = false;
+  let closed = false;
+  let activePull = null;
+  let stopping = null;
 
-  async function stopReadStream() {
-    await readStream.stop(0);
+  async function stopNow() {
+    if (closed) {
+      return;
+    }
+    if (stopping != null) {
+      await stopping;
+      return;
+    }
+    stopping = (async () => {
+      try {
+        await readStream.stop(0);
+      } finally {
+        closed = true;
+      }
+    })();
+    await stopping;
   }
 
-  return new ReadableStream({
+  async function requestStop() {
+    cancelled = true;
+    if (activePull != null) {
+      return;
+    }
+    await stopNow();
+  }
+
+  const stream = new ReadableStream({
     async pull(controller) {
-      if (cancelled) {
+      if (cancelled || closed) {
         controller.close();
         return;
       }
-      const chunk = await readStream.readDataFrameChunk();
+      activePull = readStream.readDataFrameChunk();
+      let chunk;
+      try {
+        chunk = await activePull;
+      } finally {
+        activePull = null;
+      }
       if (cancelled) {
-        await stopReadStream();
+        await stopNow();
         controller.close();
         return;
       }
       if (chunk == null) {
+        closed = true;
         controller.close();
         return;
       }
       controller.enqueue(new Uint8Array(chunk));
     },
     async cancel() {
-      cancelled = true;
-      await stopReadStream();
+      await requestStop();
     },
   });
+
+  return { stream, stop: requestStop };
+}
+
+async function cancelRequestBody(requestState) {
+  if (requestState == null) {
+    return;
+  }
+  try {
+    await requestState.stopBody();
+  } catch (_) {
+    // Server-side raw stream cleanup is best-effort after handler completion.
+  }
+}
+
+async function stopReadStream(readStream) {
+  try {
+    await readStream.stop(0);
+  } catch (_) {
+    // Preserve the original header/parsing error; the native stream may already be closed.
+  }
 }
 
 async function writeBody(writeStream, body) {
@@ -156,14 +208,24 @@ function hasBody(method, status) {
 
 async function requestFromIncoming(incoming) {
   const readStream = incoming.readStream;
-  const fields = await readStream.readHeaderFrame();
-  const { method, url, headers } = parseRequestHeader(fields);
-  const init = { method, headers };
-  if (method !== 'GET' && method !== 'HEAD') {
-    init.body = streamFromRead(readStream);
-    init.duplex = 'half';
+  try {
+    const fields = await readStream.readHeaderFrame();
+    const { method, url, headers } = parseRequestHeader(fields);
+    const init = { method, headers };
+    let stopBody = async () => {
+      await stopReadStream(readStream);
+    };
+    if (method !== 'GET' && method !== 'HEAD') {
+      const body = streamFromRead(readStream);
+      init.body = body.stream;
+      init.duplex = 'half';
+      stopBody = body.stop;
+    }
+    return { request: new Request(url, init), stopBody };
+  } catch (error) {
+    await stopReadStream(readStream);
+    throw error;
   }
-  return new Request(url, init);
 }
 
 async function writeResponse(writeStream, method, value) {
@@ -209,16 +271,17 @@ class Endpoint {
     await writeBody(writeStream, request.body);
 
     const { status, headers } = parseResponseHeader(await readStream.readHeaderFrame());
-    const body = hasBody(request.method, status) ? streamFromRead(readStream) : null;
+    const body = hasBody(request.method, status) ? streamFromRead(readStream).stream : null;
     return new Response(body, { status, headers });
   }
 
   serve(handler) {
     return this.#inner.serveStreams(async (incoming) => {
       const writeStream = incoming.writeStream;
-      let request = null;
+      let requestState = null;
       try {
-        request = await requestFromIncoming(incoming);
+        requestState = await requestFromIncoming(incoming);
+        const request = requestState.request;
         const response = await handler(request);
         await writeResponse(writeStream, request.method, response);
       } catch (error) {
@@ -228,6 +291,8 @@ class Endpoint {
           // Preserve the original handler/write error; the stream may already be closed.
         }
         throw error;
+      } finally {
+        await cancelRequestBody(requestState);
       }
     });
   }

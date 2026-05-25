@@ -178,3 +178,17 @@ fn node_wrapper_exports_match_type_declarations_and_hide_native_entry() {
     assert!(package_json.contains("\"./js/index.js\""));
     assert!(!package_json.contains("\"./index.js\""));
 }
+
+#[test]
+fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_cancel() {
+    let source = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("js/index.js"),
+    )
+    .unwrap();
+
+    assert!(source.contains("activePull"));
+    assert!(source.contains("requestStop"));
+    assert!(source.contains("return { stream, stop: requestStop }"));
+    assert!(source.contains("await requestState.stopBody()"));
+    assert!(source.contains("await writeStream.cancel(0)"));
+}
