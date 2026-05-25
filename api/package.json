@@ -2,18 +2,20 @@
   "name": "dhttp",
   "version": "0.1.0",
   "private": true,
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "js/index.js",
+  "types": "js/index.d.ts",
   "files": [
+    "js/index.js",
+    "js/index.d.ts",
+    "*.node",
     "index.js",
-    "index.d.ts",
-    "*.node"
+    "index.d.ts"
   ],
   "scripts": {
     "build": "napi build --platform -- --features napi",
     "build:release": "napi build --platform --release -- --features napi",
     "prepare": "npm run build",
-    "smoke": "node -e \"const dhttp = require('./index.js'); const config = new dhttp.Config('/tmp/dhttp-api-node-smoke'); if (config.path() !== '/tmp/dhttp-api-node-smoke') throw new Error('unexpected config path')\""
+    "smoke": "node -e \"const dhttp = require('./js/index.js'); if (typeof dhttp.Endpoint.create !== 'function') throw new Error('missing Endpoint.create')\""
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.3.5"

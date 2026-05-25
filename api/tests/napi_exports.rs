@@ -1,13 +1,9 @@
 #![cfg(feature = "napi")]
 
-use napi::bindgen_prelude::Buffer;
-use napi::bindgen_prelude::{Either, FnArgs, Function, Promise};
+use napi::bindgen_prelude::{Buffer, Either, FnArgs, Function, Promise};
 
-type ServerHandlerArgs = FnArgs<(
-    dhttp_api::napi::ServerRequest,
-    dhttp_api::napi::ServerResponse,
-)>;
-type ServerHandlerResult = Either<Promise<()>, ()>;
+type StreamHandlerArgs = FnArgs<(dhttp_api::napi::IncomingStream,)>;
+type StreamHandlerResult = Either<Promise<()>, ()>;
 
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
@@ -32,112 +28,75 @@ async fn napi_minimal_endpoint_api_is_constructible() {
 
     let endpoint = dhttp_api::napi::Endpoint::create(None).await.unwrap();
     assert!(endpoint.identity().is_none());
+}
 
-    let request = endpoint.request();
-    request.set_method("POST".to_string()).unwrap();
-    request
-        .set_uri("https://example.com/api".to_string())
-        .unwrap();
-    request
-        .header("content-type".to_string(), "text/plain".to_string())
-        .unwrap();
-    request
-        .headers(vec![(
-            "user-agent".to_string(),
-            "dhttp-api-test".to_string(),
-        )])
-        .unwrap();
-    request
-        .set_headers(vec![("accept".to_string(), "application/json".to_string())])
-        .unwrap();
-    request.body(Buffer::from(b"hello".to_vec())).unwrap();
-    request
-        .trailer("x-trailer".to_string(), "done".to_string())
-        .unwrap();
-    request
-        .trailers(vec![("x-checksum".to_string(), "ok".to_string())])
-        .unwrap();
-    request
-        .set_trailers(vec![("x-finished".to_string(), "true".to_string())])
-        .unwrap();
+#[test]
+fn napi_header_field_preserves_bytes_at_type_boundary() {
+    let field = dhttp_api::napi::HeaderField {
+        name: Buffer::from(b"x-bin".to_vec()),
+        value: Buffer::from(b"\xff".to_vec()),
+    };
 
-    let _get = endpoint.get("https://example.com/".to_string()).unwrap();
-    let _post = endpoint.post("https://example.com/".to_string()).unwrap();
+    assert_eq!(field.name.as_ref(), b"x-bin");
+    assert_eq!(field.value.as_ref(), b"\xff");
+}
+
+#[test]
+fn napi_stream_wrapper_types_are_send() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<dhttp_api::napi::Connection>();
+    assert_send::<dhttp_api::napi::ReadStream>();
+    assert_send::<dhttp_api::napi::WriteStream>();
 }
 
 #[allow(dead_code)]
-async fn napi_client_response_api_is_exposed(
-    request: dhttp_api::napi::ClientRequest,
-    response: &dhttp_api::napi::ClientResponse,
-) {
-    request.flush().await.unwrap();
-    request.close().await.unwrap();
-    request.cancel(0).await.unwrap();
-
-    let _response = request.response().await.unwrap();
-    let _response = request.into_response().await.unwrap();
-
-    response.next_response().await.unwrap();
-    let _status = response.status().unwrap();
-    let _headers = response.headers().unwrap();
-    let _header = response.header("content-type".to_string()).unwrap();
-    let _body = response.read().await.unwrap();
-    let _body = response.read_to_bytes().await.unwrap();
-    let _text = response.read_to_string().await.unwrap();
-    let _trailers = response.trailers().await.unwrap();
-    response.stop(0).await.unwrap();
-    let _agent_name = response.agent_name().unwrap();
-}
-
-#[allow(dead_code)]
-async fn napi_server_api_is_exposed<'env>(
+async fn napi_stream_primitive_api_is_exposed(
     endpoint: &dhttp_api::napi::Endpoint,
-    handler: Function<'env, ServerHandlerArgs, ServerHandlerResult>,
-    request: &dhttp_api::napi::ServerRequest,
-    response: &dhttp_api::napi::ServerResponse,
+    connection: &dhttp_api::napi::Connection,
+    read_stream: &dhttp_api::napi::ReadStream,
+    write_stream: &dhttp_api::napi::WriteStream,
+) {
+    let _connection = endpoint.connect("example.com".to_string()).await.unwrap();
+    let streams = connection.open_request_stream().await.unwrap();
+    let _read_stream = streams.read_stream().unwrap();
+    let _write_stream = streams.write_stream().unwrap();
+
+    let _headers: Option<Vec<dhttp_api::napi::HeaderField>> =
+        read_stream.read_header_frame().await.unwrap();
+    let _chunk: Option<Vec<u8>> = read_stream.read_data_frame_chunk().await.unwrap();
+    read_stream.stop(0).await.unwrap();
+
+    write_stream
+        .send_header(vec![dhttp_api::napi::HeaderField {
+            name: Buffer::from(b":method".to_vec()),
+            value: Buffer::from(b"GET".to_vec()),
+        }])
+        .await
+        .unwrap();
+    write_stream
+        .send_data(Buffer::from(b"hello".to_vec()))
+        .await
+        .unwrap();
+    write_stream.flush().await.unwrap();
+    write_stream.close().await.unwrap();
+    write_stream.cancel(0).await.unwrap();
+}
+
+#[allow(dead_code)]
+async fn napi_stream_server_api_is_exposed<'env>(
+    endpoint: &dhttp_api::napi::Endpoint,
+    handler: Function<'env, StreamHandlerArgs, StreamHandlerResult>,
+    incoming: dhttp_api::napi::IncomingStream,
     handle: &dhttp_api::napi::ServeHandle,
 ) {
-    let _handle = endpoint.serve(handler).unwrap();
-
-    let _method = request.method().unwrap();
-    let _uri = request.uri().unwrap();
-    let _scheme = request.scheme().unwrap();
-    let _authority = request.authority().unwrap();
-    let _path = request.path().unwrap();
-    let _protocol = request.protocol().unwrap();
-    let _headers = request.headers().unwrap();
-    let _header = request.header("content-type".to_string()).unwrap();
-    let _body = request.read().await.unwrap();
-    let _body = request.read_to_bytes().await.unwrap();
-    let _text = request.read_to_string().await.unwrap();
-    let _trailers = request.trailers().await.unwrap();
-    request.stop(0).await.unwrap();
-    let _agent_name = request.agent_name().unwrap();
-    let _stream_id = request.stream_id().unwrap();
-
-    let _status = response.status().unwrap();
-    response.set_status(204).unwrap();
-    let _headers = response.headers().unwrap();
-    response
-        .set_header("content-type".to_string(), "text/plain".to_string())
-        .unwrap();
-    response.set_body(Buffer::from(b"hello".to_vec())).unwrap();
-    response.flush().await.unwrap();
-    let _trailers = response.trailers().unwrap();
-    response
-        .set_trailer("x-trailer".to_string(), "done".to_string())
-        .unwrap();
-    response
-        .set_trailers(vec![("x-trailer".to_string(), "done".to_string())])
-        .unwrap();
-    response.close().await.unwrap();
-    response.cancel(0).await.unwrap();
-    let _agent_name = response.agent_name().unwrap();
-    let _stream_id = response.stream_id().unwrap();
-    response.finish().await.unwrap();
+    let _handle = endpoint.serve_streams(handler).unwrap();
+    let _stream_id = incoming.stream_id();
+    let _read_stream = incoming.read_stream().unwrap();
+    let _write_stream = incoming.write_stream().unwrap();
 
     handle.shutdown().await.unwrap();
-    handle.abort();
+    handle.abort().unwrap();
     let _is_finished = handle.is_finished();
     handle.closed().await.unwrap();
 }
@@ -158,4 +117,36 @@ async fn napi_config_identity_api_is_exposed(
     let _identity = identity_config.identity().await.unwrap();
     let _certs = identity.cert_chain_der();
     let _public_key = identity.public_key_der();
+}
+
+#[test]
+fn napi_public_surface_has_no_legacy_request_response_wrappers() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sources = [
+        manifest_dir.join("src/napi/mod.rs"),
+        manifest_dir.join("js/index.js"),
+        manifest_dir.join("js/index.d.ts"),
+    ]
+    .into_iter()
+    .map(std::fs::read_to_string)
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .join("\n");
+
+    for forbidden in [
+        "ClientRequest",
+        "ClientResponse",
+        "ServerRequest",
+        "ServerResponse",
+        "RawRequest",
+        "RawResponse",
+        "fetchRaw",
+        "requestRaw",
+        "request_raw",
+    ] {
+        assert!(
+            !sources.contains(forbidden),
+            "NAPI source must not expose legacy public name {forbidden}"
+        );
+    }
 }
