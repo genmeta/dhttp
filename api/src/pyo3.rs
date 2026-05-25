@@ -109,23 +109,23 @@ impl Identity {
     }
 }
 
-#[pyclass(name = "Home")]
-pub struct Home {
-    inner: crate::home::Home,
+#[pyclass(name = "Config")]
+pub struct Config {
+    inner: crate::config::Config,
 }
 
 #[pymethods]
-impl Home {
+impl Config {
     #[new]
     pub fn new(path: String) -> Self {
         Self {
-            inner: crate::home::Home::from_path(path),
+            inner: crate::config::Config::from_path(path),
         }
     }
 
     #[staticmethod]
     pub fn load() -> PyResult<Self> {
-        crate::home::Home::load()
+        crate::config::Config::load()
             .map(|inner| Self { inner })
             .map_err(py_error)
     }
@@ -134,17 +134,17 @@ impl Home {
         self.inner.path().display().to_string()
     }
 
-    pub fn identity_home(&self, name: String) -> PyResult<IdentityHome> {
+    pub fn identity_config(&self, name: String) -> PyResult<IdentityConfig> {
         self.inner
-            .identity_home(&name)
-            .map(|inner| IdentityHome { inner })
+            .identity_config(&name)
+            .map(|inner| IdentityConfig { inner })
             .map_err(py_error)
     }
 
-    pub async fn load_identity(&self, name: String) -> PyResult<IdentityHome> {
+    pub async fn load_identity(&self, name: String) -> PyResult<IdentityConfig> {
         with_tokio(self.inner.load_identity(&name))
             .await
-            .map(|inner| IdentityHome { inner })
+            .map(|inner| IdentityConfig { inner })
             .map_err(py_error)
     }
 
@@ -159,16 +159,16 @@ impl Home {
     }
 }
 
-#[pyclass(name = "IdentityHome")]
-pub struct IdentityHome {
-    inner: crate::home::IdentityHome,
+#[pyclass(name = "IdentityConfig")]
+pub struct IdentityConfig {
+    inner: crate::config::IdentityConfig,
 }
 
 #[pymethods]
-impl IdentityHome {
+impl IdentityConfig {
     #[new]
     pub fn new(path: String) -> PyResult<Self> {
-        crate::home::IdentityHome::from_path(path)
+        crate::config::IdentityConfig::from_path(path)
             .map(|inner| Self { inner })
             .map_err(py_error)
     }
@@ -848,8 +848,8 @@ impl Endpoint {
 #[pymodule]
 pub fn dhttp(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
-    module.add_class::<Home>()?;
-    module.add_class::<IdentityHome>()?;
+    module.add_class::<Config>()?;
+    module.add_class::<IdentityConfig>()?;
     module.add_class::<EndpointOptions>()?;
     module.add_class::<ClientRequest>()?;
     module.add_class::<ClientResponse>()?;

@@ -13,7 +13,7 @@
     "build": "napi build --platform -- --features napi",
     "build:release": "napi build --platform --release -- --features napi",
     "prepare": "npm run build",
-    "smoke": "node -e \"const dhttp = require('./index.js'); const home = new dhttp.Home('/tmp/dhttp-api-node-smoke'); if (home.path() !== '/tmp/dhttp-api-node-smoke') throw new Error('unexpected home path')\""
+    "smoke": "node -e \"const dhttp = require('./index.js'); const config = new dhttp.Config('/tmp/dhttp-api-node-smoke'); if (config.path() !== '/tmp/dhttp-api-node-smoke') throw new Error('unexpected config path')\""
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.3.5"

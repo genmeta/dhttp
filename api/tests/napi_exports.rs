@@ -11,16 +11,16 @@ type ServerHandlerResult = Either<Promise<()>, ()>;
 
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
-    let home = dhttp_api::napi::Home::new("/tmp/dhttp-api-napi".to_string());
-    assert_eq!(home.path(), "/tmp/dhttp-api-napi");
-    let identity_home = home.identity_home("reimu.pilot".to_string()).unwrap();
-    assert_eq!(identity_home.name(), "reimu.pilot");
+    let config = dhttp_api::napi::Config::new("/tmp/dhttp-api-napi".to_string());
+    assert_eq!(config.path(), "/tmp/dhttp-api-napi");
+    let identity_config = config.identity_config("reimu.pilot".to_string()).unwrap();
+    assert_eq!(identity_config.name(), "reimu.pilot");
     assert_eq!(
-        identity_home.path(),
+        identity_config.path(),
         "/tmp/dhttp-api-napi/reimu.pilot".to_string()
     );
     assert!(
-        !home
+        !config
             .identity_exists("missing.pilot".to_string())
             .await
             .unwrap()
@@ -143,16 +143,19 @@ async fn napi_server_api_is_exposed<'env>(
 }
 
 #[allow(dead_code)]
-async fn napi_home_identity_api_is_exposed(
-    home: &dhttp_api::napi::Home,
-    identity_home: &dhttp_api::napi::IdentityHome,
+async fn napi_config_identity_api_is_exposed(
+    config: &dhttp_api::napi::Config,
+    identity_config: &dhttp_api::napi::IdentityConfig,
     identity: &dhttp_api::napi::Identity,
 ) {
-    let _identity_home =
-        dhttp_api::napi::IdentityHome::from_path("/tmp/reimu.pilot".to_string()).unwrap();
-    let _identity_home = home.load_identity("reimu.pilot".to_string()).await.unwrap();
-    let _identities = home.identities().await.unwrap();
-    let _identity = identity_home.identity().await.unwrap();
+    let _identity_config =
+        dhttp_api::napi::IdentityConfig::from_path("/tmp/reimu.pilot".to_string()).unwrap();
+    let _identity_config = config
+        .load_identity("reimu.pilot".to_string())
+        .await
+        .unwrap();
+    let _identities = config.identities().await.unwrap();
+    let _identity = identity_config.identity().await.unwrap();
     let _certs = identity.cert_chain_der();
     let _public_key = identity.public_key_der();
 }

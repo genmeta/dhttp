@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use dhttp::name::DhttpName;
 use dhttp_api::{
+    config::{Config, IdentityConfig},
     error::DhttpError,
-    home::{Home, IdentityHome},
     identity::Identity,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -27,43 +27,43 @@ fn http_boundary_aliases_are_public() {
 }
 
 #[test]
-fn identity_home_from_path_exposes_partial_name_and_path() {
-    let identity_home = IdentityHome::from_path("/tmp/reimu.pilot").unwrap();
+fn identity_config_from_path_exposes_partial_name_and_path() {
+    let identity_config = IdentityConfig::from_path("/tmp/reimu.pilot").unwrap();
 
-    assert_eq!(identity_home.name(), "reimu.pilot");
-    assert_eq!(identity_home.path(), Path::new("/tmp/reimu.pilot"));
+    assert_eq!(identity_config.name(), "reimu.pilot");
+    assert_eq!(identity_config.path(), Path::new("/tmp/reimu.pilot"));
 }
 
 #[test]
-fn home_identity_home_expands_partial_name_under_home_path() {
-    let home = Home::from_path("/tmp/dhttp-home");
-    let identity_home = home.identity_home("reimu.pilot").unwrap();
+fn config_identity_config_expands_partial_name_under_config_path() {
+    let config = Config::from_path("/tmp/dhttp-config");
+    let identity_config = config.identity_config("reimu.pilot").unwrap();
 
-    assert_eq!(home.path(), Path::new("/tmp/dhttp-home"));
-    assert_eq!(identity_home.name(), "reimu.pilot");
+    assert_eq!(config.path(), Path::new("/tmp/dhttp-config"));
+    assert_eq!(identity_config.name(), "reimu.pilot");
     assert_eq!(
-        identity_home.path(),
-        Path::new("/tmp/dhttp-home/reimu.pilot")
+        identity_config.path(),
+        Path::new("/tmp/dhttp-config/reimu.pilot")
     );
 }
 
 #[test]
-fn invalid_name_returns_dhttp_error_operation() {
-    let home = Home::from_path("/tmp/dhttp-home");
-    let error = home.identity_home("!!!").unwrap_err();
+fn invalid_name_returns_config_operation() {
+    let config = Config::from_path("/tmp/dhttp-config");
+    let error = config.identity_config("!!!").unwrap_err();
 
-    assert_eq!(error.operation(), "home.identity_home");
+    assert_eq!(error.operation(), "config.identity_config");
     assert!(error.message().contains("invalid characters"));
     assert!(!error.report().is_empty());
     assert!(!error.causes().is_empty());
 }
 
 #[tokio::test]
-async fn identity_exists_reports_invalid_name_operation() {
-    let home = Home::from_path("/tmp/dhttp-home");
-    let error = home.identity_exists("!!!").await.unwrap_err();
+async fn identity_exists_reports_config_operation() {
+    let config = Config::from_path("/tmp/dhttp-config");
+    let error = config.identity_exists("!!!").await.unwrap_err();
 
-    assert_eq!(error.operation(), "home.identity_exists");
+    assert_eq!(error.operation(), "config.identity_exists");
 }
 
 #[test]
@@ -105,9 +105,9 @@ async fn identities_lists_existing_identity_directories_with_ssl_subdir() {
     tokio::fs::create_dir_all(base.join("ignored.no-ssl"))
         .await
         .unwrap();
-    let home = Home::from_path(&base);
+    let config = Config::from_path(&base);
 
-    let identities = home.identities().await.unwrap();
+    let identities = config.identities().await.unwrap();
 
     assert_eq!(identities, vec!["reimu.pilot".to_string()]);
 }

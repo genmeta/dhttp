@@ -61,23 +61,23 @@ impl Identity {
     }
 }
 
-#[napi(js_name = "Home")]
-pub struct Home {
-    inner: crate::home::Home,
+#[napi(js_name = "Config")]
+pub struct Config {
+    inner: crate::config::Config,
 }
 
 #[napi]
-impl Home {
+impl Config {
     #[napi(constructor)]
     pub fn new(path: String) -> Self {
         Self {
-            inner: crate::home::Home::from_path(path),
+            inner: crate::config::Config::from_path(path),
         }
     }
 
     #[napi]
-    pub fn load() -> NapiResult<Home> {
-        crate::home::Home::load()
+    pub fn load() -> NapiResult<Config> {
+        crate::config::Config::load()
             .map(|inner| Self { inner })
             .map_err(napi_error)
     }
@@ -88,19 +88,19 @@ impl Home {
     }
 
     #[napi]
-    pub fn identity_home(&self, name: String) -> NapiResult<IdentityHome> {
+    pub fn identity_config(&self, name: String) -> NapiResult<IdentityConfig> {
         self.inner
-            .identity_home(&name)
-            .map(|inner| IdentityHome { inner })
+            .identity_config(&name)
+            .map(|inner| IdentityConfig { inner })
             .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn load_identity(&self, name: String) -> NapiResult<IdentityHome> {
+    pub async fn load_identity(&self, name: String) -> NapiResult<IdentityConfig> {
         self.inner
             .load_identity(&name)
             .await
-            .map(|inner| IdentityHome { inner })
+            .map(|inner| IdentityConfig { inner })
             .map_err(napi_error)
     }
 
@@ -115,16 +115,16 @@ impl Home {
     }
 }
 
-#[napi(js_name = "IdentityHome")]
-pub struct IdentityHome {
-    inner: crate::home::IdentityHome,
+#[napi(js_name = "IdentityConfig")]
+pub struct IdentityConfig {
+    inner: crate::config::IdentityConfig,
 }
 
 #[napi]
-impl IdentityHome {
+impl IdentityConfig {
     #[napi]
-    pub fn from_path(path: String) -> NapiResult<IdentityHome> {
-        crate::home::IdentityHome::from_path(path)
+    pub fn from_path(path: String) -> NapiResult<IdentityConfig> {
+        crate::config::IdentityConfig::from_path(path)
             .map(|inner| Self { inner })
             .map_err(napi_error)
     }

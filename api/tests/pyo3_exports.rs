@@ -5,16 +5,16 @@ use pyo3::types::PyDict;
 
 #[tokio::test]
 async fn pyo3_minimal_endpoint_api_is_constructible() {
-    let home = dhttp_api::pyo3::Home::new("/tmp/dhttp-api-pyo3".to_string());
-    assert_eq!(home.path(), "/tmp/dhttp-api-pyo3");
-    let identity_home = home.identity_home("reimu.pilot".to_string()).unwrap();
-    assert_eq!(identity_home.name(), "reimu.pilot");
+    let config = dhttp_api::pyo3::Config::new("/tmp/dhttp-api-pyo3".to_string());
+    assert_eq!(config.path(), "/tmp/dhttp-api-pyo3");
+    let identity_config = config.identity_config("reimu.pilot".to_string()).unwrap();
+    assert_eq!(identity_config.name(), "reimu.pilot");
     assert_eq!(
-        identity_home.path(),
+        identity_config.path(),
         "/tmp/dhttp-api-pyo3/reimu.pilot".to_string()
     );
     assert!(
-        !home
+        !config
             .identity_exists("missing.pilot".to_string())
             .await
             .unwrap()
@@ -60,7 +60,7 @@ async fn pyo3_minimal_endpoint_api_is_constructible() {
 }
 
 #[test]
-fn pyo3_async_home_methods_work_from_python_asyncio_without_external_tokio_runtime() {
+fn pyo3_async_config_methods_work_from_python_asyncio_without_external_tokio_runtime() {
     Python::initialize();
     Python::attach(|py| {
         let module = PyModule::new(py, "dhttp").unwrap();
@@ -78,8 +78,8 @@ fn pyo3_async_home_methods_work_from_python_asyncio_without_external_tokio_runti
 import asyncio
 
 async def main():
-    home = dhttp.Home(path)
-    assert await home.identity_exists('missing.pilot') is False
+    config = dhttp.Config(path)
+    assert await config.identity_exists('missing.pilot') is False
     endpoint = await dhttp.Endpoint.create(None)
 
     async def handler(_request, response):
@@ -178,16 +178,19 @@ async fn pyo3_server_api_is_exposed(
 }
 
 #[allow(dead_code)]
-async fn pyo3_home_identity_api_is_exposed(
-    home: &dhttp_api::pyo3::Home,
-    identity_home: &dhttp_api::pyo3::IdentityHome,
+async fn pyo3_config_identity_api_is_exposed(
+    config: &dhttp_api::pyo3::Config,
+    identity_config: &dhttp_api::pyo3::IdentityConfig,
     identity: &dhttp_api::pyo3::Identity,
 ) {
-    let _identity_home =
-        dhttp_api::pyo3::IdentityHome::new("/tmp/reimu.pilot".to_string()).unwrap();
-    let _identity_home = home.load_identity("reimu.pilot".to_string()).await.unwrap();
-    let _identities = home.identities().await.unwrap();
-    let _identity = identity_home.identity().await.unwrap();
+    let _identity_config =
+        dhttp_api::pyo3::IdentityConfig::new("/tmp/reimu.pilot".to_string()).unwrap();
+    let _identity_config = config
+        .load_identity("reimu.pilot".to_string())
+        .await
+        .unwrap();
+    let _identities = config.identities().await.unwrap();
+    let _identity = identity_config.identity().await.unwrap();
     let _certs = identity.cert_chain_der();
     let _public_key = identity.public_key_der();
 }
