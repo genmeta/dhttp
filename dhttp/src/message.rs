@@ -2,9 +2,9 @@ use std::{borrow::Cow, mem, ops::ControlFlow};
 
 use bytes::{Buf, Bytes, BytesMut};
 use http::{
-    HeaderMap, Uri,
+    HeaderMap, Method, StatusCode, Uri,
     header::{InvalidHeaderName, InvalidHeaderValue},
-    uri::Authority,
+    uri::{Authority, PathAndQuery, Scheme},
 };
 use snafu::{ResultExt, Snafu};
 
@@ -14,7 +14,8 @@ use crate::h3x::{
     error::{Code, H3FrameUnexpected, H3MessageError},
     message::stream::{MessageStreamError, ReadStream, WriteStream},
     qpack::field::{
-        FieldLine, FieldSection, MalformedHeaderSection, PseudoHeaders, malformed_header_section,
+        FieldLine, FieldSection, MalformedHeaderSection, Protocol, PseudoHeaders,
+        malformed_header_section,
     },
 };
 
@@ -232,6 +233,255 @@ impl<'a> IntoBody for Cow<'a, [u8]> {
 impl<T: AsRef<[u8]> + ?Sized> IntoBody for &T {
     fn into_body(self) -> Body {
         body_from_buf(Bytes::copy_from_slice(self.as_ref()))
+    }
+}
+
+fn header_map_to_field_lines(headers: &HeaderMap) -> impl Iterator<Item = FieldLine> + '_ {
+    headers.iter().map(|(name, value)| FieldLine {
+        name: Bytes::from_owner(name.clone()),
+        value: Bytes::from_owner(value.clone()),
+    })
+}
+
+pub trait BeMessageHeader {
+    type Iter<'a>: Iterator<Item = FieldLine> + 'a
+    where
+        Self: 'a;
+
+    fn header_map(&self) -> &HeaderMap;
+
+    fn iter(&self) -> Self::Iter<'_>;
+
+    fn is_interim(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestHeader {
+    method: Method,
+    scheme: Scheme,
+    authority: Authority,
+    path: PathAndQuery,
+    protocol: Option<Protocol>,
+    headers: HeaderMap,
+}
+
+impl RequestHeader {
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    pub fn scheme(&self) -> &Scheme {
+        &self.scheme
+    }
+
+    pub fn authority(&self) -> &Authority {
+        &self.authority
+    }
+
+    pub fn path(&self) -> &PathAndQuery {
+        &self.path
+    }
+
+    pub fn protocol(&self) -> Option<&Protocol> {
+        self.protocol.as_ref()
+    }
+
+    pub fn uri(&self) -> Uri {
+        let mut parts = http::uri::Parts::default();
+        parts.scheme = Some(self.scheme.clone());
+        parts.authority = Some(self.authority.clone());
+        parts.path_and_query = Some(self.path.clone());
+        Uri::from_parts(parts).expect("valid URI parts from request header")
+    }
+
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    fn field_lines(&self) -> Vec<FieldLine> {
+        let mut fields = Vec::with_capacity(self.headers.len() + 5);
+        fields.push(self.method.clone().into());
+        if let Some(protocol) = self.protocol.clone() {
+            fields.push(protocol.into());
+        }
+        fields.push(self.scheme.clone().into());
+        fields.push(self.authority.clone().into());
+        fields.push(self.path.clone().into());
+        fields.extend(header_map_to_field_lines(&self.headers));
+        fields
+    }
+}
+
+impl TryFrom<FieldSection> for RequestHeader {
+    type Error = MalformedHeaderSection;
+
+    fn try_from(value: FieldSection) -> Result<Self, Self::Error> {
+        value.check_pseudo()?;
+        if value.is_response_header() {
+            return Err(MalformedHeaderSection::ResponsePseudoHeaderInRequest);
+        }
+        if value.is_trailer() {
+            return malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail();
+        }
+
+        let method = value.method();
+        let Some(scheme) = value.scheme() else {
+            return malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail();
+        };
+        let Some(authority) = value.authority() else {
+            return malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail();
+        };
+        let Some(path) = value.path() else {
+            return malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail();
+        };
+        let protocol = value.protocol();
+        let headers = value.into_header_map();
+
+        Ok(Self {
+            method,
+            scheme,
+            authority,
+            path,
+            protocol,
+            headers,
+        })
+    }
+}
+
+impl BeMessageHeader for RequestHeader {
+    type Iter<'a> = std::vec::IntoIter<FieldLine>;
+
+    fn header_map(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.field_lines().into_iter()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseHeader {
+    status: StatusCode,
+    headers: HeaderMap,
+}
+
+impl ResponseHeader {
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub fn set_status(&mut self, status: StatusCode) {
+        self.status = status;
+    }
+
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    pub fn header_map_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
+    }
+
+    pub fn is_interim(&self) -> bool {
+        self.status.is_informational()
+    }
+
+    fn field_lines(&self) -> Vec<FieldLine> {
+        let mut fields = Vec::with_capacity(self.headers.len() + 1);
+        fields.push(self.status.into());
+        fields.extend(header_map_to_field_lines(&self.headers));
+        fields
+    }
+}
+
+impl Default for ResponseHeader {
+    fn default() -> Self {
+        Self {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+        }
+    }
+}
+
+impl TryFrom<FieldSection> for ResponseHeader {
+    type Error = MalformedHeaderSection;
+
+    fn try_from(value: FieldSection) -> Result<Self, Self::Error> {
+        value.check_pseudo()?;
+        if value.is_request_header() {
+            return Err(MalformedHeaderSection::RequestPseudoHeaderInResponse);
+        }
+        if value.is_trailer() {
+            return malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail();
+        }
+        let status = value.status();
+        let headers = value.into_header_map();
+        Ok(Self { status, headers })
+    }
+}
+
+impl BeMessageHeader for ResponseHeader {
+    type Iter<'a> = std::vec::IntoIter<FieldLine>;
+
+    fn header_map(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.field_lines().into_iter()
+    }
+
+    fn is_interim(&self) -> bool {
+        ResponseHeader::is_interim(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Trailer {
+    headers: HeaderMap,
+}
+
+impl Trailer {
+    pub fn new(headers: HeaderMap) -> Self {
+        Self { headers }
+    }
+
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    pub fn header_map_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
+    }
+
+    pub fn into_header_map(self) -> HeaderMap {
+        self.headers
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty()
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<FieldLine> {
+        header_map_to_field_lines(&self.headers)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+impl TryFrom<FieldSection> for Trailer {
+    type Error = MalformedHeaderSection;
+
+    fn try_from(value: FieldSection) -> Result<Self, Self::Error> {
+        if !value.is_trailer() {
+            return Err(MalformedHeaderSection::PseudoHeaderInTrailer);
+        }
+        Ok(Self {
+            headers: value.into_header_map(),
+        })
     }
 }
 
@@ -1371,4 +1621,104 @@ mod tests {
             "https://alice@reimu.pilot.genmeta.net:443/api?q=1"
         );
     }
+
+    #[test]
+    fn request_header_from_field_section_accepts_https_header() {
+        let section = crate::h3x::qpack::field::FieldSection::header(
+            crate::h3x::qpack::field::PseudoHeaders::request(
+                http::Method::GET,
+                "https://example.com/api".parse().unwrap(),
+            ),
+            http::HeaderMap::new(),
+        );
+
+        let header = super::RequestHeader::try_from(section).unwrap();
+
+        assert_eq!(header.method(), &http::Method::GET);
+        assert_eq!(header.scheme(), &http::uri::Scheme::HTTPS);
+        assert_eq!(header.authority().as_str(), "example.com");
+        assert_eq!(header.path().as_str(), "/api");
+        assert_eq!(
+            header.uri(),
+            "https://example.com/api".parse::<http::Uri>().unwrap()
+        );
+    }
+
+    #[test]
+    fn request_header_from_field_section_rejects_response_header() {
+        let section = crate::h3x::qpack::field::FieldSection::header(
+            crate::h3x::qpack::field::PseudoHeaders::response(http::StatusCode::OK),
+            http::HeaderMap::new(),
+        );
+
+        let error = super::RequestHeader::try_from(section).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::h3x::qpack::field::MalformedHeaderSection::ResponsePseudoHeaderInRequest
+        ));
+    }
+
+    #[test]
+    fn request_header_from_field_section_rejects_authority_only_connect_shape() {
+        let section = crate::h3x::qpack::field::FieldSection::header(
+            crate::h3x::qpack::field::PseudoHeaders::Request {
+                method: Some(http::Method::CONNECT),
+                scheme: None,
+                authority: Some("example.com:443".parse().unwrap()),
+                path: None,
+                protocol: None,
+            },
+            http::HeaderMap::new(),
+        );
+
+        let error = super::RequestHeader::try_from(section).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::h3x::qpack::field::MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders { .. }
+        ));
+    }
+
+    #[test]
+    fn response_header_default_is_ok() {
+        let header = super::ResponseHeader::default();
+
+        assert_eq!(header.status(), http::StatusCode::OK);
+        assert!(header.header_map().is_empty());
+    }
+
+    #[test]
+    fn response_header_from_field_section_rejects_request_header() {
+        let section = crate::h3x::qpack::field::FieldSection::header(
+            crate::h3x::qpack::field::PseudoHeaders::request(
+                http::Method::GET,
+                "https://example.com/".parse().unwrap(),
+            ),
+            http::HeaderMap::new(),
+        );
+
+        let error = super::ResponseHeader::try_from(section).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::h3x::qpack::field::MalformedHeaderSection::RequestPseudoHeaderInResponse
+        ));
+    }
+
+    #[test]
+    fn trailer_from_field_section_rejects_pseudo_headers() {
+        let section = crate::h3x::qpack::field::FieldSection::header(
+            crate::h3x::qpack::field::PseudoHeaders::response(http::StatusCode::OK),
+            http::HeaderMap::new(),
+        );
+
+        let error = super::Trailer::try_from(section).unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::h3x::qpack::field::MalformedHeaderSection::PseudoHeaderInTrailer
+        ));
+    }
+
 }
