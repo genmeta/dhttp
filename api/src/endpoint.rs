@@ -104,7 +104,12 @@ impl Endpoint {
             builder = builder.dns(scheme);
         }
         Ok(Self {
-            inner: Arc::new(builder.build().await),
+            inner: Arc::new(
+                builder
+                    .build()
+                    .await
+                    .map_err(|error| DhttpError::from_error("endpoint.create", error))?,
+            ),
         })
     }
 
@@ -303,7 +308,7 @@ mod tests {
             panic!("serve task failed");
         }
 
-        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await);
+        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await.unwrap());
         let handle = ServeHandle::new(endpoint, tokio::spawn(panic_task()));
 
         assert!(handle.closed().await.is_err());
@@ -313,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_handle_abort_suppresses_completed_accept_error() {
-        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await);
+        let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await.unwrap());
         let (send_complete, recv_complete) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             recv_complete.await.expect("test completion signal");

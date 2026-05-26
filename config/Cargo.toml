@@ -19,3 +19,6 @@ x509-parser = { workspace = true, optional = true }
 default = ["ssl", "default-config"]
 ssl = ["dep:tokio", "dep:futures", "dep:rustls", "dep:x509-parser"]
 default-config = ["dep:tokio", "dep:toml"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

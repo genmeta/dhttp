@@ -447,10 +447,8 @@ impl Message {
         &self.header
     }
 
-    pub(crate) fn validate_header_for_send(&self) -> Result<(), MalformedMessageError> {
-        self.header
-            .check_pseudo()
-            .context(MalformedPseudoHeaderSnafu)
+    pub(crate) fn validate_header_for_send(&self) -> Result<(), MalformedHeaderSection> {
+        self.header.check_pseudo()
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -849,7 +847,7 @@ impl Message {
             MessageStage::Header | MessageStage::Body => {
                 if let Err(_error) = self.streaming_body().map(|count| *count += additional) {
                     self.set_malformed();
-                    StreamingBodyAction::Cancel
+                    StreamingBodyAction::Malformed
                 } else {
                     StreamingBodyAction::Send {
                         header: prepare_message_write_next_part_to(self, MessageWriteGoal::Header),
@@ -859,9 +857,9 @@ impl Message {
             }
             MessageStage::Trailer | MessageStage::Complete => {
                 self.set_malformed();
-                StreamingBodyAction::Cancel
+                StreamingBodyAction::Malformed
             }
-            MessageStage::Malformed => StreamingBodyAction::Cancel,
+            MessageStage::Malformed => StreamingBodyAction::Malformed,
             MessageStage::Failed => StreamingBodyAction::Failed,
             MessageStage::Dropped => message_used_after_dropped(),
         };
@@ -878,7 +876,10 @@ impl Message {
                     }
                     send_data_to(stream, content).await
                 }
-                StreamingBodyAction::Cancel => stream.cancel(Code::H3_REQUEST_CANCELLED).await,
+                StreamingBodyAction::Malformed => {
+                    _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                    Err(MessageStreamError::MessageSendFailed)
+                }
                 StreamingBodyAction::Failed => Err(MessageStreamError::MessageSendFailed),
             }
         }
@@ -890,7 +891,7 @@ impl Message {
     ) -> Result<(), MessageStreamError> {
         if let Err(_error) = self.buffered_body() {
             self.set_malformed();
-            return Err(MessageStreamError::MalformedIncomingMessage);
+            return Err(MessageStreamError::MessageSendFailed);
         }
         drive_message_to(self, stream, MessageWriteGoal::Body).await
     }
@@ -911,14 +912,8 @@ impl Message {
         &mut self,
         stream: &mut WriteStream,
     ) -> Result<(), MessageStreamError> {
-        if matches!(self.stage, MessageStage::Header | MessageStage::Body)
-            && self.header().is_empty()
-        {
+        if !prepare_message_write_all_to(self) {
             return Ok(());
-        }
-        if let Err(_error) = self.buffered_body() {
-            self.set_malformed();
-            return Err(MessageStreamError::MalformedIncomingMessage);
         }
         drive_message_to(self, stream, MessageWriteGoal::Complete).await
     }
@@ -941,9 +936,6 @@ async fn execute_message_write_next_part_to(
 ) -> MessageWriteFlow {
     match action {
         MessageWriteStepAction::BreakOk => ControlFlow::Break(Ok(())),
-        MessageWriteStepAction::Cancel => {
-            ControlFlow::Break(stream.cancel(Code::H3_REQUEST_CANCELLED).await)
-        }
         MessageWriteStepAction::Malformed => {
             _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
             ControlFlow::Break(Err(MessageStreamError::MessageSendFailed))
@@ -988,7 +980,6 @@ async fn drive_message_to(
 
 enum MessageWriteStepAction {
     BreakOk,
-    Cancel,
     Malformed,
     Failed,
     Header {
@@ -1034,10 +1025,19 @@ fn prepare_message_write_next_part_to(
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
         MessageStage::Complete => MessageWriteStepAction::BreakOk,
-        MessageStage::Malformed => MessageWriteStepAction::Cancel,
+        MessageStage::Malformed => MessageWriteStepAction::Malformed,
         MessageStage::Failed => MessageWriteStepAction::Failed,
         MessageStage::Dropped => message_used_after_dropped(),
     }
+}
+
+fn prepare_message_write_all_to(message: &mut Message) -> bool {
+    if matches!(message.stage, MessageStage::Header | MessageStage::Body)
+        && message.header().is_empty()
+    {
+        return false;
+    }
+    true
 }
 
 fn prepare_message_header_step(
@@ -1156,7 +1156,7 @@ enum StreamingBodyAction<B> {
         header: MessageWriteStepAction,
         content: B,
     },
-    Cancel,
+    Malformed,
     Failed,
 }
 
@@ -1170,7 +1170,7 @@ mod tests {
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
-        MalformedMessageError,
+        MalformedHeaderSection,
     };
 
     struct NonSendBody(Rc<Vec<u8>>);
@@ -1233,7 +1233,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            MalformedMessageError::MalformedPseudoHeader { .. }
+            MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders { .. }
         ));
     }
 
@@ -1253,6 +1253,20 @@ mod tests {
 
         assert!(matches!(action, super::MessageWriteStepAction::Malformed));
         assert!(message.is_malformed());
+    }
+
+    #[test]
+    fn complete_write_preparation_accepts_streaming_body() {
+        let mut message = super::Message::unresolved_response();
+        message
+            .header_mut()
+            .unwrap()
+            .set_status(http::StatusCode::OK);
+        *message.streaming_body().unwrap() += 5;
+
+        assert!(super::prepare_message_write_all_to(&mut message));
+        assert!(message.is_streaming());
+        assert!(!message.is_malformed());
     }
 
     #[test]

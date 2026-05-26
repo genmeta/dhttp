@@ -103,9 +103,8 @@ impl Endpoint {
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
         resolver: Option<Arc<dyn Resolve + Send + Sync>>,
         #[builder(default)] connection_builder: Arc<ConnectionBuilder<QuicConnection>>,
-    ) -> Self {
-        Self::validate_identity(identity.as_deref())
-            .expect("BUG: dhttp endpoint identity must be a valid dhttp name");
+    ) -> Result<Self, InvalidEndpointIdentityError> {
+        Self::validate_identity(identity.as_deref())?;
 
         let network = network.unwrap_or_else(|| {
             Network::builder()
@@ -162,9 +161,9 @@ impl Endpoint {
             .quic(quic)
             .builder(connection_builder)
             .build();
-        Self {
+        Ok(Self {
             inner: Arc::new(h3),
-        }
+        })
     }
 }
 
@@ -195,6 +194,10 @@ where
     LoadSsl {
         source: crate::config::identity::ssl::LoadIdentitySslError,
     },
+    #[snafu(display("failed to build endpoint"))]
+    BuildEndpoint {
+        source: InvalidEndpointIdentityError,
+    },
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -207,6 +210,10 @@ pub enum LoadEndpointFromPathError {
     #[snafu(display("failed to load certificate and key"))]
     LoadSsl {
         source: crate::config::identity::ssl::LoadIdentitySslError,
+    },
+    #[snafu(display("failed to build endpoint"))]
+    BuildEndpoint {
+        source: InvalidEndpointIdentityError,
     },
 }
 
@@ -332,7 +339,8 @@ impl Endpoint {
             .dns(DnsScheme::Mdns)
             .dns(DnsScheme::System)
             .build()
-            .await;
+            .await
+            .context(load_endpoint_error::BuildEndpointSnafu)?;
 
         Ok(endpoint)
     }
@@ -353,7 +361,8 @@ impl Endpoint {
             .dns(DnsScheme::Mdns)
             .dns(DnsScheme::System)
             .build()
-            .await;
+            .await
+            .context(load_endpoint_from_path_error::BuildEndpointSnafu)?;
 
         Ok(endpoint)
     }
@@ -497,9 +506,34 @@ mod tests {
                 .dns(DnsScheme::Mdns)
                 .dns(DnsScheme::H3)
                 .build()
-                .await,
+                .await
+                .expect("anonymous endpoint is valid"),
         );
         let _ = endpoint.new_request();
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_non_dhttp_identity() {
+        use rustls::pki_types::PrivateKeyDer;
+
+        let identity = Identity::new(
+            "example.com".parse().unwrap(),
+            Vec::new(),
+            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
+        );
+
+        let Err(error) = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .build()
+            .await
+        else {
+            panic!("non-dhttp endpoint identity must be rejected by build");
+        };
+
+        assert!(matches!(
+            error,
+            InvalidEndpointIdentityError::InvalidName { .. }
+        ));
     }
 
     #[test]
@@ -537,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn publisher_rejects_anonymous_endpoint() {
-        let endpoint = Endpoint::builder().build().await;
+        let endpoint = Endpoint::builder().build().await.unwrap();
         let error = endpoint.publisher().unwrap_err();
         assert!(matches!(
             error,
@@ -566,7 +600,11 @@ mod tests {
         let resolver: Arc<dyn crate::dquic::qresolve::Resolve + Send + Sync> =
             Arc::new(MarkerResolver);
 
-        let endpoint = Endpoint::builder().resolver(resolver).build().await;
+        let endpoint = Endpoint::builder()
+            .resolver(resolver)
+            .build()
+            .await
+            .unwrap();
         let resolver = endpoint.resolver();
         let any: &dyn std::any::Any = resolver.as_ref();
 
@@ -585,7 +623,8 @@ mod tests {
         let endpoint = Endpoint::builder()
             .identity(Arc::new(identity))
             .build()
-            .await;
+            .await
+            .expect("dhttp identity should build endpoint");
 
         let publisher = endpoint
             .publisher_with_options(crate::ddns::PublishOptions { server_id: Some(7) })
@@ -606,7 +645,8 @@ mod tests {
         let endpoint = Endpoint::builder()
             .identity(Arc::new(identity))
             .build()
-            .await;
+            .await
+            .expect("dhttp identity should build endpoint");
 
         let name = endpoint.name().expect("named endpoint has a dhttp name");
 
@@ -615,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_uri_accepts_str_and_returns_bare_tilde_error_on_first_io() {
-        let endpoint = Endpoint::builder().build().await;
+        let endpoint = Endpoint::builder().build().await.unwrap();
 
         let error = match endpoint.get("https://~/api").into_response().await {
             Ok(_) => panic!("bare tilde request should fail before opening a stream"),
@@ -623,8 +663,8 @@ mod tests {
         };
 
         match error {
-            client::RequestError::MalformedRequest { source } => match source.as_ref() {
-                client::MalformedRequestError::Uri {
+            client::RequestError::Build { source } => match source.as_ref() {
+                client::RequestBuildError::Uri {
                     source:
                         crate::message::IntoUriError::Authority {
                             source:
@@ -635,13 +675,13 @@ mod tests {
                 } => {}
                 other => panic!("expected dhttp uri expansion error, got {other:?}"),
             },
-            other => panic!("expected malformed request error, got {other:?}"),
+            other => panic!("expected request build error, got {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn request_uri_parse_error_is_returned_on_first_io() {
-        let endpoint = Endpoint::builder().build().await;
+        let endpoint = Endpoint::builder().build().await.unwrap();
 
         let error = match endpoint.get("://not a uri").into_response().await {
             Ok(_) => panic!("invalid uri request should fail before opening a stream"),
@@ -649,17 +689,17 @@ mod tests {
         };
 
         match error {
-            client::RequestError::MalformedRequest { source } => match source.as_ref() {
-                client::MalformedRequestError::Uri { .. } => {}
+            client::RequestError::Build { source } => match source.as_ref() {
+                client::RequestBuildError::Uri { .. } => {}
                 other => panic!("expected request uri conversion error, got {other:?}"),
             },
-            other => panic!("expected malformed request error, got {other:?}"),
+            other => panic!("expected request build error, got {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn authority_only_get_is_rejected_before_connect() {
-        let endpoint = Endpoint::builder().build().await;
+        let endpoint = Endpoint::builder().build().await.unwrap();
         let uri: http::Uri = "reimu.pilot.genmeta.net".parse().unwrap();
 
         let error = match endpoint.get(uri).into_response().await {
@@ -668,15 +708,18 @@ mod tests {
         };
 
         match error {
-            client::RequestError::MalformedRequestHeader { source } => {
-                assert!(matches!(
-                    source.as_ref(),
-                    crate::h3x::qpack::field::MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders {
-                        ..
-                    }
-                ));
-            }
-            other => panic!("expected malformed request header error, got {other:?}"),
+            client::RequestError::Build { source } => match source.as_ref() {
+                client::RequestBuildError::MalformedHeader { source } => {
+                    assert!(matches!(
+                        source,
+                        crate::h3x::qpack::field::MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders {
+                            ..
+                        }
+                    ));
+                }
+                other => panic!("expected malformed request header error, got {other:?}"),
+            },
+            other => panic!("expected request build error, got {other:?}"),
         }
     }
 

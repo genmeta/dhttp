@@ -302,13 +302,15 @@ impl Response {
     {
         let content: Body = content.into_body();
         async move {
-            self.check_message_operation("write_streaming_body", |this| {
+            if !self.check_message_operation("write_streaming_body", |this| {
                 if this.message.is_interim_response() {
                     return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
                 }
                 this.message.streaming_body()?;
                 Ok(())
-            });
+            }) {
+                return Err(MessageStreamError::MessageSendFailed);
+            }
             self.message
                 .write_streaming_body_to(&mut self.stream, content)
                 .await?;

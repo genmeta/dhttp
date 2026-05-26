@@ -29,7 +29,7 @@ use http::{
     header::{AsHeaderName, IntoHeaderName},
     uri::Authority,
 };
-use snafu::{Report, ResultExt, Snafu};
+use snafu::{OptionExt, Report, ResultExt, Snafu};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
@@ -51,11 +51,36 @@ type DquicH3Endpoint = crate::h3x::dquic::H3Endpoint;
 type DquicConnectError = crate::dquic::ConnectError;
 type RequestInitResult = Result<(), RequestError>;
 
+fn context_request_build<T>(result: Result<T, RequestBuildError>) -> Result<T, RequestError> {
+    // SNAFU context selectors require the source type to match exactly.
+    // `RequestError` stores build errors behind `Arc` so cached init results can
+    // be cloned, so this structural wrapping happens before the selector builds
+    // the public error.
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(Arc::new(error)).context(request_error::BuildSnafu),
+    }
+}
+
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum MalformedRequestError {
+pub enum RequestBuildError {
     #[snafu(display("failed to convert request uri"))]
     Uri { source: IntoUriError },
+    #[snafu(display("request is missing authority"))]
+    MissingAuthority,
+    #[snafu(display("request header section is malformed"))]
+    MalformedHeader { source: MalformedHeaderSection },
+    #[snafu(display("request message validation `{operation}` failed"))]
+    MessageOperation {
+        operation: &'static str,
+        source: MalformedMessageError,
+    },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum RequestMutationError {
     #[snafu(display("request authority is frozen"))]
     AuthorityFrozen { source: AuthorityFrozen },
     #[snafu(display("request message operation `{operation}` failed"))]
@@ -68,6 +93,8 @@ pub enum MalformedRequestError {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum RequestError {
+    #[snafu(display("request cannot be sent because it was not built"))]
+    Build { source: Arc<RequestBuildError> },
     #[snafu(display("failed to connect endpoint"))]
     Connect {
         source: Arc<ConnectError<DquicConnectError>>,
@@ -78,10 +105,6 @@ pub enum RequestError {
     RequestStream { source: quic::StreamError },
     #[snafu(display("response stream error"))]
     ResponseStream { source: quic::StreamError },
-    #[snafu(display("request cannot be sent due to malformed header"))]
-    MalformedRequestHeader { source: Arc<MalformedHeaderSection> },
-    #[snafu(display("request cannot be sent because it is malformed"))]
-    MalformedRequest { source: Arc<MalformedRequestError> },
     #[snafu(display(
         "header section too large to fit into a single frame, maybe too many header fields"
     ))]
@@ -104,14 +127,17 @@ pub enum RequestError {
 
 impl From<ConnectError<DquicConnectError>> for RequestError {
     fn from(source: ConnectError<DquicConnectError>) -> Self {
-        Self::Connect {
-            source: Arc::new(source),
-        }
+        Err::<(), _>(Arc::new(source))
+            .context(request_error::ConnectSnafu)
+            .expect_err("request connect conversion must produce an error")
     }
 }
 impl Clone for RequestError {
     fn clone(&self) -> Self {
         match self {
+            Self::Build { source } => Self::Build {
+                source: Arc::clone(source),
+            },
             Self::Connect { source } => Self::Connect {
                 source: Arc::clone(source),
             },
@@ -123,12 +149,6 @@ impl Clone for RequestError {
             },
             Self::ResponseStream { source } => Self::ResponseStream {
                 source: source.clone(),
-            },
-            Self::MalformedRequestHeader { source } => Self::MalformedRequestHeader {
-                source: Arc::clone(source),
-            },
-            Self::MalformedRequest { source } => Self::MalformedRequest {
-                source: Arc::clone(source),
             },
             Self::HeaderTooLarge => Self::HeaderTooLarge,
             Self::TrailerTooLarge => Self::TrailerTooLarge,
@@ -235,16 +255,39 @@ impl RequestState {
         }
     }
 
-    fn store_malformed_request(&self, error: MalformedRequestError) {
-        self.store_first_init_error(RequestError::MalformedRequest {
-            source: Arc::new(error),
-        });
+    fn store_build_error(&self, error: RequestBuildError) {
+        self.store_first_init_error(
+            Err::<(), _>(Arc::new(error))
+                .context(request_error::BuildSnafu)
+                .expect_err("request build conversion must produce an error"),
+        );
     }
 
-    fn operate_request(
+    fn reject_mutation(&self, operation: &'static str, error: RequestMutationError) {
+        let report = Report::from_error(&error);
+        tracing::warn!(
+            operation,
+            error = %report,
+            "request mutation was rejected, operation will not affect the request stream"
+        );
+    }
+
+    fn record_build_result(&self, operation: &'static str, result: Result<(), RequestBuildError>) {
+        if let Err(error) = result {
+            let report = Report::from_error(&error);
+            tracing::warn!(
+                operation,
+                error = %report,
+                "request build failed, request stream will not be opened"
+            );
+            self.store_build_error(error);
+        }
+    }
+
+    fn operate_message(
         &self,
         operation: &'static str,
-        operate: impl FnOnce(&mut Message) -> Result<(), MalformedRequestError>,
+        operate: impl FnOnce(&mut Message) -> Result<(), MalformedMessageError>,
     ) {
         let mut message = self.message();
         if message.is_malformed() {
@@ -254,26 +297,11 @@ impl RequestState {
             );
             return;
         }
-        if let Err(error) = operate(&mut message) {
-            let report = Report::from_error(&error);
-            tracing::warn!(
-                operation,
-                error = %report,
-                "operation malformed the request message, request stream will be cancelled"
-            );
-            self.store_malformed_request(error);
-            message.set_malformed();
+        if let Err(error) = operate(&mut message)
+            .context(request_mutation_error::MessageOperationSnafu { operation })
+        {
+            self.reject_mutation(operation, error);
         }
-    }
-
-    fn operate_message(
-        &self,
-        operation: &'static str,
-        operate: impl FnOnce(&mut Message) -> Result<(), MalformedMessageError>,
-    ) {
-        self.operate_request(operation, |message| {
-            operate(message).context(malformed_request_error::MessageOperationSnafu { operation })
-        });
     }
 
     fn local_dhttp_name(&self) -> Option<dhttp_identity::name::DhttpName<'static>> {
@@ -283,10 +311,10 @@ impl RequestState {
         })
     }
 
-    fn normalize_request_uri(&self, uri: impl IntoUri) -> Result<Uri, MalformedRequestError> {
+    fn normalize_request_uri(&self, uri: impl IntoUri) -> Result<Uri, RequestBuildError> {
         let base = self.local_dhttp_name();
         uri.into_uri(base.as_ref())
-            .context(malformed_request_error::UriSnafu)
+            .context(request_build_error::UriSnafu)
     }
 
     async fn ensure_stream_init(&self) -> Result<(), RequestError> {
@@ -305,26 +333,14 @@ impl RequestState {
                 .lock()
                 .expect("lock poisoned")
                 .clone()
-                .ok_or_else(|| RequestError::MalformedRequestHeader {
-                    source: Arc::new(MalformedHeaderSection::EmptyAuthorityOrHost),
-                })?;
+                .context(request_build_error::MissingAuthoritySnafu);
+            let authority = context_request_build(authority)?;
             {
                 let message = self.message();
-                if let Err(error) = message.validate_header_for_send() {
-                    return Err(match error {
-                        MalformedMessageError::MalformedPseudoHeader { source } => {
-                            RequestError::MalformedRequestHeader {
-                                source: Arc::new(source),
-                            }
-                        }
-                        source => RequestError::MalformedRequest {
-                            source: Arc::new(MalformedRequestError::MessageOperation {
-                                operation: "validate_header_for_send",
-                                source,
-                            }),
-                        },
-                    });
-                }
+                let valid_header = message
+                    .validate_header_for_send()
+                    .context(request_build_error::MalformedHeaderSnafu);
+                context_request_build(valid_header)?;
             }
             let connection = self.endpoint.connect(authority).await?;
             let (read_stream, write_stream) = connection
@@ -502,26 +518,45 @@ impl Request {
     }
 
     pub fn set_uri(&self, uri: impl IntoUri) -> &Self {
-        self.state.operate_request("set_uri", |message| {
-            message
+        let operation = "set_uri";
+        {
+            let mut message = self.state.message();
+            if let Err(error) = message
                 .header_mut()
-                .context(malformed_request_error::MessageOperationSnafu {
-                    operation: "set_uri",
-                })?;
-            let uri = self.state.normalize_request_uri(uri)?;
-            if let Some(auth) = uri.authority().cloned() {
-                self.state
-                    .set_authority(auth)
-                    .context(malformed_request_error::AuthorityFrozenSnafu)?;
+                .map(|_| ())
+                .context(request_mutation_error::MessageOperationSnafu { operation })
+            {
+                self.state.reject_mutation(operation, error);
+                return self;
             }
-            message
-                .header_mut()
-                .context(malformed_request_error::MessageOperationSnafu {
-                    operation: "set_uri",
-                })?
-                .set_uri(uri);
-            Ok(())
-        });
+        }
+
+        let uri = match self.state.normalize_request_uri(uri) {
+            Ok(uri) => uri,
+            Err(error) => {
+                self.state.record_build_result(operation, Err(error));
+                return self;
+            }
+        };
+
+        if let Some(auth) = uri.authority().cloned()
+            && let Err(error) = self
+                .state
+                .set_authority(auth)
+                .context(request_mutation_error::AuthorityFrozenSnafu)
+        {
+            self.state.reject_mutation(operation, error);
+            return self;
+        }
+
+        let mut message = self.state.message();
+        if let Err(error) = message
+            .header_mut()
+            .map(|header| header.set_uri(uri))
+            .context(request_mutation_error::MessageOperationSnafu { operation })
+        {
+            self.state.reject_mutation(operation, error);
+        }
         self
     }
 
