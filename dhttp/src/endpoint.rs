@@ -750,6 +750,27 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn header_mutation_after_activation_is_rejected_without_terminal_message_error() {
+        let endpoint = Endpoint::builder().build().await.unwrap();
+        let request = endpoint.get("https://~/api");
+
+        let first = match request.clone().into_response().await {
+            Ok(_) => panic!("bare tilde request should fail before opening a stream"),
+            Err(error) => error,
+        };
+        request.set_header(
+            http::header::HeaderName::from_static("x-after"),
+            http::HeaderValue::from_static("activation"),
+        );
+        let second = match request.into_response().await {
+            Ok(_) => panic!("cached failed request should not recover after header mutation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
     #[test]
     fn endpoint_implements_quic_listen() {
         fn assert_listen<T: crate::h3x::quic::Listen>() {}

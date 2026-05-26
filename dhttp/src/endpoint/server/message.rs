@@ -96,8 +96,8 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
         protocols: protocols.clone(),
     };
     let response = Response {
-        message: ResponseMessage::default(),
-        stream: write_stream,
+        message: Some(ResponseMessage::default()),
+        stream: Some(write_stream),
         agent: local_agent,
         stream_id,
         protocols,
@@ -223,8 +223,8 @@ impl Request {
 }
 
 pub struct Response {
-    message: ResponseMessage,
-    stream: WriteStream,
+    message: Option<ResponseMessage>,
+    stream: Option<WriteStream>,
     agent: Arc<dyn agent::LocalAgent>,
     stream_id: StreamId,
     protocols: Arc<Protocols>,
@@ -234,61 +234,73 @@ impl Response {
     fn check_message_operation(
         &mut self,
         operation: &str,
-        operate: impl FnOnce(&mut Self) -> Result<(), MalformedMessageError>,
+        operate: impl FnOnce(&mut ResponseMessage) -> Result<(), MalformedMessageError>,
     ) -> bool {
-        if self.message.is_malformed() {
+        if self.message.is_none() || self.stream.is_none() {
             tracing::warn!(
                 operation,
-                "response is malformed, operation will not affect the response stream",
+                "response is already finalized, operation will not affect the response stream",
             );
             return false;
         }
-        if let Err(error) = operate(self) {
+        let message = self
+            .message
+            .as_mut()
+            .expect("response message is present after explicit check");
+        if let Err(error) = operate(message) {
             let report = Report::from_error(&error);
             tracing::warn!(
                 operation, error = %report,
-                "operation malformed the response message, response stream will be cancelled",
+                "response message operation failed, operation will not affect the response stream",
             );
-            self.message.set_malformed();
             return false;
         }
         true
     }
 
     pub fn headers(&self) -> &http::HeaderMap {
-        self.message.header().header_map()
+        self.message
+            .as_ref()
+            .expect("response message is unavailable after finalization")
+            .header()
+            .header_map()
     }
 
     pub fn headers_mut(&mut self) -> &mut http::HeaderMap {
-        self.check_message_operation("modify_headers", |this| {
-            this.message.header_mut().map(|_| ())
-        });
-        self.message.header_mut_unchecked().header_map_mut()
+        self.check_message_operation("modify_headers", |message| message.header_mut().map(|_| ()));
+        self.message
+            .as_mut()
+            .expect("response message is unavailable after finalization")
+            .header_mut_unchecked()
+            .header_map_mut()
     }
 
     pub fn set_header(&mut self, name: impl IntoHeaderName, value: HeaderValue) -> &mut Self {
-        self.headers_mut().insert(name, value);
+        self.check_message_operation("set_header", |message| {
+            message.header_mut()?.header_map_mut().insert(name, value);
+            Ok(())
+        });
         self
     }
 
     pub fn status(&self) -> Option<http::StatusCode> {
-        Some(self.message.status())
+        self.message.as_ref().map(ResponseMessage::status)
     }
 
     pub fn set_status(&mut self, status: http::StatusCode) -> &mut Self {
-        self.check_message_operation("set_status", |this| {
-            this.message.header_mut()?.set_status(status);
+        self.check_message_operation("set_status", |message| {
+            message.header_mut()?.set_status(status);
             Ok(())
         });
         self
     }
 
     pub fn set_body(&mut self, content: impl IntoBody) -> &mut Self {
-        self.check_message_operation("write_chunked_body", |this| {
-            if this.message.is_interim_response() {
+        self.check_message_operation("write_chunked_body", |message| {
+            if message.is_interim_response() {
                 return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
             }
-            this.message.set_body(content)?;
+            message.set_body(content)?;
             Ok(())
         });
         self
@@ -303,71 +315,99 @@ impl Response {
     {
         let content: Body = content.into_body();
         async move {
-            if !self.check_message_operation("write_streaming_body", |this| {
-                if this.message.is_interim_response() {
+            if !self.check_message_operation("write_streaming_body", |message| {
+                if message.is_interim_response() {
                     return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
                 }
-                this.message.streaming_body()?;
+                message.streaming_body()?;
                 Ok(())
             }) {
                 return Err(MessageStreamError::MessageSendFailed);
             }
-            self.message
-                .write_streaming_body_to(&mut self.stream, content)
-                .await?;
+            let message = self
+                .message
+                .as_mut()
+                .ok_or(MessageStreamError::MessageSendFailed)?;
+            let stream = self
+                .stream
+                .as_mut()
+                .ok_or(MessageStreamError::MessageSendFailed)?;
+            message.write_streaming_body_to(stream, content).await?;
             Ok(self)
         }
     }
 
     pub async fn flush(&mut self) -> Result<&mut Self, MessageStreamError> {
-        self.message.write_all_to(&mut self.stream).await?;
-        self.stream.flush().await?;
+        let message = self
+            .message
+            .as_mut()
+            .ok_or(MessageStreamError::MessageSendFailed)?;
+        let stream = self
+            .stream
+            .as_mut()
+            .ok_or(MessageStreamError::MessageSendFailed)?;
+        message.write_all_to(stream).await?;
+        stream.flush().await?;
         Ok(self)
     }
 
     pub fn trailers(&self) -> &HeaderMap {
-        self.message.trailers()
+        self.message
+            .as_ref()
+            .expect("response message is unavailable after finalization")
+            .trailers()
     }
 
     pub fn trailers_mut(&mut self) -> &mut HeaderMap {
-        self.check_message_operation("modify_trailers", |this| {
-            if this.message.is_interim_response() {
+        self.check_message_operation("modify_trailers", |message| {
+            if message.is_interim_response() {
                 return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
             }
-            this.message.trailers_mut().map(|_| ())
+            message.trailers_mut().map(|_| ())
         });
-        self.message.trailers_mut_unchecked()
+        self.message
+            .as_mut()
+            .expect("response message is unavailable after finalization")
+            .trailers_mut_unchecked()
     }
 
     pub fn set_trailer(&mut self, name: impl IntoHeaderName, value: HeaderValue) -> &mut Self {
-        self.trailers_mut().insert(name, value);
+        self.check_message_operation("set_trailer", |message| {
+            if message.is_interim_response() {
+                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+            }
+            message.trailers_mut()?.insert(name, value);
+            Ok(())
+        });
         self
     }
 
     pub fn set_trailers(&mut self, map: HeaderMap) -> &mut Self {
-        *self.trailers_mut() = map;
+        self.check_message_operation("set_trailers", |message| {
+            if message.is_interim_response() {
+                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+            }
+            *message.trailers_mut()? = map;
+            Ok(())
+        });
         self
     }
 
     pub async fn close(&mut self) -> Result<(), MessageStreamError> {
-        self.check_message_operation("close_response", |this| {
-            if this.message.is_interim_response() {
-                return Err(MalformedMessageError::FinalResponseRequired);
-            }
+        if let Some(future) = self.finish() {
+            future.await
+        } else {
             Ok(())
-        });
-        let result = async {
-            self.message.write_all_to(&mut self.stream).await?;
-            self.stream.close().await
         }
-        .await;
-        self.message.set_dropped();
-        result
     }
 
     pub async fn cancel(&mut self, code: Code) -> Result<(), MessageStreamError> {
-        self.message.set_dropped();
-        self.stream.cancel(code).await
+        self.message = None;
+        if let Some(mut stream) = self.stream.take() {
+            stream.cancel(code).await
+        } else {
+            Ok(())
+        }
     }
 
     pub fn agent(&self) -> &Arc<dyn agent::LocalAgent> {
@@ -404,36 +444,26 @@ impl Response {
     pub fn finish(
         &mut self,
     ) -> Option<impl Future<Output = Result<(), MessageStreamError>> + Send + use<>> {
-        if self.message.is_complete() || self.message.is_dropped() {
-            return None;
-        }
-        // It's ok to take: Response will not be used after drop
-        let mut stream = self.stream.take();
-        let mut message = self.message.take();
+        let mut message = self.message.take()?;
+        let mut stream = self
+            .stream
+            .take()
+            .expect("response stream is unavailable while message is unfinished");
 
-        if !message.is_malformed() {
-            let check = || {
-                if message.is_interim_response() {
-                    return Err(MalformedMessageError::FinalResponseRequired);
-                }
-                Ok(())
-            };
-            if let Err(error) = check() {
-                message.set_malformed();
+        Some(async move {
+            if message.is_interim_response() {
+                let error = MalformedMessageError::FinalResponseRequired;
                 let report = Report::from_error(&error);
                 tracing::warn!(
                     error = %report,
-                    "response stream cannot be closed properly as it is malformed",
+                    "response stream cannot be closed without a final response",
                 );
+                _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                return Err(MessageStreamError::MessageSendFailed);
             }
-        }
 
-        Some(async move {
-            async {
-                message.write_all_to(&mut stream).await?;
-                stream.close().await
-            }
-            .await
+            message.write_all_to(&mut stream).await?;
+            stream.close().await
         })
     }
 
@@ -448,7 +478,8 @@ impl Response {
 impl Drop for Response {
     fn drop(&mut self) {
         if let Some(future) = self.finish() {
-            // Best-effort: send the end-of-stream marker before the response is dropped.
+            // Inherent termination: the task owns the response message and stream,
+            // then exits after writing/canceling and closing the stream.
             tokio::spawn(
                 async move {
                     if let Err(error) = future.await {

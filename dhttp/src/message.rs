@@ -1,4 +1,4 @@
-use std::{borrow::Cow, mem, ops::ControlFlow};
+use std::{borrow::Cow, ops::ControlFlow};
 
 use bytes::{Buf, Bytes, BytesMut};
 use http::{
@@ -510,14 +510,6 @@ pub enum MessageStage {
     Trailer = 2,
     /// Message is completely sent/received
     Complete = 3,
-
-    /// Message struct is malformed
-    Malformed = 4,
-    /// Message sending failed and cannot be resumed
-    Failed = 5,
-    /// Message struct is already taken/dropped
-    // State can be removed after async drop stabilizes
-    Dropped = 6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,12 +536,6 @@ pub enum MalformedMessageError {
     BodyModeChangeAfterTransferStarted,
     #[snafu(display("cannot modify body after transfer has ended"))]
     BodyAlreadyComplete,
-    #[snafu(display("cannot mutate malformed message"))]
-    MessageMalformed,
-    #[snafu(display("cannot mutate message after sending failed"))]
-    MessageFailed,
-    #[snafu(display("cannot mutate dropped message"))]
-    MessageDropped,
 
     // === 模式不匹配错误 ===
     #[snafu(display("buffered body operation cannot be performed on streaming body"))]
@@ -615,9 +601,6 @@ impl<H: BeMessageHeader> Message<H> {
     }
 
     fn header_mut_checked(&mut self) -> Result<&mut H, MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
         if self.stage > MessageStage::Header {
             return Err(MalformedMessageError::HeaderAlreadySent);
         }
@@ -628,22 +611,7 @@ impl<H: BeMessageHeader> Message<H> {
         self.header.is_interim()
     }
 
-    fn terminal_stage_error(&self) -> Option<MalformedMessageError> {
-        match self.stage {
-            MessageStage::Malformed => Some(MalformedMessageError::MessageMalformed),
-            MessageStage::Failed => Some(MalformedMessageError::MessageFailed),
-            MessageStage::Dropped => Some(MalformedMessageError::MessageDropped),
-            MessageStage::Header
-            | MessageStage::Body
-            | MessageStage::Trailer
-            | MessageStage::Complete => None,
-        }
-    }
-
     pub fn streaming_body(&mut self) -> Result<&mut u64, MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
         if self.stage > MessageStage::Body {
             return Err(MalformedMessageError::BodyAlreadyComplete);
         }
@@ -663,9 +631,6 @@ impl<H: BeMessageHeader> Message<H> {
     }
 
     pub fn buffered_body(&mut self) -> Result<&mut BuflistCursor, MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
         if self.stage > MessageStage::Body {
             return Err(MalformedMessageError::BodyAlreadyComplete);
         }
@@ -698,17 +663,11 @@ impl<H: BeMessageHeader> Message<H> {
 
     /// Set body to buffered mode with given content
     pub fn set_body(&mut self, content: impl IntoBody) -> Result<(), MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
         match self.stage {
             MessageStage::Header => {}
             MessageStage::Body => return Err(MalformedMessageError::BodyReplacementDuringSend),
             MessageStage::Trailer | MessageStage::Complete => {
                 return Err(MalformedMessageError::BodyAlreadyComplete);
-            }
-            MessageStage::Malformed | MessageStage::Failed | MessageStage::Dropped => {
-                unreachable!("terminal stages are checked above")
             }
         }
 
@@ -723,9 +682,6 @@ impl<H: BeMessageHeader> Message<H> {
     }
 
     pub fn trailers_mut(&mut self) -> Result<&mut HeaderMap, MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
         if self.stage > MessageStage::Trailer {
             return Err(MalformedMessageError::TrailerAlreadySent);
         }
@@ -744,55 +700,11 @@ impl<H: BeMessageHeader> Message<H> {
         self.stage() == MessageStage::Complete
     }
 
-    pub fn is_dropped(&self) -> bool {
-        self.stage() == MessageStage::Dropped
-    }
-
-    pub fn is_malformed(&self) -> bool {
-        self.stage() == MessageStage::Malformed
-    }
-
-    pub fn set_malformed(&mut self) {
-        self.stage = MessageStage::Malformed;
-    }
-
-    pub fn is_failed(&self) -> bool {
-        self.stage() == MessageStage::Failed
-    }
-
-    pub fn set_failed(&mut self) {
-        self.stage = MessageStage::Failed;
-    }
-
-    fn set_failed_unless_malformed(&mut self) {
-        if !self.is_malformed() {
-            self.set_failed();
-        }
-    }
-
-    pub fn set_dropped(&mut self) {
-        self.stage = MessageStage::Dropped;
-    }
-
     /// Reset the message to unsent state
     pub fn to_unsend(mut self) -> Self {
-        assert!(!self.is_dropped(), "cannot unsend a dropped message");
         self.stage = MessageStage::Header;
         self.body.reset_buffer_cursor();
         self
-    }
-
-    pub fn take(&mut self) -> Self {
-        assert!(!self.is_dropped(), "cannot take a dropped message");
-        let message = Self {
-            header: self.header.clone(),
-            body: mem::replace(&mut self.body, BodyState::Pending),
-            trailer: mem::take(&mut self.trailer),
-            stage: self.stage,
-        };
-        self.stage = MessageStage::Dropped;
-
-        message
     }
 }
 
@@ -834,10 +746,6 @@ pub enum ReadToStringError {
     Utf8 { source: std::string::FromUtf8Error },
 }
 
-fn message_used_after_dropped() -> ! {
-    unreachable!("Message used after destroyed, this is a bug");
-}
-
 async fn send_data_to(
     stream: &mut WriteStream,
     data: impl Buf + Send,
@@ -855,13 +763,7 @@ where
         f: impl AsyncFnOnce(&mut ReadStream, &mut Self) -> Result<T, connection::StreamError>,
     ) -> Result<T, MessageStreamError> {
         stream
-            .try_stream_io(async move |stream| {
-                let result = f(stream, self).await;
-                if let Err(connection::StreamError::H3 { .. }) = &result {
-                    self.set_malformed();
-                }
-                result
-            })
+            .try_stream_io(async move |stream| f(stream, self).await)
             .await
     }
 
@@ -899,9 +801,6 @@ where
             MessageStage::Body | MessageStage::Trailer | MessageStage::Complete => {
                 return Ok(&self.header);
             }
-            MessageStage::Malformed => return Err(MessageStreamError::MalformedIncomingMessage),
-            MessageStage::Failed => return Err(MessageStreamError::MessageSendFailed),
-            MessageStage::Dropped => message_used_after_dropped(),
         }
 
         self.header = self
@@ -929,7 +828,6 @@ where
         stream: &mut ReadStream,
     ) -> Option<Result<Bytes, MessageStreamError>> {
         if let Err(_error) = self.streaming_body() {
-            self.set_malformed();
             return Some(Err(MessageStreamError::MalformedIncomingMessage));
         }
 
@@ -944,11 +842,6 @@ where
             }
             MessageStage::Body => {}
             MessageStage::Trailer | MessageStage::Complete => return None,
-            MessageStage::Malformed => {
-                return Some(Err(MessageStreamError::MalformedIncomingMessage));
-            }
-            MessageStage::Failed => return Some(Err(MessageStreamError::MessageSendFailed)),
-            MessageStage::Dropped => message_used_after_dropped(),
         }
 
         let try_read_next_chunk = self.try_read_io(stream, async |stream, message| {
@@ -977,7 +870,6 @@ where
         stream: &mut ReadStream,
     ) -> Result<impl Buf + '_, MessageStreamError> {
         if let Err(_error) = self.buffered_body() {
-            self.set_malformed();
             return Err(MessageStreamError::MalformedIncomingMessage);
         }
 
@@ -988,9 +880,6 @@ where
                 }
             }
             MessageStage::Body | MessageStage::Trailer | MessageStage::Complete => {}
-            MessageStage::Malformed => return Err(MessageStreamError::MalformedIncomingMessage),
-            MessageStage::Failed => return Err(MessageStreamError::MessageSendFailed),
-            MessageStage::Dropped => message_used_after_dropped(),
         }
 
         while self.stage == MessageStage::Body {
@@ -1061,9 +950,6 @@ where
             },
             MessageStage::Trailer => {}
             MessageStage::Complete => return Ok(self.trailers()),
-            MessageStage::Malformed => return Err(MessageStreamError::MalformedIncomingMessage),
-            MessageStage::Failed => return Err(MessageStreamError::MessageSendFailed),
-            MessageStage::Dropped => message_used_after_dropped(),
         }
 
         self.trailer = self
@@ -1123,7 +1009,6 @@ where
         let action = match self.stage {
             MessageStage::Header | MessageStage::Body => {
                 if let Err(_error) = self.streaming_body().map(|count| *count += additional) {
-                    self.set_malformed();
                     StreamingBodyAction::Malformed
                 } else {
                     StreamingBodyAction::Send {
@@ -1132,13 +1017,7 @@ where
                     }
                 }
             }
-            MessageStage::Trailer | MessageStage::Complete => {
-                self.set_malformed();
-                StreamingBodyAction::Malformed
-            }
-            MessageStage::Malformed => StreamingBodyAction::Malformed,
-            MessageStage::Failed => StreamingBodyAction::Failed,
-            MessageStage::Dropped => message_used_after_dropped(),
+            MessageStage::Trailer | MessageStage::Complete => StreamingBodyAction::Malformed,
         };
 
         async move {
@@ -1157,7 +1036,6 @@ where
                     _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
                     Err(MessageStreamError::MessageSendFailed)
                 }
-                StreamingBodyAction::Failed => Err(MessageStreamError::MessageSendFailed),
             }
         }
     }
@@ -1167,7 +1045,6 @@ where
         stream: &mut WriteStream,
     ) -> Result<(), MessageStreamError> {
         if let Err(_error) = self.buffered_body() {
-            self.set_malformed();
             return Err(MessageStreamError::MessageSendFailed);
         }
         drive_message_to(self, stream, MessageWriteGoal::Body).await
@@ -1189,9 +1066,6 @@ where
         &mut self,
         stream: &mut WriteStream,
     ) -> Result<(), MessageStreamError> {
-        if !prepare_message_write_all_to(self) {
-            return Ok(());
-        }
         drive_message_to(self, stream, MessageWriteGoal::Complete).await
     }
 }
@@ -1213,13 +1087,6 @@ async fn execute_message_write_next_part_to(
 ) -> MessageWriteFlow {
     match action {
         MessageWriteStepAction::BreakOk => ControlFlow::Break(Ok(())),
-        MessageWriteStepAction::Malformed => {
-            _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
-            ControlFlow::Break(Err(MessageStreamError::MessageSendFailed))
-        }
-        MessageWriteStepAction::Failed => {
-            ControlFlow::Break(Err(MessageStreamError::MessageSendFailed))
-        }
         MessageWriteStepAction::Header { fields, flow } => match stream.send_header(fields).await {
             Ok(()) => flow.into_control_flow(),
             Err(error) => ControlFlow::Break(Err(error)),
@@ -1249,9 +1116,6 @@ where
         match message.write_next_part_to(stream, goal).await {
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(result) => {
-                if result.is_err() {
-                    message.set_failed_unless_malformed();
-                }
                 return result;
             }
         }
@@ -1260,8 +1124,6 @@ where
 
 enum MessageWriteStepAction {
     BreakOk,
-    Malformed,
-    Failed,
     Header {
         fields: Vec<FieldLine>,
         flow: MessageWriteStepFlow,
@@ -1305,14 +1167,7 @@ fn prepare_message_write_next_part_to<H: BeMessageHeader>(
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
         MessageStage::Complete => MessageWriteStepAction::BreakOk,
-        MessageStage::Malformed => MessageWriteStepAction::Malformed,
-        MessageStage::Failed => MessageWriteStepAction::Failed,
-        MessageStage::Dropped => message_used_after_dropped(),
     }
-}
-
-fn prepare_message_write_all_to<H: BeMessageHeader>(_message: &mut Message<H>) -> bool {
-    true
 }
 
 fn prepare_message_header_step<H: BeMessageHeader>(
@@ -1337,13 +1192,7 @@ fn prepare_message_header_step<H: BeMessageHeader>(
                     MessageWriteStepFlow::BreakOk
                 }
             }
-            MessageWriteGoal::Complete => {
-                if message.is_buffered() || !message.trailers().is_empty() {
-                    MessageWriteStepFlow::Continue
-                } else {
-                    MessageWriteStepFlow::BreakOk
-                }
-            }
+            MessageWriteGoal::Complete => MessageWriteStepFlow::Continue,
         }
     };
 
@@ -1392,12 +1241,10 @@ fn prepare_message_buffered_body_step<H: BeMessageHeader>(
         Some(data) => {
             let flow = if message.stage == MessageStage::Trailer {
                 match goal {
-                    MessageWriteGoal::Complete if !message.trailers().is_empty() => {
-                        MessageWriteStepFlow::Continue
+                    MessageWriteGoal::Complete => MessageWriteStepFlow::Continue,
+                    MessageWriteGoal::Header | MessageWriteGoal::Body => {
+                        MessageWriteStepFlow::BreakOk
                     }
-                    MessageWriteGoal::Header
-                    | MessageWriteGoal::Body
-                    | MessageWriteGoal::Complete => MessageWriteStepFlow::BreakOk,
                 }
             } else {
                 MessageWriteStepFlow::Continue
@@ -1414,11 +1261,11 @@ fn prepare_message_buffered_body_step<H: BeMessageHeader>(
 fn prepare_message_trailer_step<H: BeMessageHeader>(
     message: &mut Message<H>,
 ) -> MessageWriteStepAction {
+    message.stage = MessageStage::Complete;
     if message.trailers().is_empty() {
         MessageWriteStepAction::BreakOk
     } else {
         let fields = message.trailer.iter().collect::<Vec<_>>();
-        message.stage = MessageStage::Complete;
         MessageWriteStepAction::Trailer(fields)
     }
 }
@@ -1429,7 +1276,6 @@ enum StreamingBodyAction<B> {
         content: B,
     },
     Malformed,
-    Failed,
 }
 
 #[cfg(test)]
@@ -1496,9 +1342,25 @@ mod tests {
         let mut message = super::ResponseMessage::default();
         *message.streaming_body().unwrap() += 5;
 
-        assert!(super::prepare_message_write_all_to(&mut message));
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+        assert!(matches!(
+            action,
+            super::MessageWriteStepAction::Header {
+                flow: super::MessageWriteStepFlow::Continue,
+                ..
+            }
+        ));
         assert!(message.is_streaming());
-        assert!(!message.is_malformed());
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert_eq!(message.stage(), super::MessageStage::Complete);
     }
 
     #[test]
@@ -1730,5 +1592,70 @@ mod tests {
 
         assert_eq!(message.status(), http::StatusCode::OK);
         assert_eq!(message.stage(), super::MessageStage::Header);
+    }
+
+    #[test]
+    fn complete_goal_marks_empty_message_complete_after_header_sent() {
+        let mut message = super::ResponseMessage::default();
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+        assert!(matches!(
+            action,
+            super::MessageWriteStepAction::Header {
+                flow: super::MessageWriteStepFlow::Continue,
+                ..
+            }
+        ));
+        assert_eq!(message.stage(), super::MessageStage::Body);
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+
+        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert_eq!(message.stage(), super::MessageStage::Complete);
+    }
+
+    #[test]
+    fn complete_goal_marks_empty_trailer_complete_after_buffered_body() {
+        let mut message = super::ResponseMessage::default();
+        message.set_body("body").unwrap();
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+        assert!(matches!(
+            action,
+            super::MessageWriteStepAction::Header {
+                flow: super::MessageWriteStepFlow::Continue,
+                ..
+            }
+        ));
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+        assert!(matches!(
+            action,
+            super::MessageWriteStepAction::Data {
+                flow: super::MessageWriteStepFlow::Continue,
+                ..
+            }
+        ));
+        assert_eq!(message.stage(), super::MessageStage::Trailer);
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+
+        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert_eq!(message.stage(), super::MessageStage::Complete);
     }
 }

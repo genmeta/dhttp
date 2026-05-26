@@ -281,15 +281,6 @@ impl RequestState {
         self.message.lock().expect("lock poisoned")
     }
 
-    fn mark_message_failed_unless_malformed(&self) {
-        let mut state = self.message();
-        if let RequestMessageState::Active(message) = &mut *state
-            && !message.is_malformed()
-        {
-            message.set_failed();
-        }
-    }
-
     fn init_result(&self) -> Option<RequestInitResult> {
         self.init_state.lock().expect("lock poisoned").clone()
     }
@@ -305,6 +296,15 @@ impl RequestState {
     fn store_init_result(&self, result: RequestInitResult) -> RequestInitResult {
         *self.init_state.lock().expect("lock poisoned") = Some(result.clone());
         result
+    }
+
+    fn store_send_error(&self, source: MessageStreamError) -> RequestError {
+        let mut state = self.message();
+        *state = RequestMessageState::Failed;
+        drop(state);
+        let error = RequestError::MessageStream { source };
+        *self.init_state.lock().expect("lock poisoned") = Some(Err(error.clone()));
+        error
     }
 
     fn reject_mutation(&self, operation: &'static str, error: RequestMutationError) {
@@ -447,13 +447,8 @@ impl RequestState {
 
             match flow {
                 ControlFlow::Continue(()) => {}
-                ControlFlow::Break(result) => {
-                    if result.is_err() {
-                        self.mark_message_failed_unless_malformed();
-                    }
-                    result?;
-                    return Ok(());
-                }
+                ControlFlow::Break(Ok(())) => return Ok(()),
+                ControlFlow::Break(Err(error)) => return Err(self.store_send_error(error)),
             }
         }
     }
@@ -473,11 +468,10 @@ impl RequestState {
             message.write_streaming_body_to(&mut write_stream, content)
         }
         .await;
-        if result.is_err() {
-            self.mark_message_failed_unless_malformed();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.store_send_error(error)),
         }
-        result?;
-        Ok(())
     }
 
     async fn flush_request(&self) -> Result<(), RequestError> {
