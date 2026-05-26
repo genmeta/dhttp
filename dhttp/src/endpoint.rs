@@ -657,6 +657,29 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn authority_only_get_is_rejected_before_connect() {
+        let endpoint = Endpoint::builder().build().await;
+        let uri: http::Uri = "reimu.pilot.genmeta.net".parse().unwrap();
+
+        let error = match endpoint.get(uri).into_response().await {
+            Ok(_) => panic!("authority-only GET should fail before opening a stream"),
+            Err(error) => error,
+        };
+
+        match error {
+            client::RequestError::MalformedRequestHeader { source } => {
+                assert!(matches!(
+                    source.as_ref(),
+                    crate::h3x::qpack::field::MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders {
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected malformed request header error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn endpoint_implements_quic_listen() {
         fn assert_listen<T: crate::h3x::quic::Listen>() {}

@@ -447,6 +447,12 @@ impl Message {
         &self.header
     }
 
+    pub(crate) fn validate_header_for_send(&self) -> Result<(), MalformedMessageError> {
+        self.header
+            .check_pseudo()
+            .context(MalformedPseudoHeaderSnafu)
+    }
+
     pub fn is_streaming(&self) -> bool {
         matches!(self.body, BodyState::Streaming { .. })
     }
@@ -938,6 +944,10 @@ async fn execute_message_write_next_part_to(
         MessageWriteStepAction::Cancel => {
             ControlFlow::Break(stream.cancel(Code::H3_REQUEST_CANCELLED).await)
         }
+        MessageWriteStepAction::Malformed => {
+            _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
+            ControlFlow::Break(Err(MessageStreamError::MessageSendFailed))
+        }
         MessageWriteStepAction::Failed => {
             ControlFlow::Break(Err(MessageStreamError::MessageSendFailed))
         }
@@ -979,6 +989,7 @@ async fn drive_message_to(
 enum MessageWriteStepAction {
     BreakOk,
     Cancel,
+    Malformed,
     Failed,
     Header {
         fields: Vec<FieldLine>,
@@ -1033,6 +1044,11 @@ fn prepare_message_header_step(
     message: &mut Message,
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
+    if message.validate_header_for_send().is_err() {
+        message.set_malformed();
+        return MessageWriteStepAction::Malformed;
+    }
+
     let fields = message.header.iter().collect::<Vec<_>>();
     let is_interim = message.is_interim_response();
     if !is_interim {
@@ -1154,6 +1170,7 @@ mod tests {
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
+        MalformedMessageError,
     };
 
     struct NonSendBody(Rc<Vec<u8>>);
@@ -1201,6 +1218,41 @@ mod tests {
     fn body_alias_is_the_public_payload_body() {
         let body: Body = Bytes::from_static(b"alias body").into_body();
         assert_eq!(collect_body(body), b"alias body"[..]);
+    }
+
+    #[test]
+    fn request_header_validation_rejects_authority_only_get() {
+        let mut message = super::Message::unresolved_request();
+        message.header_mut().unwrap().set_method(http::Method::GET);
+        message
+            .header_mut()
+            .unwrap()
+            .set_authority("reimu.pilot.genmeta.net".parse().unwrap());
+
+        let error = message.validate_header_for_send().unwrap_err();
+
+        assert!(matches!(
+            error,
+            MalformedMessageError::MalformedPseudoHeader { .. }
+        ));
+    }
+
+    #[test]
+    fn request_header_write_step_rejects_authority_only_get() {
+        let mut message = super::Message::unresolved_request();
+        message.header_mut().unwrap().set_method(http::Method::GET);
+        message
+            .header_mut()
+            .unwrap()
+            .set_authority("reimu.pilot.genmeta.net".parse().unwrap());
+
+        let action = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Header,
+        );
+
+        assert!(matches!(action, super::MessageWriteStepAction::Malformed));
+        assert!(message.is_malformed());
     }
 
     #[test]

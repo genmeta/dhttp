@@ -308,6 +308,24 @@ impl RequestState {
                 .ok_or_else(|| RequestError::MalformedRequestHeader {
                     source: Arc::new(MalformedHeaderSection::EmptyAuthorityOrHost),
                 })?;
+            {
+                let message = self.message();
+                if let Err(error) = message.validate_header_for_send() {
+                    return Err(match error {
+                        MalformedMessageError::MalformedPseudoHeader { source } => {
+                            RequestError::MalformedRequestHeader {
+                                source: Arc::new(source),
+                            }
+                        }
+                        source => RequestError::MalformedRequest {
+                            source: Arc::new(MalformedRequestError::MessageOperation {
+                                operation: "validate_header_for_send",
+                                source,
+                            }),
+                        },
+                    });
+                }
+            }
             let connection = self.endpoint.connect(authority).await?;
             let (read_stream, write_stream) = connection
                 .initial_message_stream()
