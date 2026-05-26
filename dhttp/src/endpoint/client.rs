@@ -14,11 +14,9 @@
 
 use std::{
     future::{Future, IntoFuture},
+    mem,
     ops::ControlFlow,
-    sync::{
-        Arc, Mutex as SyncMutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex as SyncMutex},
 };
 
 use bytes::{Buf, Bytes};
@@ -27,23 +25,24 @@ use futures::{Stream, StreamExt, future::BoxFuture};
 use http::{
     HeaderMap, HeaderValue, Method, Uri,
     header::{AsHeaderName, IntoHeaderName},
-    uri::Authority,
+    uri::{PathAndQuery, Scheme},
 };
-use snafu::{OptionExt, Report, ResultExt, Snafu};
+use snafu::{Report, ResultExt, Snafu};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     endpoint::client::request_error::StreamInitSnafu,
     h3x::{
+        buflist::BuflistCursor,
         error::Code,
         message::stream::{InitialMessageStreamError, MessageStreamError, ReadStream, WriteStream},
         pool::ConnectError,
-        qpack::field::MalformedHeaderSection,
+        qpack::field::{FieldSection, MalformedHeaderSection, PseudoHeaders},
         quic,
     },
     message::{
-        Body, IntoBody, IntoUri, IntoUriError, MalformedMessageError, Message, MessageWriteGoal,
-        ReadToStringError,
+        Body, BodyState, IntoBody, IntoUri, IntoUriError, MalformedMessageError, MessageWriteGoal,
+        ReadToStringError, RequestHeader, RequestMessage, ResponseMessage, Trailer,
     },
 };
 
@@ -67,22 +66,17 @@ fn context_request_build<T>(result: Result<T, RequestBuildError>) -> Result<T, R
 pub enum RequestBuildError {
     #[snafu(display("failed to convert request uri"))]
     Uri { source: IntoUriError },
-    #[snafu(display("request is missing authority"))]
-    MissingAuthority,
     #[snafu(display("request header section is malformed"))]
     MalformedHeader { source: MalformedHeaderSection },
-    #[snafu(display("request message validation `{operation}` failed"))]
-    MessageOperation {
-        operation: &'static str,
-        source: MalformedMessageError,
-    },
 }
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum RequestMutationError {
-    #[snafu(display("request authority is frozen"))]
-    AuthorityFrozen { source: AuthorityFrozen },
+    #[snafu(display("cannot modify request header after activation"))]
+    HeaderAlreadyActivated,
+    #[snafu(display("request message is unavailable after activation failed"))]
+    MessageUnavailable,
     #[snafu(display("request message operation `{operation}` failed"))]
     MessageOperation {
         operation: &'static str,
@@ -174,15 +168,93 @@ pub enum AcquireError {
     AlreadyTaken,
 }
 
-#[derive(Debug, Snafu)]
-#[snafu(module)]
-pub enum AuthorityFrozen {
-    #[snafu(display("authority is frozen — uri() called after stream initialization"))]
-    InitComplete,
+#[derive(Debug)]
+enum PendingUri {
+    Missing,
+    Parsed(Uri),
+    Invalid(IntoUriError),
+}
+
+#[derive(Debug)]
+struct PendingRequest {
+    method: Option<Method>,
+    uri: PendingUri,
+    headers: HeaderMap,
+    body: BodyState,
+    trailer: HeaderMap,
+}
+
+impl Default for PendingRequest {
+    fn default() -> Self {
+        Self {
+            method: None,
+            uri: PendingUri::Missing,
+            headers: HeaderMap::new(),
+            body: BodyState::Pending,
+            trailer: HeaderMap::new(),
+        }
+    }
+}
+
+impl PendingRequest {
+    fn into_message(self) -> Result<RequestMessage, RequestBuildError> {
+        let pseudo = match self.uri {
+            PendingUri::Missing => PseudoHeaders::Request {
+                method: self.method,
+                scheme: None,
+                authority: None,
+                path: None,
+                protocol: None,
+            },
+            PendingUri::Parsed(uri) => {
+                let uri = uri.into_parts();
+                let path = match uri.path_and_query {
+                    Some(path) => Some(path),
+                    None if uri.scheme == Some(Scheme::HTTP)
+                        || uri.scheme == Some(Scheme::HTTPS) =>
+                    {
+                        Some(PathAndQuery::from_static("/"))
+                    }
+                    None if self.method == Some(Method::OPTIONS) => {
+                        Some(PathAndQuery::from_static("/"))
+                    }
+                    None => None,
+                };
+                PseudoHeaders::Request {
+                    method: self.method,
+                    scheme: uri.scheme,
+                    authority: uri.authority,
+                    path,
+                    protocol: None,
+                }
+            }
+            PendingUri::Invalid(source) => return Err(RequestBuildError::Uri { source }),
+        };
+        let header = RequestHeader::try_from(FieldSection::header(pseudo, self.headers))
+            .context(request_build_error::MalformedHeaderSnafu)?;
+        Ok(RequestMessage::with_parts(
+            header,
+            self.body,
+            Trailer::new(self.trailer),
+        ))
+    }
+}
+
+#[derive(Debug)]
+enum RequestMessageState {
+    Pending(PendingRequest),
+    Active(RequestMessage),
+    Failed,
+}
+
+impl Default for RequestMessageState {
+    fn default() -> Self {
+        Self::Pending(PendingRequest::default())
+    }
 }
 
 pub(crate) struct RequestState {
-    message: SyncMutex<Message>,
+    message: SyncMutex<RequestMessageState>,
     write_stream: AsyncMutex<Option<WriteStream>>,
     read_stream: AsyncMutex<Option<ReadStream>>,
     // Shared result slot for both synchronous request construction failures and
@@ -191,39 +263,29 @@ pub(crate) struct RequestState {
     init_state: SyncMutex<Option<RequestInitResult>>,
     init_lock: AsyncMutex<()>,
     endpoint: Arc<DquicH3Endpoint>,
-    authority: SyncMutex<Option<Authority>>,
-    init_frozen: AtomicBool,
 }
 
 impl RequestState {
-    pub(crate) fn new(endpoint: Arc<DquicH3Endpoint>, message: Message) -> Self {
+    pub(crate) fn new(endpoint: Arc<DquicH3Endpoint>) -> Self {
         Self {
-            message: SyncMutex::new(message),
+            message: SyncMutex::new(RequestMessageState::default()),
             write_stream: AsyncMutex::new(None),
             read_stream: AsyncMutex::new(None),
             init_state: SyncMutex::new(None),
             init_lock: AsyncMutex::new(()),
             endpoint,
-            authority: SyncMutex::new(None),
-            init_frozen: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn set_authority(&self, auth: Authority) -> Result<(), AuthorityFrozen> {
-        if self.init_frozen.load(Ordering::Acquire) {
-            return Err(AuthorityFrozen::InitComplete);
-        }
-        *self.authority.lock().expect("lock poisoned") = Some(auth);
-        Ok(())
-    }
-
-    fn message(&self) -> std::sync::MutexGuard<'_, Message> {
+    fn message(&self) -> std::sync::MutexGuard<'_, RequestMessageState> {
         self.message.lock().expect("lock poisoned")
     }
 
     fn mark_message_failed_unless_malformed(&self) {
-        let mut message = self.message();
-        if !message.is_malformed() {
+        let mut state = self.message();
+        if let RequestMessageState::Active(message) = &mut *state
+            && !message.is_malformed()
+        {
             message.set_failed();
         }
     }
@@ -237,30 +299,12 @@ impl RequestState {
         if let Some(result) = guard.as_ref() {
             return Some(result.clone());
         }
-        self.init_frozen.store(true, Ordering::Release);
         None
     }
 
     fn store_init_result(&self, result: RequestInitResult) -> RequestInitResult {
         *self.init_state.lock().expect("lock poisoned") = Some(result.clone());
-        self.init_frozen.store(true, Ordering::Release);
         result
-    }
-
-    fn store_first_init_error(&self, error: RequestError) {
-        let mut guard = self.init_state.lock().expect("lock poisoned");
-        if guard.is_none() && !self.init_frozen.load(Ordering::Acquire) {
-            *guard = Some(Err(error));
-            self.init_frozen.store(true, Ordering::Release);
-        }
-    }
-
-    fn store_build_error(&self, error: RequestBuildError) {
-        self.store_first_init_error(
-            Err::<(), _>(Arc::new(error))
-                .context(request_error::BuildSnafu)
-                .expect_err("request build conversion must produce an error"),
-        );
     }
 
     fn reject_mutation(&self, operation: &'static str, error: RequestMutationError) {
@@ -272,38 +316,6 @@ impl RequestState {
         );
     }
 
-    fn record_build_result(&self, operation: &'static str, result: Result<(), RequestBuildError>) {
-        if let Err(error) = result {
-            let report = Report::from_error(&error);
-            tracing::warn!(
-                operation,
-                error = %report,
-                "request build failed, request stream will not be opened"
-            );
-            self.store_build_error(error);
-        }
-    }
-
-    fn operate_message(
-        &self,
-        operation: &'static str,
-        operate: impl FnOnce(&mut Message) -> Result<(), MalformedMessageError>,
-    ) {
-        let mut message = self.message();
-        if message.is_malformed() {
-            tracing::warn!(
-                operation,
-                "request is malformed, operation will not affect the request stream"
-            );
-            return;
-        }
-        if let Err(error) = operate(&mut message)
-            .context(request_mutation_error::MessageOperationSnafu { operation })
-        {
-            self.reject_mutation(operation, error);
-        }
-    }
-
     fn local_dhttp_name(&self) -> Option<dhttp_identity::name::DhttpName<'static>> {
         self.endpoint.quic().identity().map(|identity| {
             crate::endpoint::Endpoint::name_from_identity(&identity)
@@ -311,10 +323,32 @@ impl RequestState {
         })
     }
 
-    fn normalize_request_uri(&self, uri: impl IntoUri) -> Result<Uri, RequestBuildError> {
-        let base = self.local_dhttp_name();
-        uri.into_uri(base.as_ref())
-            .context(request_build_error::UriSnafu)
+    fn activate_message(&self) -> Result<http::uri::Authority, RequestError> {
+        let mut state = self.message();
+        let current = mem::replace(&mut *state, RequestMessageState::Failed);
+        match current {
+            RequestMessageState::Pending(pending) => {
+                let message = match context_request_build(pending.into_message()) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        *state = RequestMessageState::Failed;
+                        return Err(error);
+                    }
+                };
+                let authority = message.header().authority().clone();
+                *state = RequestMessageState::Active(message);
+                Ok(authority)
+            }
+            RequestMessageState::Active(message) => {
+                let authority = message.header().authority().clone();
+                *state = RequestMessageState::Active(message);
+                Ok(authority)
+            }
+            RequestMessageState::Failed => {
+                *state = RequestMessageState::Failed;
+                unreachable!("failed request activation must have cached init result")
+            }
+        }
     }
 
     async fn ensure_stream_init(&self) -> Result<(), RequestError> {
@@ -328,20 +362,7 @@ impl RequestState {
         }
 
         let result: RequestInitResult = async {
-            let authority = self
-                .authority
-                .lock()
-                .expect("lock poisoned")
-                .clone()
-                .context(request_build_error::MissingAuthoritySnafu);
-            let authority = context_request_build(authority)?;
-            {
-                let message = self.message();
-                let valid_header = message
-                    .validate_header_for_send()
-                    .context(request_build_error::MalformedHeaderSnafu);
-                context_request_build(valid_header)?;
-            }
+            let authority = self.activate_message()?;
             let connection = self.endpoint.connect(authority).await?;
             let (read_stream, write_stream) = connection
                 .initial_message_stream()
@@ -399,8 +420,7 @@ impl RequestState {
 
     async fn read_response(&self) -> Result<Response, RequestError> {
         let mut stream = self.take_read_stream().await?;
-        let mut message = Message::unresolved_response();
-        message.read_header_from(&mut stream).await?;
+        let message = ResponseMessage::read_from(&mut stream).await?;
 
         let agent = stream.connection().remote_agent().await?.expect(
             "remote agent should be present(should be guaranteed by h3 connection establishment)",
@@ -417,7 +437,10 @@ impl RequestState {
 
         loop {
             let flow = {
-                let mut message = self.message();
+                let mut state = self.message();
+                let RequestMessageState::Active(message) = &mut *state else {
+                    unreachable!("active message exists after stream initialization")
+                };
                 message.write_next_part_to(&mut write_stream, goal)
             }
             .await;
@@ -443,7 +466,10 @@ impl RequestState {
         let mut write_stream = self.acquire_write_stream().await?;
 
         let result = {
-            let mut message = self.message();
+            let mut state = self.message();
+            let RequestMessageState::Active(message) = &mut *state else {
+                unreachable!("active message exists after stream initialization")
+            };
             message.write_streaming_body_to(&mut write_stream, content)
         }
         .await;
@@ -476,8 +502,7 @@ impl RequestState {
     async fn into_response(self) -> Result<Response, RequestError> {
         self.close_request().await?;
         let mut read_stream = self.take_read_stream().await?;
-        let mut response_message = Message::unresolved_response();
-        response_message.read_header_from(&mut read_stream).await?;
+        let response_message = ResponseMessage::read_from(&mut read_stream).await?;
 
         let agent = read_stream.connection().remote_agent().await?.expect(
             "remote agent should be present(should be guaranteed by h3 connection establishment)",
@@ -510,93 +535,137 @@ impl Clone for Request {
 
 impl Request {
     pub fn set_method(&self, method: Method) -> &Self {
-        self.state.operate_message("set_method", |message| {
-            message.header_mut()?.set_method(method);
-            Ok(())
-        });
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => pending.method = Some(method),
+            RequestMessageState::Active(_) => self
+                .state
+                .reject_mutation("set_method", RequestMutationError::HeaderAlreadyActivated),
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_method", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
     pub fn set_uri(&self, uri: impl IntoUri) -> &Self {
         let operation = "set_uri";
-        {
-            let mut message = self.state.message();
-            if let Err(error) = message
-                .header_mut()
-                .map(|_| ())
-                .context(request_mutation_error::MessageOperationSnafu { operation })
-            {
-                self.state.reject_mutation(operation, error);
-                return self;
-            }
-        }
-
-        let uri = match self.state.normalize_request_uri(uri) {
-            Ok(uri) => uri,
-            Err(error) => {
-                self.state.record_build_result(operation, Err(error));
-                return self;
-            }
+        let base = self.state.local_dhttp_name();
+        let uri = match uri.into_uri(base.as_ref()) {
+            Ok(uri) => PendingUri::Parsed(uri),
+            Err(error) => PendingUri::Invalid(error),
         };
-
-        if let Some(auth) = uri.authority().cloned()
-            && let Err(error) = self
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => pending.uri = uri,
+            RequestMessageState::Active(_) => self
                 .state
-                .set_authority(auth)
-                .context(request_mutation_error::AuthorityFrozenSnafu)
-        {
-            self.state.reject_mutation(operation, error);
-            return self;
-        }
-
-        let mut message = self.state.message();
-        if let Err(error) = message
-            .header_mut()
-            .map(|header| header.set_uri(uri))
-            .context(request_mutation_error::MessageOperationSnafu { operation })
-        {
-            self.state.reject_mutation(operation, error);
+                .reject_mutation(operation, RequestMutationError::HeaderAlreadyActivated),
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation(operation, RequestMutationError::MessageUnavailable),
         }
         self
     }
 
     pub fn set_header(&self, name: impl IntoHeaderName, value: HeaderValue) -> &Self {
-        self.state.operate_message("set_header", |message| {
-            message.header_mut()?.header_map_mut().insert(name, value);
-            Ok(())
-        });
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => {
+                pending.headers.insert(name, value);
+            }
+            RequestMessageState::Active(_) => self
+                .state
+                .reject_mutation("set_header", RequestMutationError::HeaderAlreadyActivated),
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_header", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
     pub fn set_headers(&self, headers: HeaderMap) -> &Self {
-        self.state.operate_message("set_headers", |message| {
-            message.header_mut()?.header_map_mut().extend(headers);
-            Ok(())
-        });
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => pending.headers.extend(headers),
+            RequestMessageState::Active(_) => self
+                .state
+                .reject_mutation("set_headers", RequestMutationError::HeaderAlreadyActivated),
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_headers", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
     pub fn set_body(&self, content: impl IntoBody) -> &Self {
-        self.state.operate_message("set_body", |message| {
-            message.set_body(content)?;
-            Ok(())
-        });
+        let content = content.into_body();
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => {
+                pending.body = BodyState::Buffered {
+                    buflist: BuflistCursor::new(content),
+                };
+            }
+            RequestMessageState::Active(message) => {
+                if let Err(error) = message.set_body(content).context(
+                    request_mutation_error::MessageOperationSnafu {
+                        operation: "set_body",
+                    },
+                ) {
+                    self.state.reject_mutation("set_body", error);
+                }
+            }
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_body", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
     pub fn set_trailer(&self, name: impl IntoHeaderName, value: HeaderValue) -> &Self {
-        self.state.operate_message("set_trailer", |message| {
-            message.trailers_mut()?.insert(name, value);
-            Ok(())
-        });
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => {
+                pending.trailer.insert(name, value);
+            }
+            RequestMessageState::Active(message) => {
+                if let Err(error) = (|| {
+                    message.trailers_mut()?.insert(name, value);
+                    Ok(())
+                })()
+                .context(request_mutation_error::MessageOperationSnafu {
+                    operation: "set_trailer",
+                }) {
+                    self.state.reject_mutation("set_trailer", error);
+                }
+            }
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_trailer", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
     pub fn set_trailers(&self, trailers: HeaderMap) -> &Self {
-        self.state.operate_message("set_trailers", |message| {
-            message.trailers_mut()?.extend(trailers);
-            Ok(())
-        });
+        let mut state = self.state.message();
+        match &mut *state {
+            RequestMessageState::Pending(pending) => pending.trailer.extend(trailers),
+            RequestMessageState::Active(message) => {
+                if let Err(error) = (|| {
+                    message.trailers_mut()?.extend(trailers);
+                    Ok(())
+                })()
+                .context(request_mutation_error::MessageOperationSnafu {
+                    operation: "set_trailers",
+                }) {
+                    self.state.reject_mutation("set_trailers", error);
+                }
+            }
+            RequestMessageState::Failed => self
+                .state
+                .reject_mutation("set_trailers", RequestMutationError::MessageUnavailable),
+        }
         self
     }
 
@@ -699,7 +768,7 @@ impl IntoFuture for Request {
 }
 
 pub struct Response {
-    message: Message,
+    message: ResponseMessage,
     stream: ReadStream,
     agent: Arc<dyn agent::RemoteAgent>,
 }

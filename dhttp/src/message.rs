@@ -14,8 +14,7 @@ use crate::h3x::{
     error::{Code, H3FrameUnexpected, H3MessageError},
     message::stream::{MessageStreamError, ReadStream, WriteStream},
     qpack::field::{
-        FieldLine, FieldSection, MalformedHeaderSection, Protocol, PseudoHeaders,
-        malformed_header_section,
+        FieldLine, FieldSection, MalformedHeaderSection, Protocol, malformed_header_section,
     },
 };
 
@@ -243,7 +242,7 @@ fn header_map_to_field_lines(headers: &HeaderMap) -> impl Iterator<Item = FieldL
     })
 }
 
-pub trait BeMessageHeader {
+pub trait BeMessageHeader: Clone {
     type Iter<'a>: Iterator<Item = FieldLine> + 'a
     where
         Self: 'a;
@@ -493,6 +492,14 @@ pub enum BodyState {
     Buffered { buflist: BuflistCursor },
 }
 
+impl BodyState {
+    fn reset_buffer_cursor(&mut self) {
+        if let BodyState::Buffered { buflist } = self {
+            buflist.reset();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MessageStage {
     /// Receiving/Sending header section, including interim response headers
@@ -565,15 +572,16 @@ impl From<MalformedHeaderSection> for MalformedMessageError {
     }
 }
 
-// todo: 通过泛型区分请求和响应，避免运行时检查。虽现版本无法支持自定义泛型作为常量泛型，但可以通过零大小类型（ZST）和特化实现来达到类似效果。
 #[derive(Debug, Clone)]
-pub struct Message {
-    header: FieldSection,
+pub struct Message<H: BeMessageHeader> {
+    header: H,
     body: BodyState,
-    trailer: FieldSection,
-
+    trailer: Trailer,
     stage: MessageStage,
 }
+
+pub type RequestMessage = Message<RequestHeader>;
+pub type ResponseMessage = Message<ResponseHeader>;
 
 #[derive(Debug, Snafu)]
 pub enum InvalidHeader {
@@ -583,34 +591,41 @@ pub enum InvalidHeader {
     Value { source: InvalidHeaderValue },
 }
 
-impl Message {
-    pub fn unresolved_request() -> Self {
+impl<H: BeMessageHeader> Message<H> {
+    pub fn new(header: H) -> Self {
         Self {
-            header: FieldSection::header(PseudoHeaders::unresolved_request(), HeaderMap::default()),
+            header,
             body: BodyState::Pending,
-            trailer: FieldSection::trailer(HeaderMap::default()),
+            trailer: Trailer::default(),
             stage: MessageStage::Header,
         }
     }
 
-    pub fn unresolved_response() -> Self {
+    pub(crate) fn with_parts(header: H, body: BodyState, trailer: Trailer) -> Self {
         Self {
-            header: FieldSection::header(
-                PseudoHeaders::unresolved_response(),
-                HeaderMap::default(),
-            ),
-            body: BodyState::Pending,
-            trailer: FieldSection::trailer(HeaderMap::default()),
+            header,
+            body,
+            trailer,
             stage: MessageStage::Header,
         }
     }
 
-    pub fn is_request(&self) -> bool {
-        self.header.is_request_header()
+    pub fn header(&self) -> &H {
+        &self.header
     }
 
-    pub fn is_response(&self) -> bool {
-        self.header.is_response_header()
+    fn header_mut_checked(&mut self) -> Result<&mut H, MalformedMessageError> {
+        if let Some(error) = self.terminal_stage_error() {
+            return Err(error);
+        }
+        if self.stage > MessageStage::Header {
+            return Err(MalformedMessageError::HeaderAlreadySent);
+        }
+        Ok(&mut self.header)
+    }
+
+    pub fn is_interim_response(&self) -> bool {
+        self.header.is_interim()
     }
 
     fn terminal_stage_error(&self) -> Option<MalformedMessageError> {
@@ -671,34 +686,6 @@ impl Message {
             BodyState::Streaming { .. } => unreachable!(),
             BodyState::Buffered { buflist } => Ok(buflist),
         }
-    }
-
-    pub fn is_interim_response(&self) -> bool {
-        self.is_response()
-            && self.header().check_pseudo().is_ok()
-            && self.header().status().is_informational()
-    }
-
-    pub fn header_mut(&mut self) -> Result<&mut FieldSection, MalformedMessageError> {
-        if let Some(error) = self.terminal_stage_error() {
-            return Err(error);
-        }
-        if self.stage > MessageStage::Header {
-            return Err(MalformedMessageError::HeaderAlreadySent);
-        }
-        Ok(&mut self.header)
-    }
-
-    pub(crate) fn header_mut_unchecked(&mut self) -> &mut FieldSection {
-        &mut self.header
-    }
-
-    pub fn header(&self) -> &FieldSection {
-        &self.header
-    }
-
-    pub(crate) fn validate_header_for_send(&self) -> Result<(), MalformedHeaderSection> {
-        self.header.check_pseudo()
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -791,23 +778,51 @@ impl Message {
     pub fn to_unsend(mut self) -> Self {
         assert!(!self.is_dropped(), "cannot unsend a dropped message");
         self.stage = MessageStage::Header;
-        // reset cursor
-        if let BodyState::Buffered { buflist } = &mut self.body {
-            buflist.reset();
-        }
+        self.body.reset_buffer_cursor();
         self
     }
 
     pub fn take(&mut self) -> Self {
         assert!(!self.is_dropped(), "cannot take a dropped message");
-        let message = if self.is_request() {
-            mem::replace(self, Self::unresolved_request())
-        } else {
-            mem::replace(self, Self::unresolved_response())
+        let message = Self {
+            header: self.header.clone(),
+            body: mem::replace(&mut self.body, BodyState::Pending),
+            trailer: mem::take(&mut self.trailer),
+            stage: self.stage,
         };
         self.stage = MessageStage::Dropped;
 
         message
+    }
+}
+
+impl Message<RequestHeader> {
+    pub fn method(&self) -> &Method {
+        self.header.method()
+    }
+
+    pub fn uri(&self) -> Uri {
+        self.header.uri()
+    }
+}
+
+impl Message<ResponseHeader> {
+    pub fn status(&self) -> StatusCode {
+        self.header.status()
+    }
+
+    pub fn header_mut(&mut self) -> Result<&mut ResponseHeader, MalformedMessageError> {
+        self.header_mut_checked()
+    }
+
+    pub(crate) fn header_mut_unchecked(&mut self) -> &mut ResponseHeader {
+        &mut self.header
+    }
+}
+
+impl Default for ResponseMessage {
+    fn default() -> Self {
+        Self::new(ResponseHeader::default())
     }
 }
 
@@ -830,7 +845,10 @@ async fn send_data_to(
     stream.write_data(data).await
 }
 
-impl Message {
+impl<H> Message<H>
+where
+    H: BeMessageHeader + TryFrom<FieldSection, Error = MalformedHeaderSection>,
+{
     async fn try_read_io<T>(
         &mut self,
         stream: &mut ReadStream,
@@ -847,10 +865,35 @@ impl Message {
             .await
     }
 
+    pub async fn read_from(stream: &mut ReadStream) -> Result<Self, MessageStreamError> {
+        let header = stream
+            .try_stream_io(async |stream| {
+                let Some(field_section) = stream.read_header_frame().await? else {
+                    if stream.peek_frame().await.transpose()?.is_some() {
+                        return Err(H3FrameUnexpected::UnexpectedFrameType.into());
+                    }
+                    return Err(H3MessageError::MissingHeaderSection.into());
+                };
+                Ok(H::try_from(field_section)?)
+            })
+            .await?;
+        let stage = if header.is_interim() {
+            MessageStage::Header
+        } else {
+            MessageStage::Body
+        };
+        Ok(Self {
+            header,
+            body: BodyState::Pending,
+            trailer: Trailer::default(),
+            stage,
+        })
+    }
+
     pub async fn read_header_from(
         &mut self,
         stream: &mut ReadStream,
-    ) -> Result<&FieldSection, MessageStreamError> {
+    ) -> Result<&H, MessageStreamError> {
         match self.stage {
             MessageStage::Header => {}
             MessageStage::Body | MessageStage::Trailer | MessageStage::Complete => {
@@ -862,27 +905,14 @@ impl Message {
         }
 
         self.header = self
-            .try_read_io(stream, async |stream, message| {
+            .try_read_io(stream, async |stream, _message| {
                 let Some(field_section) = stream.read_header_frame().await? else {
                     if stream.peek_frame().await.transpose()?.is_some() {
                         return Err(H3FrameUnexpected::UnexpectedFrameType.into());
-                    } else {
-                        return Err(H3MessageError::MissingHeaderSection.into());
                     }
+                    return Err(H3MessageError::MissingHeaderSection.into());
                 };
-
-                field_section.check_pseudo()?;
-                if message.header.is_request_header() {
-                    if !field_section.is_request_header() {
-                        malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail()?;
-                    }
-                } else {
-                    debug_assert!(message.header.is_response_header());
-                    if !field_section.is_response_header() {
-                        malformed_header_section::AbsenceOfMandatoryPseudoHeadersSnafu.fail()?;
-                    }
-                }
-                Ok(field_section)
+                Ok(H::try_from(field_section)?)
             })
             .await?;
 
@@ -1042,14 +1072,11 @@ impl Message {
                     if stream.peek_frame().await.transpose()?.is_some() {
                         return Err(H3FrameUnexpected::UnexpectedFrameDuringTrailer.into());
                     } else {
-                        return Ok(FieldSection::trailer(HeaderMap::new()));
+                        return Ok(Trailer::default());
                     }
                 };
 
-                if !field_section.is_trailer() {
-                    return Err(MalformedHeaderSection::PseudoHeaderInTrailer.into());
-                }
-                Ok(field_section)
+                Ok(Trailer::try_from(field_section)?)
             })
             .await?;
 
@@ -1071,7 +1098,7 @@ impl Message {
         &mut self,
         stream: &'s mut WriteStream,
         goal: MessageWriteGoal,
-    ) -> impl Future<Output = MessageWriteFlow> + use<'s> {
+    ) -> impl Future<Output = MessageWriteFlow> + use<'s, H> {
         let action = prepare_message_write_next_part_to(self, goal);
         async move { execute_message_write_next_part_to(stream, action).await }
     }
@@ -1087,7 +1114,7 @@ impl Message {
         &mut self,
         stream: &'s mut WriteStream,
         content: B,
-    ) -> impl Future<Output = Result<(), MessageStreamError>> + use<'s, B>
+    ) -> impl Future<Output = Result<(), MessageStreamError>> + use<'s, B, H>
     where
         B: IntoBody,
     {
@@ -1210,11 +1237,14 @@ async fn execute_message_write_next_part_to(
     }
 }
 
-async fn drive_message_to(
-    message: &mut Message,
+async fn drive_message_to<H>(
+    message: &mut Message<H>,
     stream: &mut WriteStream,
     goal: MessageWriteGoal,
-) -> Result<(), MessageStreamError> {
+) -> Result<(), MessageStreamError>
+where
+    H: BeMessageHeader + TryFrom<FieldSection, Error = MalformedHeaderSection>,
+{
     loop {
         match message.write_next_part_to(stream, goal).await {
             ControlFlow::Continue(()) => {}
@@ -1258,8 +1288,8 @@ impl MessageWriteStepFlow {
     }
 }
 
-fn prepare_message_write_next_part_to(
-    message: &mut Message,
+fn prepare_message_write_next_part_to<H: BeMessageHeader>(
+    message: &mut Message<H>,
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
     match message.stage {
@@ -1281,24 +1311,14 @@ fn prepare_message_write_next_part_to(
     }
 }
 
-fn prepare_message_write_all_to(message: &mut Message) -> bool {
-    if matches!(message.stage, MessageStage::Header | MessageStage::Body)
-        && message.header().is_empty()
-    {
-        return false;
-    }
+fn prepare_message_write_all_to<H: BeMessageHeader>(_message: &mut Message<H>) -> bool {
     true
 }
 
-fn prepare_message_header_step(
-    message: &mut Message,
+fn prepare_message_header_step<H: BeMessageHeader>(
+    message: &mut Message<H>,
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
-    if message.validate_header_for_send().is_err() {
-        message.set_malformed();
-        return MessageWriteStepAction::Malformed;
-    }
-
     let fields = message.header.iter().collect::<Vec<_>>();
     let is_interim = message.is_interim_response();
     if !is_interim {
@@ -1330,8 +1350,8 @@ fn prepare_message_header_step(
     MessageWriteStepAction::Header { fields, flow }
 }
 
-fn prepare_message_body_step(
-    message: &mut Message,
+fn prepare_message_body_step<H: BeMessageHeader>(
+    message: &mut Message<H>,
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
     match &message.body {
@@ -1347,8 +1367,8 @@ fn prepare_message_body_step(
     }
 }
 
-fn prepare_message_buffered_body_step(
-    message: &mut Message,
+fn prepare_message_buffered_body_step<H: BeMessageHeader>(
+    message: &mut Message<H>,
     goal: MessageWriteGoal,
 ) -> MessageWriteStepAction {
     let data = {
@@ -1391,7 +1411,9 @@ fn prepare_message_buffered_body_step(
     }
 }
 
-fn prepare_message_trailer_step(message: &mut Message) -> MessageWriteStepAction {
+fn prepare_message_trailer_step<H: BeMessageHeader>(
+    message: &mut Message<H>,
+) -> MessageWriteStepAction {
     if message.trailers().is_empty() {
         MessageWriteStepAction::BreakOk
     } else {
@@ -1420,7 +1442,6 @@ mod tests {
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
-        MalformedHeaderSection,
     };
 
     struct NonSendBody(Rc<Vec<u8>>);
@@ -1471,47 +1492,8 @@ mod tests {
     }
 
     #[test]
-    fn request_header_validation_rejects_authority_only_get() {
-        let mut message = super::Message::unresolved_request();
-        message.header_mut().unwrap().set_method(http::Method::GET);
-        message
-            .header_mut()
-            .unwrap()
-            .set_authority("reimu.pilot.genmeta.net".parse().unwrap());
-
-        let error = message.validate_header_for_send().unwrap_err();
-
-        assert!(matches!(
-            error,
-            MalformedHeaderSection::AbsenceOfMandatoryPseudoHeaders { .. }
-        ));
-    }
-
-    #[test]
-    fn request_header_write_step_rejects_authority_only_get() {
-        let mut message = super::Message::unresolved_request();
-        message.header_mut().unwrap().set_method(http::Method::GET);
-        message
-            .header_mut()
-            .unwrap()
-            .set_authority("reimu.pilot.genmeta.net".parse().unwrap());
-
-        let action = super::prepare_message_write_next_part_to(
-            &mut message,
-            super::MessageWriteGoal::Header,
-        );
-
-        assert!(matches!(action, super::MessageWriteStepAction::Malformed));
-        assert!(message.is_malformed());
-    }
-
-    #[test]
     fn complete_write_preparation_accepts_streaming_body() {
-        let mut message = super::Message::unresolved_response();
-        message
-            .header_mut()
-            .unwrap()
-            .set_status(http::StatusCode::OK);
+        let mut message = super::ResponseMessage::default();
         *message.streaming_body().unwrap() += 5;
 
         assert!(super::prepare_message_write_all_to(&mut message));
@@ -1521,7 +1503,7 @@ mod tests {
 
     #[test]
     fn set_body_accepts_non_send_into_body() {
-        let mut message = super::Message::unresolved_request();
+        let mut message = super::ResponseMessage::default();
         message
             .set_body(NonSendBody(Rc::new(b"non send body".to_vec())))
             .expect("non-Send body should be accepted");
@@ -1537,7 +1519,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn write_streaming_body_accepts_non_send_into_body(
-        message: &mut super::Message,
+        message: &mut super::ResponseMessage,
         stream: &mut WriteStream,
         body: NonSendBody,
     ) {
@@ -1721,4 +1703,32 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn request_message_exposes_typed_request_header() {
+        let header =
+            super::RequestHeader::try_from(crate::h3x::qpack::field::FieldSection::header(
+                crate::h3x::qpack::field::PseudoHeaders::request(
+                    http::Method::POST,
+                    "https://example.com/submit".parse().unwrap(),
+                ),
+                http::HeaderMap::new(),
+            ))
+            .unwrap();
+
+        let message = super::RequestMessage::new(header);
+
+        assert_eq!(message.method(), &http::Method::POST);
+        assert_eq!(
+            message.uri(),
+            "https://example.com/submit".parse::<http::Uri>().unwrap()
+        );
+    }
+
+    #[test]
+    fn response_message_default_uses_ok_status() {
+        let message = super::ResponseMessage::default();
+
+        assert_eq!(message.status(), http::StatusCode::OK);
+        assert_eq!(message.stage(), super::MessageStage::Header);
+    }
 }

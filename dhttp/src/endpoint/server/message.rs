@@ -42,7 +42,9 @@ use crate::{
         qpack::field::Protocol,
         stream_id::StreamId,
     },
-    message::{Body, IntoBody, MalformedMessageError, Message, ReadToStringError},
+    message::{
+        Body, IntoBody, MalformedMessageError, ReadToStringError, RequestMessage, ResponseMessage,
+    },
 };
 
 #[derive(Debug, Snafu)]
@@ -82,20 +84,19 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
         .context(resolve_error::RemoteAgentSnafu)?;
     let protocols = connection.protocols().clone();
 
-    let mut request = Request {
-        message: Message::unresolved_request(),
+    let mut read_stream = read_stream;
+    let request_message = RequestMessage::read_from(&mut read_stream)
+        .await
+        .context(resolve_error::ReadHeaderSnafu)?;
+    let request = Request {
+        message: request_message,
         stream: read_stream,
         agent: remote_agent,
         stream_id,
         protocols: protocols.clone(),
     };
-    request
-        .message
-        .read_header_from(&mut request.stream)
-        .await
-        .context(resolve_error::ReadHeaderSnafu)?;
     let response = Response {
-        message: Message::unresolved_response(),
+        message: ResponseMessage::default(),
         stream: write_stream,
         agent: local_agent,
         stream_id,
@@ -105,7 +106,7 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
 }
 
 pub struct Request {
-    message: Message,
+    message: RequestMessage,
     stream: ReadStream,
     agent: Option<Arc<dyn agent::RemoteAgent>>,
     stream_id: StreamId,
@@ -114,27 +115,27 @@ pub struct Request {
 
 impl Request {
     pub fn method(&self) -> Method {
-        self.message.header().method()
+        self.message.method().clone()
     }
 
     pub fn scheme(&self) -> Option<Scheme> {
-        self.message.header().scheme()
+        Some(self.message.header().scheme().clone())
     }
 
     pub fn authority(&self) -> Option<Authority> {
-        self.message.header().authority()
+        Some(self.message.header().authority().clone())
     }
 
     pub fn path(&self) -> Option<PathAndQuery> {
-        self.message.header().path()
+        Some(self.message.header().path().clone())
     }
 
     pub fn protocol(&self) -> Option<Protocol> {
-        self.message.header().protocol()
+        self.message.header().protocol().cloned()
     }
 
     pub fn uri(&self) -> Uri {
-        self.message.header().uri()
+        self.message.uri()
     }
 
     pub fn headers(&self) -> &http::HeaderMap {
@@ -222,7 +223,7 @@ impl Request {
 }
 
 pub struct Response {
-    message: Message,
+    message: ResponseMessage,
     stream: WriteStream,
     agent: Arc<dyn agent::LocalAgent>,
     stream_id: StreamId,
@@ -271,7 +272,7 @@ impl Response {
     }
 
     pub fn status(&self) -> Option<http::StatusCode> {
-        Some(self.message.header().status())
+        Some(self.message.status())
     }
 
     pub fn set_status(&mut self, status: http::StatusCode) -> &mut Self {
@@ -319,12 +320,6 @@ impl Response {
     }
 
     pub async fn flush(&mut self) -> Result<&mut Self, MessageStreamError> {
-        self.check_message_operation("flush_response", |this| {
-            if !this.message.header().is_empty() {
-                this.message.header().check_pseudo()?;
-            }
-            Ok(())
-        });
         self.message.write_all_to(&mut self.stream).await?;
         self.stream.flush().await?;
         Ok(self)
@@ -356,7 +351,6 @@ impl Response {
 
     pub async fn close(&mut self) -> Result<(), MessageStreamError> {
         self.check_message_operation("close_response", |this| {
-            this.message.header().check_pseudo()?;
             if this.message.is_interim_response() {
                 return Err(MalformedMessageError::FinalResponseRequired);
             }
@@ -419,7 +413,6 @@ impl Response {
 
         if !message.is_malformed() {
             let check = || {
-                message.header().check_pseudo()?;
                 if message.is_interim_response() {
                     return Err(MalformedMessageError::FinalResponseRequired);
                 }

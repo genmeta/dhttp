@@ -13,7 +13,7 @@ use crate::dquic::{
 use crate::h3x::connection::ConnectionBuilder;
 use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
-use crate::message::{IntoAuthority, IntoAuthorityError, IntoUri, Message};
+use crate::message::{IntoAuthority, IntoAuthorityError, IntoUri};
 
 use http::Method;
 
@@ -244,8 +244,7 @@ impl Endpoint {
     }
 
     fn request(&self) -> Request {
-        let msg = Message::unresolved_request();
-        let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
+        let state = Arc::new(client::RequestState::new(self.inner.clone()));
         Request::new(state)
     }
 
@@ -376,8 +375,7 @@ impl Endpoint {
     /// [`Request`]: Request
     /// [`.uri()`]: Request::uri
     pub fn new_request(self: &Arc<Self>) -> Request {
-        let msg = Message::unresolved_request();
-        let state = Arc::new(client::RequestState::new(self.inner.clone(), msg));
+        let state = Arc::new(client::RequestState::new(self.inner.clone()));
         Request::new(state)
     }
 
@@ -720,6 +718,35 @@ mod tests {
                 other => panic!("expected malformed request header error, got {other:?}"),
             },
             other => panic!("expected request build error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn request_header_setters_after_activation_do_not_replace_first_build_error() {
+        let endpoint = Endpoint::builder().build().await.unwrap();
+        let request = endpoint.get("https://~/api");
+
+        let first = match request.clone().into_response().await {
+            Ok(_) => panic!("bare tilde request should fail before opening a stream"),
+            Err(error) => error,
+        };
+        request.set_method(http::Method::POST);
+        request.set_uri("https://example.com/after-activation");
+        let second = match request.into_response().await {
+            Ok(_) => panic!("cached failed request should not recover after header mutation"),
+            Err(error) => error,
+        };
+
+        match (&first, &second) {
+            (
+                client::RequestError::Build {
+                    source: first_source,
+                },
+                client::RequestError::Build {
+                    source: second_source,
+                },
+            ) => assert_eq!(first_source.to_string(), second_source.to_string()),
+            other => panic!("expected cached build errors, got {other:?}"),
         }
     }
 
