@@ -43,7 +43,9 @@ use crate::{
         stream_id::StreamId,
     },
     message::{
-        Body, IntoBody, MalformedMessageError, ReadToStringError, RequestMessage, ResponseMessage,
+        Body, IntoBody, MessageOperationError, ReadBufferedBodyError, ReadStreamingBodyError,
+        ReadToStringError, ReadTrailersError, RequestMessage, ResponseMessage,
+        WriteStreamingBodyError,
     },
 };
 
@@ -105,6 +107,17 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
     Ok((request, response))
 }
 
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ResponseWriteError {
+    #[snafu(display("response is already finalized"))]
+    ResponseFinalized,
+    #[snafu(display("response message operation failed"))]
+    MessageOperation { source: MessageOperationError },
+    #[snafu(transparent)]
+    Body { source: WriteStreamingBodyError },
+}
+
 pub struct Request {
     message: RequestMessage,
     stream: ReadStream,
@@ -146,17 +159,17 @@ impl Request {
         self.headers().get(name)
     }
 
-    pub async fn read(&mut self) -> Option<Result<Bytes, MessageStreamError>> {
+    pub async fn read(&mut self) -> Option<Result<Bytes, ReadStreamingBodyError>> {
         self.message
             .read_streaming_body_from(&mut self.stream)
             .await
     }
 
-    pub async fn read_all(&mut self) -> Result<impl Buf, MessageStreamError> {
+    pub async fn read_all(&mut self) -> Result<impl Buf, ReadBufferedBodyError> {
         self.message.read_buffered_body_from(&mut self.stream).await
     }
 
-    pub async fn read_to_bytes(&mut self) -> Result<Bytes, MessageStreamError> {
+    pub async fn read_to_bytes(&mut self) -> Result<Bytes, ReadBufferedBodyError> {
         self.message.collect_bytes_body_from(&mut self.stream).await
     }
 
@@ -166,21 +179,21 @@ impl Request {
             .await
     }
 
-    pub async fn as_stream(&mut self) -> impl Stream<Item = Result<Bytes, MessageStreamError>> {
+    pub async fn as_stream(&mut self) -> impl Stream<Item = Result<Bytes, ReadStreamingBodyError>> {
         futures::stream::unfold(self, async |this| {
             this.read().await.map(|item| (item, this))
         })
         .fuse()
     }
 
-    pub async fn into_stream(self) -> impl Stream<Item = Result<Bytes, MessageStreamError>> {
+    pub async fn into_stream(self) -> impl Stream<Item = Result<Bytes, ReadStreamingBodyError>> {
         futures::stream::unfold(self, async |mut this| {
             this.read().await.map(|item| (item, this))
         })
         .fuse()
     }
 
-    pub async fn trailers(&mut self) -> Result<&HeaderMap, MessageStreamError> {
+    pub async fn trailers(&mut self) -> Result<&HeaderMap, ReadTrailersError> {
         self.message.read_trailers_from(&mut self.stream).await
     }
 
@@ -234,7 +247,7 @@ impl Response {
     fn check_message_operation(
         &mut self,
         operation: &str,
-        operate: impl FnOnce(&mut ResponseMessage) -> Result<(), MalformedMessageError>,
+        operate: impl FnOnce(&mut ResponseMessage) -> Result<(), MessageOperationError>,
     ) -> bool {
         if self.message.is_none() || self.stream.is_none() {
             tracing::warn!(
@@ -267,7 +280,10 @@ impl Response {
     }
 
     pub fn headers_mut(&mut self) -> &mut http::HeaderMap {
-        self.check_message_operation("modify_headers", |message| message.header_mut().map(|_| ()));
+        self.check_message_operation("modify_headers", |message| {
+            message.header_mut()?;
+            Ok(())
+        });
         self.message
             .as_mut()
             .expect("response message is unavailable after finalization")
@@ -298,7 +314,7 @@ impl Response {
     pub fn set_body(&mut self, content: impl IntoBody) -> &mut Self {
         self.check_message_operation("write_chunked_body", |message| {
             if message.is_interim_response() {
-                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+                return Err(MessageOperationError::BodyOrTrailerOnInterimResponse);
             }
             message.set_body(content)?;
             Ok(())
@@ -309,29 +325,27 @@ impl Response {
     pub fn write<B>(
         &mut self,
         content: B,
-    ) -> impl Future<Output = Result<&mut Self, MessageStreamError>> + use<'_, B>
+    ) -> impl Future<Output = Result<&mut Self, ResponseWriteError>> + use<'_, B>
     where
         B: IntoBody,
     {
         let content: Body = content.into_body();
         async move {
-            if !self.check_message_operation("write_streaming_body", |message| {
-                if message.is_interim_response() {
-                    return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
-                }
-                message.streaming_body()?;
-                Ok(())
-            }) {
-                return Err(MessageStreamError::MessageSendFailed);
-            }
             let message = self
                 .message
                 .as_mut()
-                .ok_or(MessageStreamError::MessageSendFailed)?;
+                .ok_or(ResponseWriteError::ResponseFinalized)?;
+            if message.is_interim_response() {
+                return Err(
+                    Err::<(), _>(MessageOperationError::BodyOrTrailerOnInterimResponse)
+                        .context(response_write_error::MessageOperationSnafu)
+                        .expect_err("response write message operation conversion must fail"),
+                );
+            }
             let stream = self
                 .stream
                 .as_mut()
-                .ok_or(MessageStreamError::MessageSendFailed)?;
+                .ok_or(ResponseWriteError::ResponseFinalized)?;
             message.write_streaming_body_to(stream, content).await?;
             Ok(self)
         }
@@ -361,9 +375,10 @@ impl Response {
     pub fn trailers_mut(&mut self) -> &mut HeaderMap {
         self.check_message_operation("modify_trailers", |message| {
             if message.is_interim_response() {
-                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+                return Err(MessageOperationError::BodyOrTrailerOnInterimResponse);
             }
-            message.trailers_mut().map(|_| ())
+            message.trailers_mut()?;
+            Ok(())
         });
         self.message
             .as_mut()
@@ -374,7 +389,7 @@ impl Response {
     pub fn set_trailer(&mut self, name: impl IntoHeaderName, value: HeaderValue) -> &mut Self {
         self.check_message_operation("set_trailer", |message| {
             if message.is_interim_response() {
-                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+                return Err(MessageOperationError::BodyOrTrailerOnInterimResponse);
             }
             message.trailers_mut()?.insert(name, value);
             Ok(())
@@ -385,7 +400,7 @@ impl Response {
     pub fn set_trailers(&mut self, map: HeaderMap) -> &mut Self {
         self.check_message_operation("set_trailers", |message| {
             if message.is_interim_response() {
-                return Err(MalformedMessageError::BodyOrTrailerOnInterimResponse);
+                return Err(MessageOperationError::BodyOrTrailerOnInterimResponse);
             }
             *message.trailers_mut()? = map;
             Ok(())
@@ -452,7 +467,7 @@ impl Response {
 
         Some(async move {
             if message.is_interim_response() {
-                let error = MalformedMessageError::FinalResponseRequired;
+                let error = MessageOperationError::FinalResponseRequired;
                 let report = Report::from_error(&error);
                 tracing::warn!(
                     error = %report,

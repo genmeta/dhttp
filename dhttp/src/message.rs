@@ -521,29 +521,174 @@ pub enum MessageWriteGoal {
 
 pub type MessageWriteFlow = ControlFlow<Result<(), MessageStreamError>, ()>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyReadAction {
+    Ready,
+    Complete,
+}
+
 #[derive(Debug, Snafu)]
-pub enum MalformedMessageError {
-    // === 状态相关错误 ===
+#[snafu(module)]
+pub enum MutateHeaderError {
     #[snafu(display("cannot modify header section after it has been sent"))]
-    HeaderAlreadySent,
-    #[snafu(display("cannot modify body while it is being sent"))]
-    BodyAlreadySending,
+    AlreadySent,
+}
+
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module)]
+pub enum EnsureStreamingBodyError {
+    #[snafu(display("message body is already complete"))]
+    BodyAlreadyComplete,
+    #[snafu(display("streaming body operation cannot be performed on buffered body"))]
+    BufferedBody,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum EnsureBufferedBodyError {
+    #[snafu(display("message body is already complete"))]
+    BodyAlreadyComplete,
+    #[snafu(display("buffered body operation cannot be performed on streaming body"))]
+    StreamingBody,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum PrepareStreamingBodyReadError {
+    #[snafu(display("failed to select streaming body mode"))]
+    BodyMode { source: EnsureStreamingBodyError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum PrepareBufferedBodyReadError {
+    #[snafu(display("failed to select buffered body mode"))]
+    BodyMode { source: EnsureBufferedBodyError },
+    #[snafu(display("buffered body operation cannot be performed on streaming body"))]
+    StreamingBody,
+}
+
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module)]
+pub enum PrepareStreamingBodyWriteError {
+    #[snafu(display("message body is already complete"))]
+    BodyAlreadyComplete,
+    #[snafu(display("failed to select streaming body mode"))]
+    BodyMode { source: EnsureStreamingBodyError },
+}
+
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module)]
+pub enum CommitStreamingBodyWriteError {
+    #[snafu(display("failed to select streaming body mode"))]
+    BodyMode { source: EnsureStreamingBodyError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ReadStreamingBodyError {
+    #[snafu(display("failed to prepare streaming body read"))]
+    Prepare {
+        source: PrepareStreamingBodyReadError,
+    },
+    #[snafu(display("message stream error"))]
+    Stream { source: MessageStreamError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ReadBufferedBodyError {
+    #[snafu(display("failed to prepare buffered body read"))]
+    Prepare {
+        source: PrepareBufferedBodyReadError,
+    },
+    #[snafu(display("message stream error"))]
+    Stream { source: MessageStreamError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ReadTrailersError {
+    #[snafu(display("failed to read buffered body before trailers"))]
+    Body { source: ReadBufferedBodyError },
+    #[snafu(display("cannot read trailers after streaming body was selected"))]
+    StreamingBody,
+    #[snafu(display("message stream error"))]
+    Stream { source: MessageStreamError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ReadAllError {
+    #[snafu(display("failed to read message header"))]
+    Header { source: MessageStreamError },
+    #[snafu(display("failed to read message body"))]
+    Body { source: ReadBufferedBodyError },
+    #[snafu(display("failed to read message trailers"))]
+    Trailers { source: ReadTrailersError },
+}
+
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module, visibility(pub(crate)))]
+pub enum WriteStreamingBodyError {
+    #[snafu(display("failed to prepare streaming body write"))]
+    Prepare {
+        source: PrepareStreamingBodyWriteError,
+    },
+    #[snafu(display("message stream error"))]
+    Stream { source: MessageStreamError },
+    #[snafu(display("failed to commit streaming body write"))]
+    Commit {
+        source: CommitStreamingBodyWriteError,
+    },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum WriteBufferedBodyError {
+    #[snafu(display("failed to select buffered body mode"))]
+    BodyMode { source: EnsureBufferedBodyError },
+    #[snafu(display("message stream error"))]
+    Stream { source: MessageStreamError },
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum SetBodyError {
     #[snafu(display("cannot replace body content while sending"))]
     BodyReplacementDuringSend,
-    #[snafu(display("cannot modify trailer section after it has been sent"))]
-    TrailerAlreadySent,
-    #[snafu(display("cannot change body mode after transfer has started"))]
-    BodyModeChangeAfterTransferStarted,
-    #[snafu(display("cannot modify body after transfer has ended"))]
+    #[snafu(display("cannot set body after body is complete"))]
     BodyAlreadyComplete,
+}
 
-    // === 模式不匹配错误 ===
-    #[snafu(display("buffered body operation cannot be performed on streaming body"))]
-    BufferedOperationOnStreamingBody,
-    #[snafu(display("streaming body operation cannot be performed on buffered body"))]
-    StreamingOperationOnBufferedBody,
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum MutateTrailersError {
+    #[snafu(display("cannot modify trailer section after it has been sent"))]
+    AlreadySent,
+}
 
-    // === 协议语义错误 ===
+#[derive(Debug, Snafu)]
+#[snafu(module, visibility(pub(crate)))]
+pub enum MessageOperationError {
+    #[snafu(transparent)]
+    MutateHeader { source: MutateHeaderError },
+    #[snafu(transparent)]
+    EnsureStreamingBody { source: EnsureStreamingBodyError },
+    #[snafu(transparent)]
+    EnsureBufferedBody { source: EnsureBufferedBodyError },
+    #[snafu(transparent)]
+    SetBody { source: SetBodyError },
+    #[snafu(transparent)]
+    MutateTrailers { source: MutateTrailersError },
+    #[snafu(transparent)]
+    PrepareStreamingBodyWrite {
+        source: PrepareStreamingBodyWriteError,
+    },
+    #[snafu(transparent)]
+    CommitStreamingBodyWrite {
+        source: CommitStreamingBodyWriteError,
+    },
     #[snafu(display("cannot send malformed pseudo header section"))]
     MalformedPseudoHeader { source: MalformedHeaderSection },
     #[snafu(display("cannot set body or trailer for interim (1xx) response"))]
@@ -552,9 +697,9 @@ pub enum MalformedMessageError {
     FinalResponseRequired,
 }
 
-impl From<MalformedHeaderSection> for MalformedMessageError {
+impl From<MalformedHeaderSection> for MessageOperationError {
     fn from(source: MalformedHeaderSection) -> Self {
-        MalformedMessageError::MalformedPseudoHeader { source }
+        MessageOperationError::MalformedPseudoHeader { source }
     }
 }
 
@@ -600,9 +745,9 @@ impl<H: BeMessageHeader> Message<H> {
         &self.header
     }
 
-    fn header_mut_checked(&mut self) -> Result<&mut H, MalformedMessageError> {
+    fn header_mut_checked(&mut self) -> Result<&mut H, MutateHeaderError> {
         if self.stage > MessageStage::Header {
-            return Err(MalformedMessageError::HeaderAlreadySent);
+            return Err(MutateHeaderError::AlreadySent);
         }
         Ok(&mut self.header)
     }
@@ -611,16 +756,16 @@ impl<H: BeMessageHeader> Message<H> {
         self.header.is_interim()
     }
 
-    pub fn streaming_body(&mut self) -> Result<&mut u64, MalformedMessageError> {
+    pub fn streaming_body(&mut self) -> Result<&mut u64, EnsureStreamingBodyError> {
         if self.stage > MessageStage::Body {
-            return Err(MalformedMessageError::BodyAlreadyComplete);
+            return Err(EnsureStreamingBodyError::BodyAlreadyComplete);
         }
 
         match &self.body {
             BodyState::Pending => self.body = BodyState::Streaming { count: 0 },
             BodyState::Streaming { .. } => {}
             BodyState::Buffered { .. } => {
-                return Err(MalformedMessageError::StreamingOperationOnBufferedBody);
+                return Err(EnsureStreamingBodyError::BufferedBody);
             }
         }
         match &mut self.body {
@@ -630,9 +775,9 @@ impl<H: BeMessageHeader> Message<H> {
         }
     }
 
-    pub fn buffered_body(&mut self) -> Result<&mut BuflistCursor, MalformedMessageError> {
+    pub fn buffered_body(&mut self) -> Result<&mut BuflistCursor, EnsureBufferedBodyError> {
         if self.stage > MessageStage::Body {
-            return Err(MalformedMessageError::BodyAlreadyComplete);
+            return Err(EnsureBufferedBodyError::BodyAlreadyComplete);
         }
 
         match &self.body {
@@ -643,7 +788,7 @@ impl<H: BeMessageHeader> Message<H> {
             }
             BodyState::Buffered { .. } => {}
             BodyState::Streaming { .. } => {
-                return Err(MalformedMessageError::BufferedOperationOnStreamingBody);
+                return Err(EnsureBufferedBodyError::StreamingBody);
             }
         }
         match &mut self.body {
@@ -651,6 +796,80 @@ impl<H: BeMessageHeader> Message<H> {
             BodyState::Streaming { .. } => unreachable!(),
             BodyState::Buffered { buflist } => Ok(buflist),
         }
+    }
+
+    fn prepare_streaming_body_read(
+        &mut self,
+    ) -> Result<BodyReadAction, PrepareStreamingBodyReadError> {
+        match self.stage {
+            MessageStage::Header | MessageStage::Body => {
+                self.streaming_body()
+                    .context(prepare_streaming_body_read_error::BodyModeSnafu)?;
+                Ok(BodyReadAction::Ready)
+            }
+            MessageStage::Trailer | MessageStage::Complete => Ok(BodyReadAction::Complete),
+        }
+    }
+
+    fn prepare_buffered_body_read(
+        &mut self,
+    ) -> Result<BodyReadAction, PrepareBufferedBodyReadError> {
+        match self.stage {
+            MessageStage::Header | MessageStage::Body => {
+                self.buffered_body()
+                    .context(prepare_buffered_body_read_error::BodyModeSnafu)?;
+                Ok(BodyReadAction::Ready)
+            }
+            MessageStage::Trailer | MessageStage::Complete => {
+                match &self.body {
+                    BodyState::Pending => {
+                        self.body = BodyState::Buffered {
+                            buflist: BuflistCursor::new(BufList::new()),
+                        };
+                    }
+                    BodyState::Buffered { .. } => {}
+                    BodyState::Streaming { .. } => {
+                        return Err(PrepareBufferedBodyReadError::StreamingBody);
+                    }
+                }
+                Ok(BodyReadAction::Complete)
+            }
+        }
+    }
+
+    pub(crate) fn prepare_streaming_body_write(
+        &mut self,
+        content: impl IntoBody,
+    ) -> Result<PreparedStreamingBody, PrepareStreamingBodyWriteError> {
+        let content = content.into_body();
+        let body_len = content.remaining() as u64;
+
+        match self.stage {
+            MessageStage::Header | MessageStage::Body => {
+                self.streaming_body()
+                    .context(prepare_streaming_body_write_error::BodyModeSnafu)?;
+                Ok(PreparedStreamingBody {
+                    header: prepare_message_write_next_part_to(self, MessageWriteGoal::Header),
+                    content,
+                    body_len,
+                })
+            }
+            MessageStage::Trailer | MessageStage::Complete => {
+                Err(PrepareStreamingBodyWriteError::BodyAlreadyComplete)
+            }
+        }
+    }
+
+    pub(crate) fn commit_streaming_body_write(
+        &mut self,
+        commit: PreparedStreamingBodyCommit,
+    ) -> Result<(), CommitStreamingBodyWriteError> {
+        let PreparedStreamingBodyCommit { header, body_len } = commit;
+        self.commit_message_write(header);
+        *self
+            .streaming_body()
+            .context(commit_streaming_body_write_error::BodyModeSnafu)? += body_len;
+        Ok(())
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -662,12 +881,12 @@ impl<H: BeMessageHeader> Message<H> {
     }
 
     /// Set body to buffered mode with given content
-    pub fn set_body(&mut self, content: impl IntoBody) -> Result<(), MalformedMessageError> {
+    pub fn set_body(&mut self, content: impl IntoBody) -> Result<(), SetBodyError> {
         match self.stage {
             MessageStage::Header => {}
-            MessageStage::Body => return Err(MalformedMessageError::BodyReplacementDuringSend),
+            MessageStage::Body => return Err(SetBodyError::BodyReplacementDuringSend),
             MessageStage::Trailer | MessageStage::Complete => {
-                return Err(MalformedMessageError::BodyAlreadyComplete);
+                return Err(SetBodyError::BodyAlreadyComplete);
             }
         }
 
@@ -681,9 +900,9 @@ impl<H: BeMessageHeader> Message<H> {
         self.trailer.header_map()
     }
 
-    pub fn trailers_mut(&mut self) -> Result<&mut HeaderMap, MalformedMessageError> {
+    pub fn trailers_mut(&mut self) -> Result<&mut HeaderMap, MutateTrailersError> {
         if self.stage > MessageStage::Trailer {
-            return Err(MalformedMessageError::TrailerAlreadySent);
+            return Err(MutateTrailersError::AlreadySent);
         }
         Ok(self.trailer.header_map_mut())
     }
@@ -723,7 +942,7 @@ impl Message<ResponseHeader> {
         self.header.status()
     }
 
-    pub fn header_mut(&mut self) -> Result<&mut ResponseHeader, MalformedMessageError> {
+    pub fn header_mut(&mut self) -> Result<&mut ResponseHeader, MutateHeaderError> {
         self.header_mut_checked()
     }
 
@@ -739,9 +958,10 @@ impl Default for ResponseMessage {
 }
 
 #[derive(Debug, Snafu)]
+#[snafu(module)]
 pub enum ReadToStringError {
-    #[snafu(transparent)]
-    Stream { source: MessageStreamError },
+    #[snafu(display("failed to read buffered body as string"))]
+    Body { source: ReadBufferedBodyError },
     #[snafu(transparent)]
     Utf8 { source: std::string::FromUtf8Error },
 }
@@ -826,22 +1046,33 @@ where
     pub async fn read_streaming_body_from(
         &mut self,
         stream: &mut ReadStream,
-    ) -> Option<Result<Bytes, MessageStreamError>> {
-        if let Err(_error) = self.streaming_body() {
-            return Some(Err(MessageStreamError::MalformedIncomingMessage));
+    ) -> Option<Result<Bytes, ReadStreamingBodyError>> {
+        match self
+            .prepare_streaming_body_read()
+            .context(read_streaming_body_error::PrepareSnafu)
+        {
+            Ok(BodyReadAction::Ready) => {}
+            Ok(BodyReadAction::Complete) => return None,
+            Err(error) => return Some(Err(error)),
         }
 
         match self.stage {
             MessageStage::Header => {
                 while self.stage == MessageStage::Header {
-                    if let Err(error) = self.read_header_from(stream).await {
+                    if let Err(error) = self
+                        .read_header_from(stream)
+                        .await
+                        .context(read_streaming_body_error::StreamSnafu)
+                    {
                         return Some(Err(error));
                     }
                 }
                 debug_assert_eq!(self.stage, MessageStage::Body);
             }
             MessageStage::Body => {}
-            MessageStage::Trailer | MessageStage::Complete => return None,
+            MessageStage::Trailer | MessageStage::Complete => {
+                unreachable!("completed message body should return before reading streaming body")
+            }
         }
 
         let try_read_next_chunk = self.try_read_io(stream, async |stream, message| {
@@ -858,7 +1089,10 @@ where
             }
         });
 
-        match try_read_next_chunk.await {
+        match try_read_next_chunk
+            .await
+            .context(read_streaming_body_error::StreamSnafu)
+        {
             Ok(Some(bytes)) => Some(Ok(bytes)),
             Ok(None) => None,
             Err(error) => Some(Err(error)),
@@ -868,15 +1102,21 @@ where
     pub async fn read_buffered_body_from(
         &mut self,
         stream: &mut ReadStream,
-    ) -> Result<impl Buf + '_, MessageStreamError> {
-        if let Err(_error) = self.buffered_body() {
-            return Err(MessageStreamError::MalformedIncomingMessage);
+    ) -> Result<impl Buf + '_, ReadBufferedBodyError> {
+        match self
+            .prepare_buffered_body_read()
+            .context(read_buffered_body_error::PrepareSnafu)
+        {
+            Ok(BodyReadAction::Ready | BodyReadAction::Complete) => {}
+            Err(error) => return Err(error),
         }
 
         match self.stage {
             MessageStage::Header => {
                 while self.stage == MessageStage::Header {
-                    self.read_header_from(stream).await?;
+                    self.read_header_from(stream)
+                        .await
+                        .context(read_buffered_body_error::StreamSnafu)?;
                 }
             }
             MessageStage::Body | MessageStage::Trailer | MessageStage::Complete => {}
@@ -897,7 +1137,8 @@ where
                         }
                     }
                 })
-                .await?;
+                .await
+                .context(read_buffered_body_error::StreamSnafu)?;
 
             let Some(body_part) = next else { break };
             let BodyState::Buffered { buflist } = &mut self.body else {
@@ -915,7 +1156,7 @@ where
     pub async fn collect_bytes_body_from(
         &mut self,
         stream: &mut ReadStream,
-    ) -> Result<Bytes, MessageStreamError> {
+    ) -> Result<Bytes, ReadBufferedBodyError> {
         let mut bytes = self.read_buffered_body_from(stream).await?;
         Ok(bytes.copy_to_bytes(bytes.remaining()))
     }
@@ -924,7 +1165,10 @@ where
         &mut self,
         stream: &mut ReadStream,
     ) -> Result<String, ReadToStringError> {
-        let mut body = self.read_buffered_body_from(stream).await?;
+        let mut body = self
+            .read_buffered_body_from(stream)
+            .await
+            .context(read_to_string_error::BodySnafu)?;
         let mut vec = Vec::with_capacity(body.remaining());
         while body.has_remaining() {
             let chunk = body.chunk();
@@ -938,14 +1182,16 @@ where
     pub async fn read_trailers_from(
         &mut self,
         stream: &mut ReadStream,
-    ) -> Result<&HeaderMap, MessageStreamError> {
+    ) -> Result<&HeaderMap, ReadTrailersError> {
         match self.stage {
             MessageStage::Header | MessageStage::Body => match &self.body {
                 BodyState::Pending | BodyState::Buffered { .. } => {
-                    self.read_buffered_body_from(stream).await?;
+                    self.read_buffered_body_from(stream)
+                        .await
+                        .context(read_trailers_error::BodySnafu)?;
                 }
                 BodyState::Streaming { .. } => {
-                    return Err(MessageStreamError::MalformedIncomingMessage);
+                    return Err(ReadTrailersError::StreamingBody);
                 }
             },
             MessageStage::Trailer => {}
@@ -964,29 +1210,45 @@ where
 
                 Ok(Trailer::try_from(field_section)?)
             })
-            .await?;
+            .await
+            .context(read_trailers_error::StreamSnafu)?;
 
         self.stage = MessageStage::Complete;
         Ok(self.trailers())
     }
 
-    pub async fn read_all_from(
-        &mut self,
-        stream: &mut ReadStream,
-    ) -> Result<(), MessageStreamError> {
-        self.read_header_from(stream).await?;
-        self.read_buffered_body_from(stream).await?;
-        self.read_trailers_from(stream).await?;
+    pub async fn read_all_from(&mut self, stream: &mut ReadStream) -> Result<(), ReadAllError> {
+        self.read_header_from(stream)
+            .await
+            .context(read_all_error::HeaderSnafu)?;
+        self.read_buffered_body_from(stream)
+            .await
+            .context(read_all_error::BodySnafu)?;
+        self.read_trailers_from(stream)
+            .await
+            .context(read_all_error::TrailersSnafu)?;
         Ok(())
     }
 
-    pub fn write_next_part_to<'s>(
-        &mut self,
+    pub fn write_next_part_to<'m, 's>(
+        &'m mut self,
         stream: &'s mut WriteStream,
         goal: MessageWriteGoal,
-    ) -> impl Future<Output = MessageWriteFlow> + use<'s, H> {
-        let action = prepare_message_write_next_part_to(self, goal);
-        async move { execute_message_write_next_part_to(stream, action).await }
+    ) -> impl Future<Output = MessageWriteFlow> + use<'m, 's, H> {
+        let prepared = prepare_message_write_next_part_to(self, goal);
+        async move {
+            match execute_prepared_message_write(stream, prepared).await {
+                Ok(executed) => {
+                    self.commit_message_write(executed.commit);
+                    executed.flow.into_control_flow()
+                }
+                Err(error) => ControlFlow::Break(Err(error)),
+            }
+        }
+    }
+
+    pub(crate) fn prepare_message_write(&mut self, goal: MessageWriteGoal) -> PreparedMessageWrite {
+        prepare_message_write_next_part_to(self, goal)
     }
 
     pub async fn write_header_to(
@@ -996,45 +1258,31 @@ where
         drive_message_to(self, stream, MessageWriteGoal::Header).await
     }
 
-    pub fn write_streaming_body_to<'s, B>(
-        &mut self,
+    pub fn write_streaming_body_to<'m, 's, B>(
+        &'m mut self,
         stream: &'s mut WriteStream,
         content: B,
-    ) -> impl Future<Output = Result<(), MessageStreamError>> + use<'s, B, H>
+    ) -> impl Future<Output = Result<(), WriteStreamingBodyError>> + use<'m, 's, B, H>
     where
         B: IntoBody,
     {
-        let content = content.into_body();
-        let additional = content.remaining() as u64;
-        let action = match self.stage {
-            MessageStage::Header | MessageStage::Body => {
-                if let Err(_error) = self.streaming_body().map(|count| *count += additional) {
-                    StreamingBodyAction::Malformed
-                } else {
-                    StreamingBodyAction::Send {
-                        header: prepare_message_write_next_part_to(self, MessageWriteGoal::Header),
-                        content,
-                    }
-                }
-            }
-            MessageStage::Trailer | MessageStage::Complete => StreamingBodyAction::Malformed,
+        let action = match self.prepare_streaming_body_write(content) {
+            Ok(prepared) => StreamingBodyAction::Send { prepared },
+            Err(error) => StreamingBodyAction::Malformed(error),
         };
 
         async move {
             match action {
-                StreamingBodyAction::Send { header, content } => {
-                    match execute_message_write_next_part_to(stream, header).await {
-                        ControlFlow::Break(Ok(())) => {}
-                        ControlFlow::Break(Err(error)) => return Err(error),
-                        ControlFlow::Continue(()) => {
-                            unreachable!("header goal cannot require another write step")
-                        }
-                    }
-                    send_data_to(stream, content).await
+                StreamingBodyAction::Send { prepared } => {
+                    let commit = execute_prepared_streaming_body_write(stream, prepared)
+                        .await
+                        .context(write_streaming_body_error::StreamSnafu)?;
+                    self.commit_streaming_body_write(commit)
+                        .context(write_streaming_body_error::CommitSnafu)
                 }
-                StreamingBodyAction::Malformed => {
+                StreamingBodyAction::Malformed(error) => {
                     _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
-                    Err(MessageStreamError::MessageSendFailed)
+                    Err(error).context(write_streaming_body_error::PrepareSnafu)
                 }
             }
         }
@@ -1043,18 +1291,21 @@ where
     pub async fn write_buffered_body_to(
         &mut self,
         stream: &mut WriteStream,
-    ) -> Result<(), MessageStreamError> {
-        if let Err(_error) = self.buffered_body() {
-            return Err(MessageStreamError::MessageSendFailed);
-        }
-        drive_message_to(self, stream, MessageWriteGoal::Body).await
+    ) -> Result<(), WriteBufferedBodyError> {
+        self.buffered_body()
+            .context(write_buffered_body_error::BodyModeSnafu)?;
+        drive_message_to(self, stream, MessageWriteGoal::Body)
+            .await
+            .context(write_buffered_body_error::StreamSnafu)
     }
 
     pub async fn write_trailers_to(
         &mut self,
         stream: &mut WriteStream,
     ) -> Result<(), MessageStreamError> {
-        if matches!(self.body, BodyState::Pending) {
+        if matches!(self.stage, MessageStage::Header | MessageStage::Body)
+            && matches!(self.body, BodyState::Pending)
+        {
             self.body = BodyState::Buffered {
                 buflist: BuflistCursor::new(BufList::new()),
             };
@@ -1078,29 +1329,6 @@ async fn send_trailer_header(
         Ok(()) => Ok(()),
         Err(MessageStreamError::HeaderTooLarge) => Err(MessageStreamError::TrailerTooLarge),
         Err(error) => Err(error),
-    }
-}
-
-async fn execute_message_write_next_part_to(
-    stream: &mut WriteStream,
-    action: MessageWriteStepAction,
-) -> MessageWriteFlow {
-    match action {
-        MessageWriteStepAction::BreakOk => ControlFlow::Break(Ok(())),
-        MessageWriteStepAction::Header { fields, flow } => match stream.send_header(fields).await {
-            Ok(()) => flow.into_control_flow(),
-            Err(error) => ControlFlow::Break(Err(error)),
-        },
-        MessageWriteStepAction::Data { data, flow } => match send_data_to(stream, data).await {
-            Ok(()) => flow.into_control_flow(),
-            Err(error) => ControlFlow::Break(Err(error)),
-        },
-        MessageWriteStepAction::Trailer(fields) => {
-            match send_trailer_header(stream, fields).await {
-                Ok(()) => ControlFlow::Break(Ok(())),
-                Err(error) => ControlFlow::Break(Err(error)),
-            }
-        }
     }
 }
 
@@ -1135,6 +1363,100 @@ enum MessageWriteStepAction {
     Trailer(Vec<FieldLine>),
 }
 
+pub(crate) struct PreparedMessageWrite {
+    action: MessageWriteStepAction,
+    commit: MessageWriteCommit,
+    in_flight_stage: Option<MessageStage>,
+}
+
+impl PreparedMessageWrite {
+    fn break_ok(commit: MessageWriteCommit) -> Self {
+        Self {
+            action: MessageWriteStepAction::BreakOk,
+            commit,
+            in_flight_stage: None,
+        }
+    }
+
+    fn write(
+        action: MessageWriteStepAction,
+        commit: MessageWriteCommit,
+        in_flight_stage: MessageStage,
+    ) -> Self {
+        Self {
+            action,
+            commit,
+            in_flight_stage: Some(in_flight_stage),
+        }
+    }
+
+    pub(crate) fn in_flight_stage(&self) -> Option<MessageStage> {
+        self.in_flight_stage
+    }
+
+    pub(crate) fn try_into_executed_without_io(self) -> Result<ExecutedMessageWrite, Self> {
+        let Self {
+            action,
+            commit,
+            in_flight_stage,
+        } = self;
+        match action {
+            MessageWriteStepAction::BreakOk => Ok(ExecutedMessageWrite {
+                commit,
+                flow: MessageWriteStepFlow::BreakOk,
+            }),
+            action => Err(Self {
+                action,
+                commit,
+                in_flight_stage,
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn action(&self) -> &MessageWriteStepAction {
+        &self.action
+    }
+}
+
+pub(crate) struct ExecutedMessageWrite {
+    commit: MessageWriteCommit,
+    flow: MessageWriteStepFlow,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MessageWriteCommit {
+    None,
+    Stage(MessageStage),
+    BufferedBody {
+        advance: usize,
+        stage_after: Option<MessageStage>,
+    },
+}
+
+impl MessageWriteCommit {
+    fn apply<H: BeMessageHeader>(self, message: &mut Message<H>) {
+        match self {
+            MessageWriteCommit::None => {}
+            MessageWriteCommit::Stage(stage) => {
+                message.stage = stage;
+            }
+            MessageWriteCommit::BufferedBody {
+                advance,
+                stage_after,
+            } => {
+                let BodyState::Buffered { buflist } = &mut message.body else {
+                    unreachable!("message body mode changed before committing buffered body")
+                };
+                buflist.advance(advance);
+                if let Some(stage) = stage_after {
+                    message.stage = stage;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum MessageWriteStepFlow {
     BreakOk,
@@ -1150,35 +1472,71 @@ impl MessageWriteStepFlow {
     }
 }
 
+pub(crate) async fn execute_prepared_message_write(
+    stream: &mut WriteStream,
+    prepared: PreparedMessageWrite,
+) -> Result<ExecutedMessageWrite, MessageStreamError> {
+    let PreparedMessageWrite { action, commit, .. } = prepared;
+    let flow = match action {
+        MessageWriteStepAction::BreakOk => MessageWriteStepFlow::BreakOk,
+        MessageWriteStepAction::Header { fields, flow } => {
+            stream.send_header(fields).await?;
+            flow
+        }
+        MessageWriteStepAction::Data { data, flow } => {
+            send_data_to(stream, data).await?;
+            flow
+        }
+        MessageWriteStepAction::Trailer(fields) => {
+            send_trailer_header(stream, fields).await?;
+            MessageWriteStepFlow::BreakOk
+        }
+    };
+    Ok(ExecutedMessageWrite { commit, flow })
+}
+
+impl<H: BeMessageHeader> Message<H> {
+    fn commit_message_write(&mut self, commit: MessageWriteCommit) {
+        commit.apply(self);
+    }
+
+    pub(crate) fn commit_executed_message_write(
+        &mut self,
+        executed: ExecutedMessageWrite,
+    ) -> MessageWriteFlow {
+        self.commit_message_write(executed.commit);
+        executed.flow.into_control_flow()
+    }
+}
+
 fn prepare_message_write_next_part_to<H: BeMessageHeader>(
     message: &mut Message<H>,
     goal: MessageWriteGoal,
-) -> MessageWriteStepAction {
+) -> PreparedMessageWrite {
     match message.stage {
         MessageStage::Header => prepare_message_header_step(message, goal),
         MessageStage::Body => match goal {
-            MessageWriteGoal::Header => MessageWriteStepAction::BreakOk,
+            MessageWriteGoal::Header => PreparedMessageWrite::break_ok(MessageWriteCommit::None),
             MessageWriteGoal::Body | MessageWriteGoal::Complete => {
                 prepare_message_body_step(message, goal)
             }
         },
         MessageStage::Trailer => match goal {
-            MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
+            MessageWriteGoal::Header | MessageWriteGoal::Body => {
+                PreparedMessageWrite::break_ok(MessageWriteCommit::None)
+            }
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
-        MessageStage::Complete => MessageWriteStepAction::BreakOk,
+        MessageStage::Complete => PreparedMessageWrite::break_ok(MessageWriteCommit::None),
     }
 }
 
 fn prepare_message_header_step<H: BeMessageHeader>(
     message: &mut Message<H>,
     goal: MessageWriteGoal,
-) -> MessageWriteStepAction {
+) -> PreparedMessageWrite {
     let fields = message.header.iter().collect::<Vec<_>>();
     let is_interim = message.is_interim_response();
-    if !is_interim {
-        message.stage = MessageStage::Body;
-    }
 
     let flow = if is_interim {
         MessageWriteStepFlow::BreakOk
@@ -1196,20 +1554,39 @@ fn prepare_message_header_step<H: BeMessageHeader>(
         }
     };
 
-    MessageWriteStepAction::Header { fields, flow }
+    let commit = if is_interim {
+        MessageWriteCommit::None
+    } else {
+        MessageWriteCommit::Stage(MessageStage::Body)
+    };
+    let in_flight_stage = if is_interim {
+        MessageStage::Header
+    } else {
+        MessageStage::Body
+    };
+
+    PreparedMessageWrite::write(
+        MessageWriteStepAction::Header { fields, flow },
+        commit,
+        in_flight_stage,
+    )
 }
 
 fn prepare_message_body_step<H: BeMessageHeader>(
     message: &mut Message<H>,
     goal: MessageWriteGoal,
-) -> MessageWriteStepAction {
+) -> PreparedMessageWrite {
     match &message.body {
         BodyState::Pending => match goal {
-            MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
+            MessageWriteGoal::Header | MessageWriteGoal::Body => {
+                PreparedMessageWrite::break_ok(MessageWriteCommit::None)
+            }
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
         BodyState::Streaming { .. } => match goal {
-            MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
+            MessageWriteGoal::Header | MessageWriteGoal::Body => {
+                PreparedMessageWrite::break_ok(MessageWriteCommit::None)
+            }
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
         BodyState::Buffered { .. } => prepare_message_buffered_body_step(message, goal),
@@ -1219,27 +1596,28 @@ fn prepare_message_body_step<H: BeMessageHeader>(
 fn prepare_message_buffered_body_step<H: BeMessageHeader>(
     message: &mut Message<H>,
     goal: MessageWriteGoal,
-) -> MessageWriteStepAction {
+) -> PreparedMessageWrite {
     let data = {
         let BodyState::Buffered { buflist } = &mut message.body else {
             unreachable!("message body mode changed while preparing buffered body")
         };
 
         if buflist.has_remaining() {
-            let data = buflist.copy_to_bytes(buflist.chunk().len());
-            if !buflist.has_remaining() {
-                message.stage = MessageStage::Trailer;
-            }
-            Some(data)
+            let data = buflist
+                .iter()
+                .next()
+                .expect("buffered body with remaining bytes must have a chunk");
+            let advance = data.len();
+            let completes_body = buflist.remaining() == advance;
+            Some((data, advance, completes_body))
         } else {
-            message.stage = MessageStage::Trailer;
             None
         }
     };
 
     match data {
-        Some(data) => {
-            let flow = if message.stage == MessageStage::Trailer {
+        Some((data, advance, completes_body)) => {
+            let flow = if completes_body {
                 match goal {
                     MessageWriteGoal::Complete => MessageWriteStepFlow::Continue,
                     MessageWriteGoal::Header | MessageWriteGoal::Body => {
@@ -1249,10 +1627,21 @@ fn prepare_message_buffered_body_step<H: BeMessageHeader>(
             } else {
                 MessageWriteStepFlow::Continue
             };
-            MessageWriteStepAction::Data { data, flow }
+            let stage_after = completes_body.then_some(MessageStage::Trailer);
+            let in_flight_stage = stage_after.unwrap_or(MessageStage::Body);
+            PreparedMessageWrite::write(
+                MessageWriteStepAction::Data { data, flow },
+                MessageWriteCommit::BufferedBody {
+                    advance,
+                    stage_after,
+                },
+                in_flight_stage,
+            )
         }
         None => match goal {
-            MessageWriteGoal::Header | MessageWriteGoal::Body => MessageWriteStepAction::BreakOk,
+            MessageWriteGoal::Header | MessageWriteGoal::Body => {
+                PreparedMessageWrite::break_ok(MessageWriteCommit::Stage(MessageStage::Trailer))
+            }
             MessageWriteGoal::Complete => prepare_message_trailer_step(message),
         },
     }
@@ -1260,31 +1649,77 @@ fn prepare_message_buffered_body_step<H: BeMessageHeader>(
 
 fn prepare_message_trailer_step<H: BeMessageHeader>(
     message: &mut Message<H>,
-) -> MessageWriteStepAction {
-    message.stage = MessageStage::Complete;
+) -> PreparedMessageWrite {
     if message.trailers().is_empty() {
-        MessageWriteStepAction::BreakOk
+        PreparedMessageWrite::break_ok(MessageWriteCommit::Stage(MessageStage::Complete))
     } else {
         let fields = message.trailer.iter().collect::<Vec<_>>();
-        MessageWriteStepAction::Trailer(fields)
+        PreparedMessageWrite::write(
+            MessageWriteStepAction::Trailer(fields),
+            MessageWriteCommit::Stage(MessageStage::Complete),
+            MessageStage::Complete,
+        )
     }
 }
 
 enum StreamingBodyAction<B> {
-    Send {
-        header: MessageWriteStepAction,
-        content: B,
-    },
-    Malformed,
+    Send { prepared: B },
+    Malformed(PrepareStreamingBodyWriteError),
+}
+
+pub(crate) struct PreparedStreamingBody {
+    header: PreparedMessageWrite,
+    content: Body,
+    body_len: u64,
+}
+
+impl PreparedStreamingBody {
+    #[cfg(test)]
+    pub(crate) fn body_len(&self) -> u64 {
+        self.body_len
+    }
+
+    pub(crate) fn in_flight_stage(&self) -> Option<MessageStage> {
+        Some(MessageStage::Body).max(self.header.in_flight_stage())
+    }
+}
+
+pub(crate) struct PreparedStreamingBodyCommit {
+    header: MessageWriteCommit,
+    body_len: u64,
+}
+
+pub(crate) async fn execute_prepared_streaming_body_write(
+    stream: &mut WriteStream,
+    prepared: PreparedStreamingBody,
+) -> Result<PreparedStreamingBodyCommit, MessageStreamError> {
+    let PreparedStreamingBody {
+        header,
+        content,
+        body_len,
+    } = prepared;
+    let header = execute_prepared_message_write(stream, header).await?;
+    match header.flow {
+        MessageWriteStepFlow::BreakOk => {}
+        MessageWriteStepFlow::Continue => {
+            unreachable!("header goal cannot require another write step")
+        }
+    }
+    send_data_to(stream, content).await?;
+    Ok(PreparedStreamingBodyCommit {
+        header: header.commit,
+        body_len,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::rc::Rc;
 
     use bytes::{Buf, Bytes, BytesMut};
 
-    use crate::h3x::message::stream::WriteStream;
+    use crate::h3x::message::stream::{ReadStream, WriteStream};
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
@@ -1300,6 +1735,13 @@ mod tests {
 
     fn collect_body(mut body: Body) -> Bytes {
         body.copy_to_bytes(body.remaining())
+    }
+
+    fn commit_prepared_write<H: super::BeMessageHeader>(
+        message: &mut super::Message<H>,
+        prepared: super::PreparedMessageWrite,
+    ) {
+        message.commit_message_write(prepared.commit);
     }
 
     #[test]
@@ -1338,28 +1780,182 @@ mod tests {
     }
 
     #[test]
+    fn preparing_streaming_body_write_does_not_increment_count() {
+        let mut message = super::ResponseMessage::default();
+
+        let prepared = message
+            .prepare_streaming_body_write("hello")
+            .expect("streaming body write can be prepared before transfer starts");
+
+        assert_eq!(prepared.body_len(), 5);
+        assert_eq!(*message.streaming_body().unwrap(), 0);
+    }
+
+    #[test]
+    fn header_write_preparation_does_not_advance_stage() {
+        let mut message = super::ResponseMessage::default();
+
+        let prepared = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Header,
+        );
+
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::Header { .. }
+        ));
+        assert_eq!(message.stage(), super::MessageStage::Header);
+    }
+
+    #[test]
+    fn buffered_body_write_preparation_does_not_advance_stage_or_cursor() {
+        let mut message = super::ResponseMessage::default();
+        message.set_body("body").unwrap();
+        message.stage = super::MessageStage::Body;
+
+        let prepared =
+            super::prepare_message_write_next_part_to(&mut message, super::MessageWriteGoal::Body);
+
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::Data { .. }
+        ));
+        assert_eq!(message.stage(), super::MessageStage::Body);
+        let BodyState::Buffered { buflist } = &message.body else {
+            panic!("body should remain buffered");
+        };
+        assert_eq!(buflist.remaining(), 4);
+    }
+
+    #[test]
+    fn trailer_write_preparation_does_not_complete_stage() {
+        let mut message = super::ResponseMessage {
+            header: super::ResponseHeader::default(),
+            body: BodyState::Pending,
+            trailer: super::Trailer::default(),
+            stage: super::MessageStage::Trailer,
+        };
+        message
+            .trailers_mut()
+            .unwrap()
+            .insert("x-test", http::HeaderValue::from_static("1"));
+
+        let prepared = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Complete,
+        );
+
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::Trailer(_)
+        ));
+        assert_eq!(message.stage(), super::MessageStage::Trailer);
+    }
+
+    #[test]
+    fn committing_streaming_body_write_increments_count() {
+        let mut message = super::ResponseMessage::default();
+        let prepared = message
+            .prepare_streaming_body_write("hello")
+            .expect("streaming body write can be prepared before transfer starts");
+
+        message
+            .commit_streaming_body_write(super::PreparedStreamingBodyCommit {
+                header: prepared.header.commit,
+                body_len: prepared.body_len(),
+            })
+            .expect("prepared streaming body write can be committed");
+
+        assert_eq!(*message.streaming_body().unwrap(), 5);
+    }
+
+    #[test]
+    fn streaming_read_preparation_does_not_reselect_body_after_complete() {
+        let mut message = super::ResponseMessage::default();
+        message.set_body("done").unwrap();
+        message.stage = super::MessageStage::Complete;
+
+        let action = message
+            .prepare_streaming_body_read()
+            .expect("completed body should be a valid end of stream");
+
+        assert_eq!(action, super::BodyReadAction::Complete);
+        assert!(message.is_buffered());
+    }
+
+    #[test]
+    fn buffered_read_preparation_reuses_buffered_body_after_trailer_stage() {
+        let mut message = super::ResponseMessage::default();
+        message.set_body("done").unwrap();
+        message.stage = super::MessageStage::Trailer;
+
+        let action = message
+            .prepare_buffered_body_read()
+            .expect("buffered body can be reused after body is complete");
+
+        assert_eq!(action, super::BodyReadAction::Complete);
+        assert!(message.is_buffered());
+    }
+
+    #[test]
+    fn streaming_body_reports_buffered_mode_error() {
+        let mut message = super::ResponseMessage::default();
+        message.set_body("buffered").unwrap();
+
+        let error = message.streaming_body().unwrap_err();
+
+        assert!(matches!(
+            error,
+            super::EnsureStreamingBodyError::BufferedBody
+        ));
+    }
+
+    #[test]
+    fn set_body_reports_replacement_during_body_stage() {
+        let mut message = super::ResponseMessage::default();
+        let prepared = super::prepare_message_write_next_part_to(
+            &mut message,
+            super::MessageWriteGoal::Header,
+        );
+        commit_prepared_write(&mut message, prepared);
+
+        let error = message.set_body("late body").unwrap_err();
+
+        assert!(matches!(
+            error,
+            super::SetBodyError::BodyReplacementDuringSend
+        ));
+    }
+
+    #[test]
     fn complete_write_preparation_accepts_streaming_body() {
         let mut message = super::ResponseMessage::default();
         *message.streaming_body().unwrap() += 5;
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
         assert!(matches!(
-            action,
+            prepared.action(),
             super::MessageWriteStepAction::Header {
                 flow: super::MessageWriteStepFlow::Continue,
                 ..
             }
         ));
         assert!(message.is_streaming());
+        assert_eq!(message.stage(), super::MessageStage::Header);
+        commit_prepared_write(&mut message, prepared);
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
-        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::BreakOk
+        ));
+        commit_prepared_write(&mut message, prepared);
         assert_eq!(message.stage(), super::MessageStage::Complete);
     }
 
@@ -1386,6 +1982,30 @@ mod tests {
         body: NonSendBody,
     ) {
         let _future = message.write_streaming_body_to(stream, body);
+    }
+
+    #[allow(dead_code)]
+    fn read_streaming_body_returns_operation_error<'a>(
+        message: &'a mut super::ResponseMessage,
+        stream: &'a mut ReadStream,
+    ) -> impl Future<Output = Option<Result<Bytes, super::ReadStreamingBodyError>>> + 'a {
+        message.read_streaming_body_from(stream)
+    }
+
+    #[allow(dead_code)]
+    fn read_buffered_body_returns_operation_error<'a>(
+        message: &'a mut super::ResponseMessage,
+        stream: &'a mut ReadStream,
+    ) -> impl Future<Output = Result<impl Buf + 'a, super::ReadBufferedBodyError>> + 'a {
+        message.read_buffered_body_from(stream)
+    }
+
+    #[allow(dead_code)]
+    fn write_streaming_body_returns_operation_error<'a>(
+        message: &'a mut super::ResponseMessage,
+        stream: &'a mut WriteStream,
+    ) -> impl Future<Output = Result<(), super::WriteStreamingBodyError>> + 'a {
+        message.write_streaming_body_to(stream, "body")
     }
 
     #[test]
@@ -1598,25 +2218,31 @@ mod tests {
     fn complete_goal_marks_empty_message_complete_after_header_sent() {
         let mut message = super::ResponseMessage::default();
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
         assert!(matches!(
-            action,
+            prepared.action(),
             super::MessageWriteStepAction::Header {
                 flow: super::MessageWriteStepFlow::Continue,
                 ..
             }
         ));
+        assert_eq!(message.stage(), super::MessageStage::Header);
+        commit_prepared_write(&mut message, prepared);
         assert_eq!(message.stage(), super::MessageStage::Body);
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
 
-        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::BreakOk
+        ));
+        commit_prepared_write(&mut message, prepared);
         assert_eq!(message.stage(), super::MessageStage::Complete);
     }
 
@@ -1625,37 +2251,48 @@ mod tests {
         let mut message = super::ResponseMessage::default();
         message.set_body("body").unwrap();
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
         assert!(matches!(
-            action,
+            prepared.action(),
             super::MessageWriteStepAction::Header {
                 flow: super::MessageWriteStepFlow::Continue,
                 ..
             }
         ));
+        commit_prepared_write(&mut message, prepared);
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
         assert!(matches!(
-            action,
+            prepared.action(),
             super::MessageWriteStepAction::Data {
                 flow: super::MessageWriteStepFlow::Continue,
                 ..
             }
         ));
+        assert_eq!(message.stage(), super::MessageStage::Body);
+        let BodyState::Buffered { buflist } = &message.body else {
+            panic!("body should remain buffered");
+        };
+        assert_eq!(buflist.remaining(), 4);
+        commit_prepared_write(&mut message, prepared);
         assert_eq!(message.stage(), super::MessageStage::Trailer);
 
-        let action = super::prepare_message_write_next_part_to(
+        let prepared = super::prepare_message_write_next_part_to(
             &mut message,
             super::MessageWriteGoal::Complete,
         );
 
-        assert!(matches!(action, super::MessageWriteStepAction::BreakOk));
+        assert!(matches!(
+            prepared.action(),
+            super::MessageWriteStepAction::BreakOk
+        ));
+        commit_prepared_write(&mut message, prepared);
         assert_eq!(message.stage(), super::MessageStage::Complete);
     }
 }

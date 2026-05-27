@@ -41,8 +41,12 @@ use crate::{
         quic,
     },
     message::{
-        Body, BodyState, IntoBody, IntoUri, IntoUriError, MalformedMessageError, MessageWriteGoal,
-        ReadToStringError, RequestHeader, RequestMessage, ResponseMessage, Trailer,
+        Body, BodyState, IntoBody, IntoUri, IntoUriError, MessageOperationError, MessageStage,
+        MessageWriteFlow, MessageWriteGoal, MutateTrailersError, PrepareStreamingBodyWriteError,
+        PreparedMessageWrite, PreparedStreamingBody, ReadBufferedBodyError, ReadStreamingBodyError,
+        ReadToStringError, ReadTrailersError, RequestHeader, RequestMessage, ResponseMessage,
+        SetBodyError, Trailer, WriteStreamingBodyError, execute_prepared_message_write,
+        execute_prepared_streaming_body_write, write_streaming_body_error,
     },
 };
 
@@ -80,7 +84,7 @@ pub enum RequestMutationError {
     #[snafu(display("request message operation `{operation}` failed"))]
     MessageOperation {
         operation: &'static str,
-        source: MalformedMessageError,
+        source: MessageOperationError,
     },
 }
 
@@ -115,6 +119,8 @@ pub enum RequestError {
     Acquire { source: AcquireError },
     #[snafu(display("failed to open initial message stream"))]
     StreamInit { source: InitialMessageStreamError },
+    #[snafu(display("failed to write request body"))]
+    WriteStreamingBody { source: WriteStreamingBodyError },
     #[snafu(transparent)]
     MessageStream { source: MessageStreamError },
 }
@@ -152,6 +158,9 @@ impl Clone for RequestError {
                 source: source.clone(),
             },
             Self::StreamInit { source } => Self::StreamInit {
+                source: source.clone(),
+            },
+            Self::WriteStreamingBody { source } => Self::WriteStreamingBody {
                 source: source.clone(),
             },
             Self::MessageStream { source } => Self::MessageStream {
@@ -243,13 +252,68 @@ impl PendingRequest {
 #[derive(Debug)]
 enum RequestMessageState {
     Pending(PendingRequest),
-    Active(RequestMessage),
+    Active(ActiveRequestMessage),
     Failed,
 }
 
 impl Default for RequestMessageState {
     fn default() -> Self {
         Self::Pending(PendingRequest::default())
+    }
+}
+
+#[derive(Debug)]
+struct ActiveRequestMessage {
+    message: RequestMessage,
+    in_flight_stage: Option<MessageStage>,
+}
+
+impl ActiveRequestMessage {
+    fn new(message: RequestMessage) -> Self {
+        Self {
+            message,
+            in_flight_stage: None,
+        }
+    }
+
+    fn effective_stage(&self) -> MessageStage {
+        self.in_flight_stage
+            .unwrap_or(self.message.stage())
+            .max(self.message.stage())
+    }
+
+    fn prepare_message_write(&mut self, goal: MessageWriteGoal) -> PreparedMessageWrite {
+        let prepared = self.message.prepare_message_write(goal);
+        self.in_flight_stage = prepared.in_flight_stage();
+        prepared
+    }
+
+    fn prepare_streaming_body_write(
+        &mut self,
+        content: Body,
+    ) -> Result<PreparedStreamingBody, PrepareStreamingBodyWriteError> {
+        let prepared = self.message.prepare_streaming_body_write(content)?;
+        self.in_flight_stage = prepared.in_flight_stage();
+        Ok(prepared)
+    }
+
+    fn clear_in_flight(&mut self) {
+        self.in_flight_stage = None;
+    }
+
+    fn set_body(&mut self, content: Body) -> Result<(), MessageOperationError> {
+        if self.effective_stage() > MessageStage::Header {
+            return Err(SetBodyError::BodyReplacementDuringSend.into());
+        }
+        self.message.set_body(content)?;
+        Ok(())
+    }
+
+    fn trailers_mut(&mut self) -> Result<&mut HeaderMap, MessageOperationError> {
+        if self.effective_stage() > MessageStage::Trailer {
+            return Err(MutateTrailersError::AlreadySent.into());
+        }
+        Ok(self.message.trailers_mut()?)
     }
 }
 
@@ -307,6 +371,17 @@ impl RequestState {
         error
     }
 
+    fn store_write_streaming_body_error(&self, source: WriteStreamingBodyError) -> RequestError {
+        let mut state = self.message();
+        *state = RequestMessageState::Failed;
+        drop(state);
+        let error = Err::<(), _>(source)
+            .context(request_error::WriteStreamingBodySnafu)
+            .expect_err("request write streaming body conversion must produce an error");
+        *self.init_state.lock().expect("lock poisoned") = Some(Err(error.clone()));
+        error
+    }
+
     fn reject_mutation(&self, operation: &'static str, error: RequestMutationError) {
         let report = Report::from_error(&error);
         tracing::warn!(
@@ -336,12 +411,12 @@ impl RequestState {
                     }
                 };
                 let authority = message.header().authority().clone();
-                *state = RequestMessageState::Active(message);
+                *state = RequestMessageState::Active(ActiveRequestMessage::new(message));
                 Ok(authority)
             }
-            RequestMessageState::Active(message) => {
-                let authority = message.header().authority().clone();
-                *state = RequestMessageState::Active(message);
+            RequestMessageState::Active(active) => {
+                let authority = active.message.header().authority().clone();
+                *state = RequestMessageState::Active(active);
                 Ok(authority)
             }
             RequestMessageState::Failed => {
@@ -433,17 +508,53 @@ impl RequestState {
     }
 
     async fn send_request_to_goal(&self, goal: MessageWriteGoal) -> Result<(), RequestError> {
+        enum PreparedRequestWrite {
+            Pending(PreparedMessageWrite),
+            Complete(MessageWriteFlow),
+        }
+
         let mut write_stream = self.acquire_write_stream().await?;
 
         loop {
-            let flow = {
+            let prepared = {
                 let mut state = self.message();
-                let RequestMessageState::Active(message) = &mut *state else {
+                let RequestMessageState::Active(active) = &mut *state else {
                     unreachable!("active message exists after stream initialization")
                 };
-                message.write_next_part_to(&mut write_stream, goal)
-            }
-            .await;
+                let prepared = active.prepare_message_write(goal);
+                match prepared.try_into_executed_without_io() {
+                    Ok(executed) => {
+                        let flow = active.message.commit_executed_message_write(executed);
+                        active.clear_in_flight();
+                        PreparedRequestWrite::Complete(flow)
+                    }
+                    Err(prepared) => PreparedRequestWrite::Pending(prepared),
+                }
+            };
+
+            let prepared = match prepared {
+                PreparedRequestWrite::Pending(prepared) => prepared,
+                PreparedRequestWrite::Complete(flow) => match flow {
+                    ControlFlow::Continue(()) => continue,
+                    ControlFlow::Break(Ok(())) => return Ok(()),
+                    ControlFlow::Break(Err(error)) => return Err(self.store_send_error(error)),
+                },
+            };
+
+            let executed = match execute_prepared_message_write(&mut write_stream, prepared).await {
+                Ok(executed) => executed,
+                Err(error) => return Err(self.store_send_error(error)),
+            };
+
+            let flow = {
+                let mut state = self.message();
+                let RequestMessageState::Active(active) = &mut *state else {
+                    unreachable!("active message exists after successful request write")
+                };
+                let flow = active.message.commit_executed_message_write(executed);
+                active.clear_in_flight();
+                flow
+            };
 
             match flow {
                 ControlFlow::Continue(()) => {}
@@ -458,19 +569,65 @@ impl RequestState {
     }
 
     async fn write_body_chunk(&self, content: Body) -> Result<(), RequestError> {
+        enum BodyWritePreparation {
+            Send(PreparedStreamingBody),
+            Malformed(PrepareStreamingBodyWriteError),
+        }
+
         let mut write_stream = self.acquire_write_stream().await?;
+
+        let prepared = {
+            let mut state = self.message();
+            let RequestMessageState::Active(active) = &mut *state else {
+                unreachable!("active message exists after stream initialization")
+            };
+            match active.prepare_streaming_body_write(content) {
+                Ok(prepared) => BodyWritePreparation::Send(prepared),
+                Err(error) => BodyWritePreparation::Malformed(error),
+            }
+        };
+        let prepared = match prepared {
+            BodyWritePreparation::Send(prepared) => prepared,
+            BodyWritePreparation::Malformed(error) => {
+                _ = write_stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                let error = Err::<(), _>(error)
+                    .context(write_streaming_body_error::PrepareSnafu)
+                    .expect_err("write streaming body prepare error conversion must fail");
+                return Err(self.store_write_streaming_body_error(error));
+            }
+        };
+
+        let commit = match execute_prepared_streaming_body_write(&mut write_stream, prepared).await
+        {
+            Ok(commit) => commit,
+            Err(error) => {
+                let error = Err::<(), _>(error)
+                    .context(write_streaming_body_error::StreamSnafu)
+                    .expect_err("write streaming body stream error conversion must fail");
+                return Err(self.store_write_streaming_body_error(error));
+            }
+        };
 
         let result = {
             let mut state = self.message();
-            let RequestMessageState::Active(message) = &mut *state else {
+            let RequestMessageState::Active(active) = &mut *state else {
                 unreachable!("active message exists after stream initialization")
             };
-            message.write_streaming_body_to(&mut write_stream, content)
-        }
-        .await;
+            let result = active.message.commit_streaming_body_write(commit);
+            if result.is_ok() {
+                active.clear_in_flight();
+            }
+            result
+        };
         match result {
             Ok(()) => Ok(()),
-            Err(error) => Err(self.store_send_error(error)),
+            Err(error) => {
+                _ = write_stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                let error = Err::<(), _>(error)
+                    .context(write_streaming_body_error::CommitSnafu)
+                    .expect_err("write streaming body commit error conversion must fail");
+                Err(self.store_write_streaming_body_error(error))
+            }
         }
     }
 
@@ -601,12 +758,14 @@ impl Request {
                     buflist: BuflistCursor::new(content),
                 };
             }
-            RequestMessageState::Active(message) => {
-                if let Err(error) = message.set_body(content).context(
-                    request_mutation_error::MessageOperationSnafu {
-                        operation: "set_body",
-                    },
-                ) {
+            RequestMessageState::Active(active) => {
+                if let Err(error) = (|| {
+                    active.set_body(content)?;
+                    Ok(())
+                })()
+                .context(request_mutation_error::MessageOperationSnafu {
+                    operation: "set_body",
+                }) {
                     self.state.reject_mutation("set_body", error);
                 }
             }
@@ -623,9 +782,9 @@ impl Request {
             RequestMessageState::Pending(pending) => {
                 pending.trailer.insert(name, value);
             }
-            RequestMessageState::Active(message) => {
+            RequestMessageState::Active(active) => {
                 if let Err(error) = (|| {
-                    message.trailers_mut()?.insert(name, value);
+                    active.trailers_mut()?.insert(name, value);
                     Ok(())
                 })()
                 .context(request_mutation_error::MessageOperationSnafu {
@@ -645,9 +804,9 @@ impl Request {
         let mut state = self.state.message();
         match &mut *state {
             RequestMessageState::Pending(pending) => pending.trailer.extend(trailers),
-            RequestMessageState::Active(message) => {
+            RequestMessageState::Active(active) => {
                 if let Err(error) = (|| {
-                    message.trailers_mut()?.extend(trailers);
+                    active.trailers_mut()?.extend(trailers);
                     Ok(())
                 })()
                 .context(request_mutation_error::MessageOperationSnafu {
@@ -785,17 +944,17 @@ impl Response {
         self.headers().get(name)
     }
 
-    pub async fn read(&mut self) -> Option<Result<Bytes, MessageStreamError>> {
+    pub async fn read(&mut self) -> Option<Result<Bytes, ReadStreamingBodyError>> {
         self.message
             .read_streaming_body_from(&mut self.stream)
             .await
     }
 
-    pub async fn read_all(&mut self) -> Result<impl Buf, MessageStreamError> {
+    pub async fn read_all(&mut self) -> Result<impl Buf, ReadBufferedBodyError> {
         self.message.read_buffered_body_from(&mut self.stream).await
     }
 
-    pub async fn read_to_bytes(&mut self) -> Result<Bytes, MessageStreamError> {
+    pub async fn read_to_bytes(&mut self) -> Result<Bytes, ReadBufferedBodyError> {
         self.message.collect_bytes_body_from(&mut self.stream).await
     }
 
@@ -805,21 +964,21 @@ impl Response {
             .await
     }
 
-    pub async fn as_stream(&mut self) -> impl Stream<Item = Result<Bytes, MessageStreamError>> {
+    pub async fn as_stream(&mut self) -> impl Stream<Item = Result<Bytes, ReadStreamingBodyError>> {
         futures::stream::unfold(self, async |this| {
             this.read().await.map(|item| (item, this))
         })
         .fuse()
     }
 
-    pub async fn into_stream(self) -> impl Stream<Item = Result<Bytes, MessageStreamError>> {
+    pub async fn into_stream(self) -> impl Stream<Item = Result<Bytes, ReadStreamingBodyError>> {
         futures::stream::unfold(self, async |mut this| {
             this.read().await.map(|item| (item, this))
         })
         .fuse()
     }
 
-    pub async fn trailers(&mut self) -> Result<&HeaderMap, MessageStreamError> {
+    pub async fn trailers(&mut self) -> Result<&HeaderMap, ReadTrailersError> {
         self.message.read_trailers_from(&mut self.stream).await
     }
 
@@ -829,5 +988,58 @@ impl Response {
 
     pub fn agent(&self) -> &Arc<dyn agent::RemoteAgent> {
         &self.agent
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::Method;
+
+    use crate::{
+        h3x::qpack::field::{FieldSection, PseudoHeaders},
+        message::{MessageOperationError, MutateTrailersError, SetBodyError},
+    };
+
+    use super::*;
+
+    fn request_message() -> RequestMessage {
+        let section = FieldSection::header(
+            PseudoHeaders::request(Method::GET, "https://example.com/".parse().unwrap()),
+            HeaderMap::new(),
+        );
+        let header = RequestHeader::try_from(section).unwrap();
+        RequestMessage::new(header)
+    }
+
+    #[test]
+    fn request_in_flight_stage_rejects_body_mutation_before_stage_commit() {
+        let mut active = ActiveRequestMessage::new(request_message());
+
+        let _prepared = active.prepare_message_write(MessageWriteGoal::Header);
+
+        assert_eq!(active.message.stage(), MessageStage::Header);
+        assert_eq!(active.effective_stage(), MessageStage::Body);
+        let error = active.set_body("late".into_body()).unwrap_err();
+        assert!(matches!(
+            error,
+            MessageOperationError::SetBody {
+                source: SetBodyError::BodyReplacementDuringSend
+            }
+        ));
+    }
+
+    #[test]
+    fn request_in_flight_complete_stage_rejects_trailer_mutation() {
+        let mut active = ActiveRequestMessage::new(request_message());
+        active.in_flight_stage = Some(MessageStage::Complete);
+
+        let error = active.trailers_mut().unwrap_err();
+
+        assert!(matches!(
+            error,
+            MessageOperationError::MutateTrailers {
+                source: MutateTrailersError::AlreadySent
+            }
+        ));
     }
 }
