@@ -39,7 +39,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dhttp-identity = { path = "identity" }
 config = { package = "dhttp-config", path = "config" }
 dhttp-config = { path = "config" }
-ddns = { git = "ssh://git@github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
+ddns = { git = "https://github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
 dhttp = { path = "dhttp" }
 dhttp-access = { path = "access" }
@@ -51,6 +51,6 @@ dhttp-access = { path = "access" }
 # git crates back to the local members so all code sees the same concrete
 # types. Cargo patches are root-only, so downstream crates that depend on
 # `dhttp` via git do not inherit this override.
-[patch."ssh://git@github.com/genmeta/dhttp.git"]
+[patch."https://github.com/genmeta/dhttp.git"]
 dhttp-identity = { path = "identity" }
 dhttp-config = { path = "config" }
