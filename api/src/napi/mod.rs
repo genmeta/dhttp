@@ -201,6 +201,147 @@ impl Identity {
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key_der()
     }
+
+    #[napi]
+    pub fn sign(&self, scheme: Either<u16, String>, data: Buffer) -> NapiResult<Buffer> {
+        let scheme = parse_signature_scheme("identity.sign", scheme)?;
+        self.inner
+            .sign(scheme, data.as_ref())
+            .map(Buffer::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn verify(
+        &self,
+        scheme: Either<u16, String>,
+        data: Buffer,
+        signature: Buffer,
+    ) -> NapiResult<bool> {
+        let scheme = parse_signature_scheme("identity.verify", scheme)?;
+        self.inner
+            .verify(scheme, data.as_ref(), signature.as_ref())
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn as_local_agent(&self) -> LocalAgent {
+        LocalAgent::from(self.inner.as_local_agent())
+    }
+
+    #[napi]
+    pub fn as_remote_agent(&self) -> RemoteAgent {
+        RemoteAgent::from(self.inner.as_remote_agent())
+    }
+}
+
+fn parse_signature_scheme(operation: &'static str, value: Either<u16, String>) -> NapiResult<u16> {
+    match value {
+        Either::A(code) => Ok(code),
+        Either::B(name) => crate::signature_scheme::parse_name(&name)
+            .map_err(|error| napi_error(crate::error::DhttpError::from_error(operation, error))),
+    }
+}
+
+#[napi(js_name = "LocalAgent")]
+pub struct LocalAgent {
+    inner: crate::agent::LocalAgent,
+}
+
+impl From<crate::agent::LocalAgent> for LocalAgent {
+    fn from(inner: crate::agent::LocalAgent) -> Self {
+        Self { inner }
+    }
+}
+
+#[napi]
+impl LocalAgent {
+    #[napi]
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    #[napi]
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    #[napi]
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
+    }
+
+    #[napi]
+    pub async fn sign(&self, scheme: Either<u16, String>, data: Buffer) -> NapiResult<Buffer> {
+        let scheme = parse_signature_scheme("local_agent.sign", scheme)?;
+        let data = data.as_ref().to_vec();
+        self.inner
+            .sign(scheme, data)
+            .await
+            .map(Buffer::from)
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn verify(
+        &self,
+        scheme: Either<u16, String>,
+        data: Buffer,
+        signature: Buffer,
+    ) -> NapiResult<bool> {
+        let scheme = parse_signature_scheme("local_agent.verify", scheme)?;
+        let data = data.as_ref().to_vec();
+        let signature = signature.as_ref().to_vec();
+        self.inner
+            .verify(scheme, data, signature)
+            .await
+            .map_err(napi_error)
+    }
+}
+
+#[napi(js_name = "RemoteAgent")]
+pub struct RemoteAgent {
+    inner: crate::agent::RemoteAgent,
+}
+
+impl From<crate::agent::RemoteAgent> for RemoteAgent {
+    fn from(inner: crate::agent::RemoteAgent) -> Self {
+        Self { inner }
+    }
+}
+
+#[napi]
+impl RemoteAgent {
+    #[napi]
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    #[napi]
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    #[napi]
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
+    }
+
+    #[napi]
+    pub async fn verify(
+        &self,
+        scheme: Either<u16, String>,
+        data: Buffer,
+        signature: Buffer,
+    ) -> NapiResult<bool> {
+        let scheme = parse_signature_scheme("remote_agent.verify", scheme)?;
+        let data = data.as_ref().to_vec();
+        let signature = signature.as_ref().to_vec();
+        self.inner
+            .verify(scheme, data, signature)
+            .await
+            .map_err(napi_error)
+    }
 }
 
 #[napi(js_name = "DhttpHome")]
@@ -809,6 +950,24 @@ impl Connection {
             .open_request_stream()
             .await
             .map(|(read_stream, write_stream)| StreamPair::new(read_stream, write_stream))
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn local_agent(&self) -> NapiResult<Option<LocalAgent>> {
+        self.inner
+            .local_agent()
+            .await
+            .map(|opt| opt.map(LocalAgent::from))
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub async fn remote_agent(&self) -> NapiResult<Option<RemoteAgent>> {
+        self.inner
+            .remote_agent()
+            .await
+            .map(|opt| opt.map(RemoteAgent::from))
             .map_err(napi_error)
     }
 }

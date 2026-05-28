@@ -20,6 +20,33 @@ impl Identity {
         }
         self.0.public_key().as_ref().to_vec()
     }
+
+    pub fn sign(&self, scheme: u16, data: &[u8]) -> Result<Vec<u8>, crate::error::DhttpError> {
+        let scheme = rustls::SignatureScheme::from(scheme);
+        self.0
+            .sign(scheme, data)
+            .map_err(|error| crate::error::DhttpError::from_error("identity.sign", error))
+    }
+
+    pub fn verify(
+        &self,
+        scheme: u16,
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, crate::error::DhttpError> {
+        let scheme = rustls::SignatureScheme::from(scheme);
+        self.0
+            .verify(scheme, data, signature)
+            .map_err(|error| crate::error::DhttpError::from_error("identity.verify", error))
+    }
+
+    pub fn as_local_agent(&self) -> crate::agent::LocalAgent {
+        crate::agent::LocalAgent::from(self.0.clone())
+    }
+
+    pub fn as_remote_agent(&self) -> crate::agent::RemoteAgent {
+        crate::agent::RemoteAgent::from(self.0.clone())
+    }
 }
 
 impl AsRef<dhttp::identity::Identity> for Identity {

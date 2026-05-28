@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    agent::{LocalAgent, RemoteAgent},
     error::DhttpError,
     stream::{ReadStream, WriteStream},
 };
@@ -25,5 +26,21 @@ impl Connection {
             .await
             .map(|(read, write)| (ReadStream::new(read), WriteStream::new(write)))
             .map_err(|error| DhttpError::from_error("connection.open_request_stream", error))
+    }
+
+    pub async fn local_agent(&self) -> Result<Option<LocalAgent>> {
+        self.inner
+            .local_agent()
+            .await
+            .map(|opt| opt.map(LocalAgent::new))
+            .map_err(|error| DhttpError::from_error("connection.local_agent", error))
+    }
+
+    pub async fn remote_agent(&self) -> Result<Option<RemoteAgent>> {
+        self.inner
+            .remote_agent()
+            .await
+            .map(|opt| opt.map(RemoteAgent::new))
+            .map_err(|error| DhttpError::from_error("connection.remote_agent", error))
     }
 }

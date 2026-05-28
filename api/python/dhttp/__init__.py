@@ -1,6 +1,14 @@
 """Python bindings for DHTTP."""
 
 from . import _native
+from .agent import (
+    LocalAgent,
+    LocalAgentImpl,
+    RemoteAgent,
+    RemoteAgentImpl,
+    SchemeLike,
+    SignatureScheme,
+)
 from .endpoint import Endpoint, ServerRequest
 from .response import ClientResponse, Headers, Response, StreamContent
 
@@ -18,8 +26,14 @@ __all__ = [
     "Headers",
     "Identity",
     "IdentityProfile",
+    "LocalAgent",
+    "LocalAgentImpl",
+    "RemoteAgent",
+    "RemoteAgentImpl",
     "Response",
+    "SchemeLike",
     "ServeHandle",
     "ServerRequest",
+    "SignatureScheme",
     "StreamContent",
 ]

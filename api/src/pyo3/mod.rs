@@ -114,6 +114,129 @@ impl Identity {
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key_der()
     }
+
+    pub fn sign(&self, scheme: Py<PyAny>, data: Vec<u8>) -> PyResult<Vec<u8>> {
+        let scheme = parse_signature_scheme("identity.sign", scheme)?;
+        self.inner.sign(scheme, &data).map_err(py_error)
+    }
+
+    pub fn verify(&self, scheme: Py<PyAny>, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
+        let scheme = parse_signature_scheme("identity.verify", scheme)?;
+        self.inner
+            .verify(scheme, &data, &signature)
+            .map_err(py_error)
+    }
+
+    pub fn as_local_agent(&self) -> LocalAgent {
+        LocalAgent::from(self.inner.as_local_agent())
+    }
+
+    pub fn as_remote_agent(&self) -> RemoteAgent {
+        RemoteAgent::from(self.inner.as_remote_agent())
+    }
+}
+
+fn parse_signature_scheme(operation: &'static str, value: Py<PyAny>) -> PyResult<u16> {
+    Python::attach(|py| {
+        let bound = value.bind(py);
+        if let Ok(code) = bound.extract::<u16>() {
+            return Ok(code);
+        }
+        if let Ok(name) = bound.extract::<String>() {
+            return crate::signature_scheme::parse_name(&name)
+                .map_err(|error| py_error(crate::error::DhttpError::from_error(operation, error)));
+        }
+        Err(state_error(
+            operation,
+            "signature scheme must be int or str",
+        ))
+    })
+}
+
+#[pyclass(name = "LocalAgent")]
+pub struct LocalAgent {
+    inner: crate::agent::LocalAgent,
+}
+
+impl From<crate::agent::LocalAgent> for LocalAgent {
+    fn from(inner: crate::agent::LocalAgent) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl LocalAgent {
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
+    }
+
+    pub async fn sign(&self, scheme: Py<PyAny>, data: Vec<u8>) -> PyResult<Vec<u8>> {
+        let scheme = parse_signature_scheme("local_agent.sign", scheme)?;
+        let inner = self.inner.clone();
+        with_tokio(async move { inner.sign(scheme, data).await })
+            .await
+            .map_err(py_error)
+    }
+
+    pub async fn verify(
+        &self,
+        scheme: Py<PyAny>,
+        data: Vec<u8>,
+        signature: Vec<u8>,
+    ) -> PyResult<bool> {
+        let scheme = parse_signature_scheme("local_agent.verify", scheme)?;
+        let inner = self.inner.clone();
+        with_tokio(async move { inner.verify(scheme, data, signature).await })
+            .await
+            .map_err(py_error)
+    }
+}
+
+#[pyclass(name = "RemoteAgent")]
+pub struct RemoteAgent {
+    inner: crate::agent::RemoteAgent,
+}
+
+impl From<crate::agent::RemoteAgent> for RemoteAgent {
+    fn from(inner: crate::agent::RemoteAgent) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl RemoteAgent {
+    pub fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    pub fn cert_chain_der(&self) -> Vec<Vec<u8>> {
+        self.inner.cert_chain_der()
+    }
+
+    pub fn public_key_der(&self) -> Vec<u8> {
+        self.inner.public_key_der()
+    }
+
+    pub async fn verify(
+        &self,
+        scheme: Py<PyAny>,
+        data: Vec<u8>,
+        signature: Vec<u8>,
+    ) -> PyResult<bool> {
+        let scheme = parse_signature_scheme("remote_agent.verify", scheme)?;
+        let inner = self.inner.clone();
+        with_tokio(async move { inner.verify(scheme, data, signature).await })
+            .await
+            .map_err(py_error)
+    }
 }
 
 #[pyclass(name = "DhttpHome")]
@@ -807,6 +930,22 @@ impl Connection {
             .map(|(read_stream, write_stream)| StreamPair::new(read_stream, write_stream))
             .map_err(py_error)
     }
+
+    pub async fn local_agent(&self) -> PyResult<Option<LocalAgent>> {
+        let inner = self.inner.clone();
+        with_tokio(async move { inner.local_agent().await })
+            .await
+            .map(|opt| opt.map(LocalAgent::from))
+            .map_err(py_error)
+    }
+
+    pub async fn remote_agent(&self) -> PyResult<Option<RemoteAgent>> {
+        let inner = self.inner.clone();
+        with_tokio(async move { inner.remote_agent().await })
+            .await
+            .map(|opt| opt.map(RemoteAgent::from))
+            .map_err(py_error)
+    }
 }
 
 #[pyclass(name = "ServeHandle")]
@@ -953,6 +1092,8 @@ impl Endpoint {
 #[pymodule]
 pub fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
+    module.add_class::<LocalAgent>()?;
+    module.add_class::<RemoteAgent>()?;
     module.add_class::<DhttpHome>()?;
     module.add_class::<IdentityProfile>()?;
     module.add_class::<EndpointOptions>()?;

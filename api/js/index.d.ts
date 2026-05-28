@@ -1,6 +1,50 @@
 export type FetchInput = string | URL | Request;
 export type FetchHandler = (request: Request) => Response | Promise<Response>;
 
+export type SchemeLike = SignatureScheme | number | string;
+
+export enum SignatureScheme {
+  RsaPkcs1Sha256 = 0x0401,
+  RsaPkcs1Sha384 = 0x0501,
+  RsaPkcs1Sha512 = 0x0601,
+  EcdsaNistp256Sha256 = 0x0403,
+  EcdsaNistp384Sha384 = 0x0503,
+  RsaPssSha256 = 0x0804,
+  RsaPssSha384 = 0x0805,
+  RsaPssSha512 = 0x0806,
+  Ed25519 = 0x0807,
+}
+
+export interface LocalAgentLike {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  sign(scheme: SchemeLike, data: Uint8Array): Promise<Uint8Array>;
+  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+export interface RemoteAgentLike {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+export class LocalAgent implements LocalAgentLike {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  sign(scheme: SchemeLike, data: Uint8Array): Promise<Uint8Array>;
+  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+export class RemoteAgent implements RemoteAgentLike {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
 export interface EndpointCreateOptions {
   identity?: Identity | null;
   dnsSchemes?: Iterable<string>;
@@ -28,6 +72,10 @@ export class Identity {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
+  sign(scheme: SchemeLike, data: Uint8Array): Uint8Array;
+  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): boolean;
+  asLocalAgent(): LocalAgent;
+  asRemoteAgent(): RemoteAgent;
 }
 
 export class EndpointOptions {
