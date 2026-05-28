@@ -7,21 +7,21 @@ export interface EndpointCreateOptions {
   bindPatterns?: Iterable<string>;
 }
 
-export class Config {
+export class DhttpHome {
   constructor(path: string);
-  static load(): Config;
+  static load(): DhttpHome;
   path(): string;
-  identityConfig(name: string): IdentityConfig;
-  loadIdentity(name: string): Promise<IdentityConfig>;
-  identityExists(name: string): Promise<boolean>;
-  identities(): Promise<string[]>;
+  identityProfile(name: string): IdentityProfile;
+  resolveIdentityProfile(name: string): Promise<IdentityProfile>;
+  identityProfileExists(name: string): Promise<boolean>;
+  identityProfileNames(): Promise<string[]>;
 }
 
-export class IdentityConfig {
-  static fromPath(path: string): IdentityConfig;
+export class IdentityProfile {
+  static fromPath(path: string): IdentityProfile;
   name(): string;
   path(): string;
-  identity(): Promise<Identity>;
+  loadIdentity(): Promise<Identity>;
 }
 
 export class Identity {

@@ -318,8 +318,8 @@ class Endpoint {
 
 module.exports = {
   Endpoint,
-  Config: native.Config,
-  IdentityConfig: native.IdentityConfig,
+  DhttpHome: native.DhttpHome,
+  IdentityProfile: native.IdentityProfile,
   Identity: native.Identity,
   EndpointOptions: native.EndpointOptions,
   ServeHandle: native.ServeHandle,

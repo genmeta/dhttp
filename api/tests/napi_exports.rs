@@ -7,17 +7,17 @@ type StreamHandlerResult = Either<Promise<()>, ()>;
 
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
-    let config = dhttp_api::napi::Config::new("/tmp/dhttp-api-napi".to_string());
-    assert_eq!(config.path(), "/tmp/dhttp-api-napi");
-    let identity_config = config.identity_config("reimu.pilot".to_string()).unwrap();
-    assert_eq!(identity_config.name(), "reimu.pilot");
+    let home = dhttp_api::napi::DhttpHome::new("/tmp/dhttp-api-napi".to_string());
+    assert_eq!(home.path(), "/tmp/dhttp-api-napi");
+    let profile = home.identity_profile("reimu.pilot".to_string()).unwrap();
+    assert_eq!(profile.name(), "reimu.pilot");
     assert_eq!(
-        identity_config.path(),
+        profile.path(),
         "/tmp/dhttp-api-napi/reimu.pilot".to_string()
     );
     assert!(
-        !config
-            .identity_exists("missing.pilot".to_string())
+        !home
+            .identity_profile_exists("missing.pilot".to_string())
             .await
             .unwrap()
     );
@@ -102,19 +102,19 @@ async fn napi_stream_server_api_is_exposed<'env>(
 }
 
 #[allow(dead_code)]
-async fn napi_config_identity_api_is_exposed(
-    config: &dhttp_api::napi::Config,
-    identity_config: &dhttp_api::napi::IdentityConfig,
+async fn napi_home_identity_api_is_exposed(
+    home: &dhttp_api::napi::DhttpHome,
+    profile: &dhttp_api::napi::IdentityProfile,
     identity: &dhttp_api::napi::Identity,
 ) {
-    let _identity_config =
-        dhttp_api::napi::IdentityConfig::from_path("/tmp/reimu.pilot".to_string()).unwrap();
-    let _identity_config = config
-        .load_identity("reimu.pilot".to_string())
+    let _profile =
+        dhttp_api::napi::IdentityProfile::from_path("/tmp/reimu.pilot".to_string()).unwrap();
+    let _profile = home
+        .resolve_identity_profile("reimu.pilot".to_string())
         .await
         .unwrap();
-    let _identities = config.identities().await.unwrap();
-    let _identity = identity_config.identity().await.unwrap();
+    let _names = home.identity_profile_names().await.unwrap();
+    let _identity = profile.load_identity().await.unwrap();
     let _certs = identity.cert_chain_der();
     let _public_key = identity.public_key_der();
 }

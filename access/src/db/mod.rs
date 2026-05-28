@@ -1,8 +1,8 @@
-//! Access DB contract overrides for the dhttp-config migration:
+//! Access DB contract overrides for the dhttp-home migration:
 //! - No domain rule layer exists in this crate anymore.
 //! - CLI is the only identity selection boundary.
 //! - HTTP consumes a single already-open access DB connection.
-//! - This crate composes identity-local paths on top of dhttp-config without modifying it.
+//! - This crate composes identity-local paths on top of dhttp-home without modifying it.
 
 pub mod entities;
 pub mod identity;
@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 pub use crate as base;
 #[cfg(feature = "migration")]
 pub use crate::migration;
-use dhttp_config::identity::IdentityConfig;
-pub use identity::{DhttpConfig, Name};
+use dhttp_home::identity::IdentityProfile;
+pub use identity::{DhttpHome, Name};
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
 #[cfg(feature = "migration")]
 use sea_orm_migration::MigratorTrait;
@@ -26,9 +26,9 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Snafu)]
 pub enum AccessDbError {
-    #[snafu(display("failed to locate DHTTP_CONFIG"))]
-    LocateDhttpConfig {
-        source: identity::LocateDhttpConfigError,
+    #[snafu(display("failed to locate DHTTP_HOME"))]
+    LocateDhttpHome {
+        source: identity::LocateDhttpHomeError,
     },
 
     #[snafu(display("access store does not exist at `{}`", path.display()))]
@@ -51,18 +51,18 @@ pub enum AccessDbError {
     InitializeDatabase { source: sea_orm::DbErr },
 }
 
-pub fn load_dhttp_config() -> Result<DhttpConfig, AccessDbError> {
-    DhttpConfig::load_from_environment().context(LocateDhttpConfigSnafu)
+pub fn load_dhttp_home() -> Result<DhttpHome, AccessDbError> {
+    DhttpHome::load_from_environment().context(LocateDhttpHomeSnafu)
 }
 
-pub fn access_db_path(home: &DhttpConfig, identity: identity::Name<'_>) -> PathBuf {
+pub fn access_db_path(home: &DhttpHome, identity: identity::Name<'_>) -> PathBuf {
     home.join_identity_name(identity)
         .join(ACCESS_DB_DIRECTORY)
         .join(ACCESS_DB_FILENAME)
 }
 
-pub fn identity_access_db_path(identity_home: &IdentityConfig) -> PathBuf {
-    identity_home
+pub fn identity_access_db_path(identity_profile: &IdentityProfile) -> PathBuf {
+    identity_profile
         .join(ACCESS_DB_DIRECTORY)
         .join(ACCESS_DB_FILENAME)
 }
@@ -150,7 +150,7 @@ pub async fn init_access_database(
 }
 
 pub async fn open_identity_access_database(
-    home: &DhttpConfig,
+    home: &DhttpHome,
     identity: identity::Name<'_>,
 ) -> Result<DatabaseConnection, AccessDbError> {
     open_existing_access_database(access_db_path(home, identity)).await
@@ -158,23 +158,23 @@ pub async fn open_identity_access_database(
 
 #[cfg(feature = "migration")]
 pub async fn init_identity_access_database(
-    home: &DhttpConfig,
+    home: &DhttpHome,
     identity: identity::Name<'_>,
 ) -> Result<DatabaseConnection, AccessDbError> {
     init_access_database(access_db_path(home, identity)).await
 }
 
 pub async fn open_access_database(
-    identity_home: &IdentityConfig,
+    identity_profile: &IdentityProfile,
 ) -> Result<DatabaseConnection, AccessDbError> {
-    open_existing_access_database(identity_access_db_path(identity_home)).await
+    open_existing_access_database(identity_access_db_path(identity_profile)).await
 }
 
 #[cfg(feature = "migration")]
 pub async fn init_access_database_for(
-    identity_home: &IdentityConfig,
+    identity_profile: &IdentityProfile,
 ) -> Result<DatabaseConnection, AccessDbError> {
-    init_access_database(identity_access_db_path(identity_home)).await
+    init_access_database(identity_access_db_path(identity_profile)).await
 }
 
 #[cfg(all(test, feature = "migration"))]
@@ -201,8 +201,8 @@ mod tests {
             Self { path }
         }
 
-        fn home(&self) -> DhttpConfig {
-            DhttpConfig::new(self.path.clone())
+        fn home(&self) -> DhttpHome {
+            DhttpHome::new(self.path.clone())
         }
     }
 

@@ -1,5 +1,5 @@
 [package]
-name = "dhttp-config"
+name = "dhttp-home"
 version.workspace = true
 edition.workspace = true
 
@@ -16,9 +16,9 @@ toml = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
 
 [features]
-default = ["ssl", "default-config"]
+default = ["ssl", "settings"]
 ssl = ["dep:tokio", "dep:futures", "dep:rustls", "dep:x509-parser"]
-default-config = ["dep:tokio", "dep:toml"]
+settings = ["dep:tokio", "dep:toml"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

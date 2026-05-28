@@ -115,6 +115,16 @@ impl Endpoint {
         let quic_resolver: Arc<dyn Resolve + Send + Sync> = match resolver {
             Some(resolver) => resolver,
             None => {
+                // A-mode default: if the caller never invoked `.dns(...)`, the
+                // schemes vec is empty here and we fill in H3 + Mdns + System
+                // as the sensible out-of-the-box set. Any explicit `.dns(...)`
+                // call hands full control to the caller and disables defaults.
+                let dns_schemes = if dns_schemes.is_empty() {
+                    vec![DnsScheme::H3, DnsScheme::Mdns, DnsScheme::System]
+                } else {
+                    dns_schemes
+                };
+
                 let mut resolvers = Resolvers::builder();
 
                 if dns_schemes.contains(&DnsScheme::Mdns) {
@@ -182,17 +192,17 @@ where
 {
     #[snafu(display("failed to parse dhttp name"))]
     InvalidName { source: E },
-    #[snafu(display("failed to locate dhttp config"))]
-    NoConfig {
-        source: crate::config::LocateDhttpConfigError,
+    #[snafu(display("failed to locate dhttp home"))]
+    NoHome {
+        source: crate::home::LocateDhttpHomeError,
     },
-    #[snafu(display("failed to load identity config"))]
+    #[snafu(display("failed to resolve identity profile"))]
+    ResolveIdentityProfile {
+        source: crate::home::identity::ssl::ResolveIdentityProfileError,
+    },
+    #[snafu(display("failed to load identity"))]
     LoadIdentity {
-        source: crate::config::identity::ssl::LoadIdentityError,
-    },
-    #[snafu(display("failed to load certificate and key"))]
-    LoadSsl {
-        source: crate::config::identity::ssl::LoadIdentitySslError,
+        source: crate::home::identity::ssl::LoadIdentityError,
     },
     #[snafu(display("failed to build endpoint"))]
     BuildEndpoint {
@@ -203,13 +213,13 @@ where
 #[derive(Debug, snafu::Snafu)]
 #[snafu(module(load_endpoint_from_path_error))]
 pub enum LoadEndpointFromPathError {
-    #[snafu(display("failed to construct identity config from path"))]
-    IdentityConfig {
-        source: crate::config::identity::IdentityConfigFromPathError,
+    #[snafu(display("failed to construct identity profile from path"))]
+    IdentityProfile {
+        source: crate::home::identity::IdentityProfileFromPathError,
     },
-    #[snafu(display("failed to load certificate and key"))]
-    LoadSsl {
-        source: crate::config::identity::ssl::LoadIdentitySslError,
+    #[snafu(display("failed to load identity"))]
+    LoadIdentity {
+        source: crate::home::identity::ssl::LoadIdentityError,
     },
     #[snafu(display("failed to build endpoint"))]
     BuildEndpoint {
@@ -305,7 +315,7 @@ impl Endpoint {
     /// Load an endpoint from a domain name.
     ///
     /// Accepts a [`dhttp_identity::name::DhttpName`], locates the `.dhttp`
-    /// config directory, loads the TLS identity from
+    /// home directory, loads the TLS identity from
     /// `~/.dhttp/<name>/ssl/`, and constructs a QUIC endpoint with
     /// [`DnsScheme::H3`], [`DnsScheme::Mdns`], and [`DnsScheme::System`]
     /// DNS resolution schemes and a default network configuration.
@@ -319,18 +329,18 @@ impl Endpoint {
         let name = name
             .try_into()
             .context(load_endpoint_error::InvalidNameSnafu)?;
-        let config = crate::config::DhttpConfig::load_from_environment()
-            .context(load_endpoint_error::NoConfigSnafu)?;
+        let home = crate::home::DhttpHome::load_from_environment()
+            .context(load_endpoint_error::NoHomeSnafu)?;
 
-        let identity_config = config
-            .load_identity(name)
+        let profile = home
+            .resolve_identity_profile(name)
+            .await
+            .context(load_endpoint_error::ResolveIdentityProfileSnafu)?;
+
+        let identity = profile
+            .load_identity()
             .await
             .context(load_endpoint_error::LoadIdentitySnafu)?;
-
-        let identity = identity_config
-            .identity()
-            .await
-            .context(load_endpoint_error::LoadSslSnafu)?;
 
         let endpoint = Self::builder()
             .identity(Arc::new(identity))
@@ -347,12 +357,12 @@ impl Endpoint {
     pub async fn load_from(path: impl Into<PathBuf>) -> Result<Self, LoadEndpointFromPathError> {
         use snafu::ResultExt;
 
-        let identity_config = crate::config::identity::IdentityConfig::try_from(path.into())
-            .context(load_endpoint_from_path_error::IdentityConfigSnafu)?;
-        let identity = identity_config
-            .identity()
+        let profile = crate::home::identity::IdentityProfile::try_from(path.into())
+            .context(load_endpoint_from_path_error::IdentityProfileSnafu)?;
+        let identity = profile
+            .load_identity()
             .await
-            .context(load_endpoint_from_path_error::LoadSslSnafu)?;
+            .context(load_endpoint_from_path_error::LoadIdentitySnafu)?;
 
         let endpoint = Self::builder()
             .identity(Arc::new(identity))
@@ -561,9 +571,9 @@ mod tests {
     #[tokio::test]
     async fn load_from_rejects_invalid_identity_config_path() {
         match Endpoint::load_from("/tmp/123").await {
-            Err(LoadEndpointFromPathError::IdentityConfig { .. }) => {}
-            Err(error) => panic!("expected identity config error, got {error:?}"),
-            Ok(_) => panic!("expected identity config error, got endpoint"),
+            Err(LoadEndpointFromPathError::IdentityProfile { .. }) => {}
+            Err(error) => panic!("expected identity profile error, got {error:?}"),
+            Ok(_) => panic!("expected identity profile error, got endpoint"),
         }
     }
 

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use dhttp::name::DhttpName;
 use dhttp_api::{
-    config::{Config, IdentityConfig},
     error::DhttpError,
+    home::{DhttpHome, IdentityProfile},
     identity::Identity,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -27,43 +27,40 @@ fn http_boundary_aliases_are_public() {
 }
 
 #[test]
-fn identity_config_from_path_exposes_partial_name_and_path() {
-    let identity_config = IdentityConfig::from_path("/tmp/reimu.pilot").unwrap();
+fn identity_profile_from_path_exposes_partial_name_and_path() {
+    let profile = IdentityProfile::from_path("/tmp/reimu.pilot").unwrap();
 
-    assert_eq!(identity_config.name(), "reimu.pilot");
-    assert_eq!(identity_config.path(), Path::new("/tmp/reimu.pilot"));
+    assert_eq!(profile.name(), "reimu.pilot");
+    assert_eq!(profile.path(), Path::new("/tmp/reimu.pilot"));
 }
 
 #[test]
-fn config_identity_config_expands_partial_name_under_config_path() {
-    let config = Config::from_path("/tmp/dhttp-config");
-    let identity_config = config.identity_config("reimu.pilot").unwrap();
+fn home_identity_profile_expands_partial_name_under_home_path() {
+    let home = DhttpHome::from_path("/tmp/dhttp-home");
+    let profile = home.identity_profile("reimu.pilot").unwrap();
 
-    assert_eq!(config.path(), Path::new("/tmp/dhttp-config"));
-    assert_eq!(identity_config.name(), "reimu.pilot");
-    assert_eq!(
-        identity_config.path(),
-        Path::new("/tmp/dhttp-config/reimu.pilot")
-    );
+    assert_eq!(home.path(), Path::new("/tmp/dhttp-home"));
+    assert_eq!(profile.name(), "reimu.pilot");
+    assert_eq!(profile.path(), Path::new("/tmp/dhttp-home/reimu.pilot"));
 }
 
 #[test]
-fn invalid_name_returns_config_operation() {
-    let config = Config::from_path("/tmp/dhttp-config");
-    let error = config.identity_config("!!!").unwrap_err();
+fn invalid_name_returns_home_operation() {
+    let home = DhttpHome::from_path("/tmp/dhttp-home");
+    let error = home.identity_profile("!!!").unwrap_err();
 
-    assert_eq!(error.operation(), "config.identity_config");
+    assert_eq!(error.operation(), "home.identity_profile");
     assert!(error.message().contains("invalid characters"));
     assert!(!error.report().is_empty());
     assert!(!error.causes().is_empty());
 }
 
 #[tokio::test]
-async fn identity_exists_reports_config_operation() {
-    let config = Config::from_path("/tmp/dhttp-config");
-    let error = config.identity_exists("!!!").await.unwrap_err();
+async fn identity_profile_exists_reports_home_operation() {
+    let home = DhttpHome::from_path("/tmp/dhttp-home");
+    let error = home.identity_profile_exists("!!!").await.unwrap_err();
 
-    assert_eq!(error.operation(), "config.identity_exists");
+    assert_eq!(error.operation(), "home.identity_profile_exists");
 }
 
 #[test]
@@ -96,8 +93,8 @@ fn identity_preserves_core_conversions_and_access() {
 }
 
 #[tokio::test]
-async fn identities_lists_existing_identity_directories_with_ssl_subdir() {
-    let base = unique_temp_path("identities-list");
+async fn identity_profile_names_lists_existing_identity_directories_with_ssl_subdir() {
+    let base = unique_temp_path("identity-profile-names");
     let _ = tokio::fs::remove_dir_all(&base).await;
     tokio::fs::create_dir_all(base.join("reimu.pilot").join("ssl"))
         .await
@@ -105,11 +102,11 @@ async fn identities_lists_existing_identity_directories_with_ssl_subdir() {
     tokio::fs::create_dir_all(base.join("ignored.no-ssl"))
         .await
         .unwrap();
-    let config = Config::from_path(&base);
+    let home = DhttpHome::from_path(&base);
 
-    let identities = config.identities().await.unwrap();
+    let names = home.identity_profile_names().await.unwrap();
 
-    assert_eq!(identities, vec!["reimu.pilot".to_string()]);
+    assert_eq!(names, vec!["reimu.pilot".to_string()]);
 }
 
 fn unique_temp_path(test_name: &str) -> PathBuf {

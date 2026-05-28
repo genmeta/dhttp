@@ -9,37 +9,41 @@ use toml::Spanned;
 
 use dhttp_identity::name::DhttpName;
 
-use crate::DhttpConfig;
+use crate::DhttpHome;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct DefaultConfig {
+pub struct DefaultSection {
     pub name: Option<Spanned<DhttpName<'static>>>,
 }
 
-impl DefaultConfig {
-    pub fn name(&self) -> Option<&DhttpName<'static>> {
-        self.name.as_ref().map(|spanned| spanned.as_ref())
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct DhttpSettings {
+    #[serde(default)]
+    pub default: DefaultSection,
+}
+
+impl DhttpSettings {
+    pub const FILE_NAME: &'static str = "settings.toml";
+
+    pub fn default_identity_name(&self) -> Option<&DhttpName<'static>> {
+        self.default.name.as_ref().map(|s| s.as_ref())
     }
 
-    pub fn set_name(&mut self, name: DhttpName<'static>) {
-        let span = match &self.name {
+    pub fn set_default_identity_name(&mut self, name: DhttpName<'static>) {
+        let span = match &self.default.name {
             Some(spanned) => spanned.span(),
             None => 0..0,
         };
-        self.name = Some(Spanned::new(span, name));
+        self.default.name = Some(Spanned::new(span, name));
     }
 }
 
-impl DefaultConfig {
-    pub const FILE_NAME: &'static str = "default.toml";
-}
-
 #[derive(Debug)]
-pub struct DefaultConfigFile {
+pub struct DhttpSettingsFile {
     path: PathBuf,
     #[allow(dead_code)]
     content: Option<String>,
-    config: DefaultConfig,
+    settings: DhttpSettings,
 }
 
 #[cfg(feature = "ssl")]
@@ -98,13 +102,13 @@ impl Display for FileLineCol {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum LoadDefaultConfigError {
-    #[snafu(display("failed to read default config file {}", path.display()))]
+pub enum LoadDhttpSettingsError {
+    #[snafu(display("failed to read settings file {}", path.display()))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(display("failed to deserialize default config file {}", path.display()))]
+    #[snafu(display("failed to deserialize settings file {}", path.display()))]
     Deserialize {
         path: PathBuf,
         source: toml::de::Error,
@@ -113,7 +117,7 @@ pub enum LoadDefaultConfigError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum SaveDefaultConfigError {
+pub enum SaveDhttpSettingsError {
     Serialize {
         path: PathBuf,
         source: toml::ser::Error,
@@ -124,12 +128,12 @@ pub enum SaveDefaultConfigError {
     },
 }
 
-impl DefaultConfigFile {
+impl DhttpSettingsFile {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             content: None,
-            config: DefaultConfig::default(),
+            settings: DhttpSettings::default(),
         }
     }
 
@@ -137,25 +141,25 @@ impl DefaultConfigFile {
         &self.path
     }
 
-    pub async fn load(path: PathBuf) -> Result<Self, LoadDefaultConfigError> {
+    pub async fn load(path: PathBuf) -> Result<Self, LoadDhttpSettingsError> {
         let source = fs::read_to_string(&path)
             .await
-            .context(load_default_config_error::IoSnafu { path: &path })?;
-        let config: DefaultConfig = toml::from_str(&source)
-            .context(load_default_config_error::DeserializeSnafu { path: &path })?;
+            .context(load_dhttp_settings_error::IoSnafu { path: &path })?;
+        let settings: DhttpSettings = toml::from_str(&source)
+            .context(load_dhttp_settings_error::DeserializeSnafu { path: &path })?;
         Ok(Self {
             path,
             content: Some(source),
-            config,
+            settings,
         })
     }
 
-    pub fn config(&self) -> &DefaultConfig {
-        &self.config
+    pub fn settings(&self) -> &DhttpSettings {
+        &self.settings
     }
 
-    pub fn config_mut(&mut self) -> &mut DefaultConfig {
-        &mut self.config
+    pub fn settings_mut(&mut self) -> &mut DhttpSettings {
+        &mut self.settings
     }
 
     #[cfg(feature = "ssl")]
@@ -165,28 +169,26 @@ impl DefaultConfigFile {
         Some(FileLineCol { path, line_col })
     }
 
-    pub async fn save(&self) -> Result<(), SaveDefaultConfigError> {
-        let source = toml::to_string_pretty(&self.config)
-            .context(save_default_config_error::SerializeSnafu { path: &self.path })?;
+    pub async fn save(&self) -> Result<(), SaveDhttpSettingsError> {
+        let source = toml::to_string_pretty(&self.settings)
+            .context(save_dhttp_settings_error::SerializeSnafu { path: &self.path })?;
         fs::write(&self.path, source)
             .await
-            .context(save_default_config_error::IoSnafu { path: &self.path })?;
+            .context(save_dhttp_settings_error::IoSnafu { path: &self.path })?;
         Ok(())
     }
 }
 
-impl DhttpConfig {
-    pub fn identity_default_config_path(&self) -> PathBuf {
-        self.join(DefaultConfig::FILE_NAME)
+impl DhttpHome {
+    pub fn settings_path(&self) -> PathBuf {
+        self.join(DhttpSettings::FILE_NAME)
     }
 
-    pub async fn load_identity_default_config(
-        &self,
-    ) -> Result<DefaultConfigFile, LoadDefaultConfigError> {
-        DefaultConfigFile::load(self.identity_default_config_path()).await
+    pub async fn load_settings(&self) -> Result<DhttpSettingsFile, LoadDhttpSettingsError> {
+        DhttpSettingsFile::load(self.settings_path()).await
     }
 
-    pub fn new_identity_default_config(&self) -> DefaultConfigFile {
-        DefaultConfigFile::new(self.identity_default_config_path())
+    pub fn new_settings(&self) -> DhttpSettingsFile {
+        DhttpSettingsFile::new(self.settings_path())
     }
 }

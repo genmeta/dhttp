@@ -1,34 +1,39 @@
 use std::path::{Path, PathBuf};
 
-use crate::DhttpConfig;
+use crate::DhttpHome;
 use snafu::{OptionExt, ResultExt, Snafu};
 
 use dhttp_identity::name::{DhttpName, InvalidDhttpName};
 
-#[cfg(feature = "default-config")]
-pub mod default;
+#[cfg(feature = "settings")]
+pub mod settings;
 #[cfg(feature = "ssl")]
 pub mod ssl;
 
-/// An identity config directory (e.g. `.dhttp/reimu.pilot/`).
+/// A handle to a per-identity profile directory (e.g. `~/.dhttp/reimu.pilot/`).
+///
+/// `IdentityProfile` is one of N sibling directories living inside a `DhttpHome`.
+/// Each profile owns that identity's certificate, private key, server config,
+/// and access database. The type is a typed path; it performs no IO on
+/// construction.
 #[derive(Debug, Clone)]
-pub struct IdentityConfig {
+pub struct IdentityProfile {
     pub(crate) path: PathBuf,
     pub(crate) name: DhttpName<'static>,
 }
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum IdentityConfigFromPathError {
-    #[snafu(display("identity config path has no directory name: {}", path.display()))]
+pub enum IdentityProfileFromPathError {
+    #[snafu(display("identity profile path has no directory name: {}", path.display()))]
     MissingFileName { path: PathBuf },
-    #[snafu(display("identity config directory name is not valid unicode: {}", path.display()))]
+    #[snafu(display("identity profile directory name is not valid unicode: {}", path.display()))]
     NonUtf8FileName { path: PathBuf },
-    #[snafu(display("failed to parse identity config directory name as dhttp name"))]
+    #[snafu(display("failed to parse identity profile directory name as dhttp name"))]
     InvalidName { source: InvalidDhttpName },
 }
 
-impl IdentityConfig {
+impl IdentityProfile {
     pub const LOGS_DIR: &'static str = "logs";
     pub const ACCESS_LOG_FILE: &'static str = "access.log";
     pub const DB_DIR: &'static str = "db";
@@ -63,8 +68,8 @@ impl IdentityConfig {
         self.join(Self::SERVER_CONF_FILE)
     }
 
-    fn try_from_path(path: PathBuf) -> Result<Self, IdentityConfigFromPathError> {
-        use identity_config_from_path_error::*;
+    fn try_from_path(path: PathBuf) -> Result<Self, IdentityProfileFromPathError> {
+        use identity_profile_from_path_error::*;
 
         let file_name = path
             .file_name()
@@ -77,29 +82,34 @@ impl IdentityConfig {
     }
 }
 
-impl TryFrom<PathBuf> for IdentityConfig {
-    type Error = IdentityConfigFromPathError;
+impl TryFrom<PathBuf> for IdentityProfile {
+    type Error = IdentityProfileFromPathError;
 
     fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
         Self::try_from_path(path)
     }
 }
 
-impl TryFrom<&Path> for IdentityConfig {
-    type Error = IdentityConfigFromPathError;
+impl TryFrom<&Path> for IdentityProfile {
+    type Error = IdentityProfileFromPathError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         Self::try_from_path(path.to_path_buf())
     }
 }
 
-impl DhttpConfig {
+impl DhttpHome {
     pub fn join_identity_name(&self, name: DhttpName<'_>) -> PathBuf {
         self.join(name.as_partial())
     }
 
-    pub fn identity_config(&self, name: DhttpName<'_>) -> IdentityConfig {
-        IdentityConfig {
+    /// Construct an [`IdentityProfile`] handle for `name` without touching disk.
+    ///
+    /// Use this when you only need the typed path (for example to compute a
+    /// child file path). To verify that the directory actually exists, call
+    /// [`DhttpHome::resolve_identity_profile`] instead.
+    pub fn identity_profile(&self, name: DhttpName<'_>) -> IdentityProfile {
+        IdentityProfile {
             path: self.join_identity_name(name.clone()),
             name: name.to_owned(),
         }
@@ -111,30 +121,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_config_from_path_uses_directory_name_as_dhttp_name() {
-        let config = IdentityConfig::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
+    fn identity_profile_from_path_uses_directory_name_as_dhttp_name() {
+        let profile = IdentityProfile::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
 
-        assert_eq!(config.path(), Path::new("/tmp/reimu.pilot"));
-        assert_eq!(config.name().as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(profile.path(), Path::new("/tmp/reimu.pilot"));
+        assert_eq!(profile.name().as_full(), "reimu.pilot.genmeta.net");
     }
 
     #[test]
-    fn identity_config_from_path_rejects_path_without_directory_name() {
-        let error = IdentityConfig::try_from(Path::new("/")).unwrap_err();
+    fn identity_profile_from_path_rejects_path_without_directory_name() {
+        let error = IdentityProfile::try_from(Path::new("/")).unwrap_err();
 
         assert!(matches!(
             error,
-            IdentityConfigFromPathError::MissingFileName { .. }
+            IdentityProfileFromPathError::MissingFileName { .. }
         ));
     }
 
     #[test]
-    fn identity_config_from_path_rejects_invalid_directory_name() {
-        let error = IdentityConfig::try_from(Path::new("/tmp/123")).unwrap_err();
+    fn identity_profile_from_path_rejects_invalid_directory_name() {
+        let error = IdentityProfile::try_from(Path::new("/tmp/123")).unwrap_err();
 
         assert!(matches!(
             error,
-            IdentityConfigFromPathError::InvalidName { .. }
+            IdentityProfileFromPathError::InvalidName { .. }
         ));
     }
 }

@@ -116,23 +116,23 @@ impl Identity {
     }
 }
 
-#[pyclass(name = "Config")]
-pub struct Config {
-    inner: crate::config::Config,
+#[pyclass(name = "DhttpHome")]
+pub struct DhttpHome {
+    inner: crate::home::DhttpHome,
 }
 
 #[pymethods]
-impl Config {
+impl DhttpHome {
     #[new]
     pub fn new(path: String) -> Self {
         Self {
-            inner: crate::config::Config::from_path(path),
+            inner: crate::home::DhttpHome::from_path(path),
         }
     }
 
     #[staticmethod]
     pub fn load() -> PyResult<Self> {
-        crate::config::Config::load()
+        crate::home::DhttpHome::load()
             .map(|inner| Self { inner })
             .map_err(py_error)
     }
@@ -141,41 +141,43 @@ impl Config {
         self.inner.path().display().to_string()
     }
 
-    pub fn identity_config(&self, name: String) -> PyResult<IdentityConfig> {
+    pub fn identity_profile(&self, name: String) -> PyResult<IdentityProfile> {
         self.inner
-            .identity_config(&name)
-            .map(|inner| IdentityConfig { inner })
+            .identity_profile(&name)
+            .map(|inner| IdentityProfile { inner })
             .map_err(py_error)
     }
 
-    pub async fn load_identity(&self, name: String) -> PyResult<IdentityConfig> {
-        with_tokio(self.inner.load_identity(&name))
+    pub async fn resolve_identity_profile(&self, name: String) -> PyResult<IdentityProfile> {
+        with_tokio(self.inner.resolve_identity_profile(&name))
             .await
-            .map(|inner| IdentityConfig { inner })
+            .map(|inner| IdentityProfile { inner })
             .map_err(py_error)
     }
 
-    pub async fn identity_exists(&self, name: String) -> PyResult<bool> {
-        with_tokio(self.inner.identity_exists(&name))
+    pub async fn identity_profile_exists(&self, name: String) -> PyResult<bool> {
+        with_tokio(self.inner.identity_profile_exists(&name))
             .await
             .map_err(py_error)
     }
 
-    pub async fn identities(&self) -> PyResult<Vec<String>> {
-        with_tokio(self.inner.identities()).await.map_err(py_error)
+    pub async fn identity_profile_names(&self) -> PyResult<Vec<String>> {
+        with_tokio(self.inner.identity_profile_names())
+            .await
+            .map_err(py_error)
     }
 }
 
-#[pyclass(name = "IdentityConfig")]
-pub struct IdentityConfig {
-    inner: crate::config::IdentityConfig,
+#[pyclass(name = "IdentityProfile")]
+pub struct IdentityProfile {
+    inner: crate::home::IdentityProfile,
 }
 
 #[pymethods]
-impl IdentityConfig {
+impl IdentityProfile {
     #[new]
     pub fn new(path: String) -> PyResult<Self> {
-        crate::config::IdentityConfig::from_path(path)
+        crate::home::IdentityProfile::from_path(path)
             .map(|inner| Self { inner })
             .map_err(py_error)
     }
@@ -188,8 +190,8 @@ impl IdentityConfig {
         self.inner.path().display().to_string()
     }
 
-    pub async fn identity(&self) -> PyResult<Identity> {
-        with_tokio(self.inner.identity())
+    pub async fn load_identity(&self) -> PyResult<Identity> {
+        with_tokio(self.inner.load_identity())
             .await
             .map(Identity::from)
             .map_err(py_error)
@@ -951,8 +953,8 @@ impl Endpoint {
 #[pymodule]
 pub fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
-    module.add_class::<Config>()?;
-    module.add_class::<IdentityConfig>()?;
+    module.add_class::<DhttpHome>()?;
+    module.add_class::<IdentityProfile>()?;
     module.add_class::<EndpointOptions>()?;
     module.add_class::<ReadStream>()?;
     module.add_class::<WriteStream>()?;

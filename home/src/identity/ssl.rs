@@ -14,7 +14,7 @@ use x509_parser::prelude::Pem;
 
 use dhttp_identity::{identity::Identity, name::DhttpName};
 
-use crate::{DhttpConfig, identity::IdentityConfig};
+use crate::{DhttpHome, identity::IdentityProfile};
 
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
@@ -22,17 +22,17 @@ pub const KEY_FILE_NAME: &str = "privkey.pem";
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum LocateIdentityError {
-    #[snafu(display("failed to inspect exact identity path {}", path.display()))]
+pub enum ResolveIdentityProfileError {
+    #[snafu(display("failed to inspect exact identity profile path {}", path.display()))]
     ExactMetadata { path: PathBuf, source: io::Error },
-    #[snafu(display("failed to inspect wildcard identity path {}", path.display()))]
+    #[snafu(display("failed to inspect wildcard identity profile path {}", path.display()))]
     WildcardMetadata { path: PathBuf, source: io::Error },
-    #[snafu(display("exact identity path does not exist: {}", path.display()))]
+    #[snafu(display("exact identity profile path does not exist: {}", path.display()))]
     ExactNotFound { path: PathBuf },
-    #[snafu(display("wildcard identity path does not exist: {}", path.display()))]
+    #[snafu(display("wildcard identity profile path does not exist: {}", path.display()))]
     WildcardNotFound { path: PathBuf },
     #[snafu(display(
-        "identity does not exist at exact path {} or wildcard path {}",
+        "identity profile does not exist at exact path {} or wildcard path {}",
         exact.display(),
         wildcard.display()
     ))]
@@ -41,14 +41,7 @@ pub enum LocateIdentityError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum LoadIdentityError {
-    #[snafu(display("failed to locate identity config"))]
-    Locate { source: LocateIdentityError },
-}
-
-#[derive(Snafu, Debug)]
-#[snafu(module)]
-pub enum LoadCertError {
+pub enum LoadCertsError {
     #[snafu(display("failed to read certificate file {}", path.display()))]
     Read { path: PathBuf, source: io::Error },
     #[snafu(display("failed to parse pem block in {}", path.display()))]
@@ -79,11 +72,11 @@ pub enum LoadKeyError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum LoadIdentitySslError {
+pub enum LoadIdentityError {
     #[snafu(display("failed to load identity certificates at {}", path.display()))]
     LoadCerts {
         path: PathBuf,
-        source: LoadCertError,
+        source: LoadCertsError,
     },
 
     #[snafu(display("failed to load identity private key at {}", path.display()))]
@@ -107,26 +100,26 @@ pub enum SaveIdentityError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum ListIdentitiesError {
-    #[snafu(display("failed to list identities in directory {}", path.display()))]
+pub enum ListIdentityProfilesError {
+    #[snafu(display("failed to list identity profiles in directory {}", path.display()))]
     ReadDir { path: PathBuf, source: io::Error },
     #[snafu(display("failed to read filetype of {}", path.display()))]
     ReadFty { path: PathBuf, source: io::Error },
 }
 
-impl IdentityConfig {
+impl IdentityProfile {
     pub fn ssl_dir(&self) -> PathBuf {
         self.join(SSL_DIR_NAME)
     }
 
-    pub async fn certs(&self) -> Result<Vec<CertificateDer<'static>>, LoadCertError> {
+    pub async fn load_certs(&self) -> Result<Vec<CertificateDer<'static>>, LoadCertsError> {
         let certs_path = self.ssl_dir().join(CERT_FILE_NAME);
         let mut data = std::io::Cursor::new(fs::read(certs_path.as_path()).await.context(
-            load_cert_error::ReadSnafu {
+            load_certs_error::ReadSnafu {
                 path: certs_path.clone(),
             },
         )?);
-        let (end_entity_pem, _read) = Pem::read(&mut data).context(load_cert_error::PemSnafu {
+        let (end_entity_pem, _read) = Pem::read(&mut data).context(load_certs_error::PemSnafu {
             path: certs_path.clone(),
         })?;
         let mut certs = vec![CertificateDer::from(end_entity_pem.contents)];
@@ -137,7 +130,7 @@ impl IdentityConfig {
                 }
                 Err(x509_parser::error::PEMError::MissingHeader) => break,
                 result => {
-                    _ = result.context(load_cert_error::PemSnafu {
+                    _ = result.context(load_certs_error::PemSnafu {
                         path: certs_path.clone(),
                     })?;
                 }
@@ -147,7 +140,7 @@ impl IdentityConfig {
         Ok(certs)
     }
 
-    pub async fn key(&self) -> Result<PrivateKeyDer<'static>, LoadKeyError> {
+    pub async fn load_key(&self) -> Result<PrivateKeyDer<'static>, LoadKeyError> {
         let key_path = self.ssl_dir().join(KEY_FILE_NAME);
         let metadata =
             fs::metadata(key_path.as_path())
@@ -182,18 +175,19 @@ impl IdentityConfig {
         )
     }
 
-    pub async fn identity(&self) -> Result<Identity, LoadIdentitySslError> {
+    /// Load this profile's identity (certificate chain + private key) from disk.
+    pub async fn load_identity(&self) -> Result<Identity, LoadIdentityError> {
         let certs_path = self.ssl_dir().join(CERT_FILE_NAME);
         let certs = self
-            .certs()
+            .load_certs()
             .await
-            .context(load_identity_ssl_error::LoadCertsSnafu { path: certs_path })?;
+            .context(load_identity_error::LoadCertsSnafu { path: certs_path })?;
 
         let key_path = self.ssl_dir().join(KEY_FILE_NAME);
         let key = self
-            .key()
+            .load_key()
             .await
-            .context(load_identity_ssl_error::LoadKeySnafu { path: key_path })?;
+            .context(load_identity_error::LoadKeySnafu { path: key_path })?;
 
         Ok(Identity::new(self.name.clone().into_name(), certs, key))
     }
@@ -211,7 +205,6 @@ impl IdentityConfig {
         #[cfg(unix)]
         open_options.mode(0o400);
 
-        // remove old cert file if any, then write new one
         let path = ssl_dir.join(CERT_FILE_NAME);
         if let Err(error) = fs::remove_file(path.as_path()).await
             && error.kind() != io::ErrorKind::NotFound
@@ -226,7 +219,6 @@ impl IdentityConfig {
             .await
             .context(save_identity_error::WriteSnafu { path: path.clone() })?;
 
-        // remove old key file if any, then write new one
         let path = ssl_dir.join(KEY_FILE_NAME);
         if let Err(error) = fs::remove_file(path.as_path()).await
             && error.kind() != io::ErrorKind::NotFound
@@ -245,52 +237,61 @@ impl IdentityConfig {
     }
 }
 
-impl DhttpConfig {
-    pub async fn locate_identity_exactly(
+impl DhttpHome {
+    /// Resolve `name` to an `IdentityProfile` by exact match only (no wildcard fallback).
+    pub async fn resolve_identity_profile_exactly(
         &self,
         name: DhttpName<'_>,
-    ) -> Result<PathBuf, LocateIdentityError> {
-        let identity_io = self.join_identity_name(name);
-        match fs::metadata(identity_io.as_path()).await {
-            Ok(_) => Ok(identity_io),
+    ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
+        let profile_path = self.join_identity_name(name.clone());
+        match fs::metadata(profile_path.as_path()).await {
+            Ok(_) => Ok(IdentityProfile {
+                path: profile_path,
+                name: name.to_owned(),
+            }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                locate_identity_error::ExactNotFoundSnafu { path: identity_io }.fail()
-            }
-            Err(error) => {
-                Err(error).context(locate_identity_error::ExactMetadataSnafu { path: identity_io })
-            }
-        }
-    }
-
-    pub async fn locate_identity_wildcard(
-        &self,
-        name: DhttpName<'_>,
-    ) -> Result<PathBuf, LocateIdentityError> {
-        let wildcard_name = name.to_wildcard();
-
-        let identity_io = self.join_identity_name(wildcard_name.clone());
-        match fs::metadata(identity_io.as_path()).await {
-            Ok(_) => Ok(identity_io),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                locate_identity_error::WildcardNotFoundSnafu { path: identity_io }.fail()
+                resolve_identity_profile_error::ExactNotFoundSnafu { path: profile_path }.fail()
             }
             Err(error) => Err(error)
-                .context(locate_identity_error::WildcardMetadataSnafu { path: identity_io }),
+                .context(resolve_identity_profile_error::ExactMetadataSnafu { path: profile_path }),
         }
     }
 
-    pub async fn locate_identity<'a>(
+    /// Resolve `name` to an `IdentityProfile` by wildcard match only (no exact fallback).
+    pub async fn resolve_identity_profile_wildcard(
         &self,
-        name: DhttpName<'a>,
-    ) -> Result<(PathBuf, DhttpName<'a>), LocateIdentityError> {
-        match self.locate_identity_exactly(name.clone()).await {
-            Ok(location) => Ok((location, name)),
-            Err(LocateIdentityError::ExactNotFound { path: exact }) => {
-                let wildcard_name = name.to_wildcard();
-                match self.locate_identity_wildcard(wildcard_name.clone()).await {
-                    Ok(location) => Ok((location, wildcard_name)),
-                    Err(LocateIdentityError::WildcardNotFound { path: wildcard }) => {
-                        locate_identity_error::NotFoundSnafu { exact, wildcard }.fail()
+        name: DhttpName<'_>,
+    ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
+        let wildcard_name = name.to_wildcard();
+        let profile_path = self.join_identity_name(wildcard_name.clone());
+        match fs::metadata(profile_path.as_path()).await {
+            Ok(_) => Ok(IdentityProfile {
+                path: profile_path,
+                name: wildcard_name,
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                resolve_identity_profile_error::WildcardNotFoundSnafu { path: profile_path }.fail()
+            }
+            Err(error) => {
+                Err(error).context(resolve_identity_profile_error::WildcardMetadataSnafu {
+                    path: profile_path,
+                })
+            }
+        }
+    }
+
+    /// Resolve `name` to an `IdentityProfile`, trying exact match then wildcard match.
+    pub async fn resolve_identity_profile(
+        &self,
+        name: DhttpName<'_>,
+    ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
+        match self.resolve_identity_profile_exactly(name.clone()).await {
+            Ok(profile) => Ok(profile),
+            Err(ResolveIdentityProfileError::ExactNotFound { path: exact }) => {
+                match self.resolve_identity_profile_wildcard(name).await {
+                    Ok(profile) => Ok(profile),
+                    Err(ResolveIdentityProfileError::WildcardNotFound { path: wildcard }) => {
+                        resolve_identity_profile_error::NotFoundSnafu { exact, wildcard }.fail()
                     }
                     Err(error) => Err(error),
                 }
@@ -299,14 +300,16 @@ impl DhttpConfig {
         }
     }
 
-    pub fn identities(
+    /// Stream the names of all identity profiles that look like a valid
+    /// `<name>/ssl/` layout under this home directory.
+    pub fn identity_profile_names(
         &self,
-    ) -> impl Stream<Item = Result<DhttpName<'static>, ListIdentitiesError>> {
-        use list_identities_error::*;
-        async fn next_identity(
+    ) -> impl Stream<Item = Result<DhttpName<'static>, ListIdentityProfilesError>> {
+        use list_identity_profiles_error::*;
+        async fn next_name(
             read_dir: &mut ReadDir,
             path: &Path,
-        ) -> Result<Option<DhttpName<'static>>, ListIdentitiesError> {
+        ) -> Result<Option<DhttpName<'static>>, ListIdentityProfilesError> {
             loop {
                 let Some(e) = read_dir.next_entry().await.context(ReadDirSnafu { path })? else {
                     return Ok(None);
@@ -331,7 +334,7 @@ impl DhttpConfig {
             match result.context(ReadDirSnafu { path }) {
                 Err(error) => stream::iter(iter::once(Err(error))).right_stream(),
                 Ok(read_dir) => stream::unfold(read_dir, move |mut read_dir| async move {
-                    match next_identity(&mut read_dir, path).await {
+                    match next_name(&mut read_dir, path).await {
                         Ok(Some(name)) => Some((Ok(name), read_dir)),
                         Ok(None) => None,
                         Err(e) => Some((Err(e), read_dir)),
@@ -342,136 +345,93 @@ impl DhttpConfig {
         })
     }
 
-    pub async fn identity_exists_exactly(&self, name: DhttpName<'_>) -> bool {
-        self.locate_identity_exactly(name).await.is_ok()
+    pub async fn identity_profile_exists_exactly(&self, name: DhttpName<'_>) -> bool {
+        self.resolve_identity_profile_exactly(name).await.is_ok()
     }
 
-    pub async fn identity_exists_wildcard(&self, name: DhttpName<'_>) -> bool {
-        self.locate_identity_wildcard(name).await.is_ok()
+    pub async fn identity_profile_exists_wildcard(&self, name: DhttpName<'_>) -> bool {
+        self.resolve_identity_profile_wildcard(name).await.is_ok()
     }
 
-    pub async fn identity_exists(&self, name: DhttpName<'_>) -> bool {
-        self.locate_identity(name).await.is_ok()
-    }
-
-    pub async fn load_identity_exactly(
-        &self,
-        name: DhttpName<'_>,
-    ) -> Result<IdentityConfig, LoadIdentityError> {
-        let identity_io = self
-            .locate_identity_exactly(name.clone())
-            .await
-            .context(load_identity_error::LocateSnafu)?;
-        Ok(IdentityConfig {
-            path: identity_io,
-            name: name.to_owned(),
-        })
-    }
-
-    pub async fn load_identity_wildcard(
-        &self,
-        name: DhttpName<'_>,
-    ) -> Result<IdentityConfig, LoadIdentityError> {
-        let wildcard_name = name.to_wildcard();
-        let identity_io = self
-            .locate_identity_wildcard(wildcard_name.clone())
-            .await
-            .context(load_identity_error::LocateSnafu)?;
-        Ok(IdentityConfig {
-            path: identity_io,
-            name: wildcard_name,
-        })
-    }
-
-    pub async fn load_identity(
-        &self,
-        name: DhttpName<'_>,
-    ) -> Result<IdentityConfig, LoadIdentityError> {
-        let (identity_io, name) = self
-            .locate_identity(name)
-            .await
-            .context(load_identity_error::LocateSnafu)?;
-        Ok(IdentityConfig {
-            path: identity_io,
-            name: name.to_owned(),
-        })
+    pub async fn identity_profile_exists(&self, name: DhttpName<'_>) -> bool {
+        self.resolve_identity_profile(name).await.is_ok()
     }
 }
 
-// --- Intersection: ssl + default-config ---
-
-#[cfg(feature = "default-config")]
-mod default_config_integration {
+#[cfg(feature = "settings")]
+mod settings_integration {
     use snafu::{OptionExt, ResultExt, Snafu};
 
-    use super::LoadIdentityError;
+    use super::ResolveIdentityProfileError;
     use crate::{
-        DhttpConfig,
+        DhttpHome,
         identity::{
-            IdentityConfig,
-            default::{DefaultConfigFile, FileLineCol, LoadDefaultConfigError},
+            IdentityProfile,
+            settings::{DhttpSettingsFile, FileLineCol, LoadDhttpSettingsError},
         },
     };
 
     #[derive(Snafu, Debug)]
     #[snafu(module, display(
-        "failed to load identity specified{}",
-        config.as_ref().map_or(String::new(), |loc| format!(" at {loc}"))
+        "failed to resolve default identity profile{}",
+        location.as_ref().map_or(String::new(), |loc| format!(" at {loc}"))
     ))]
-    pub struct LoadDefaultIdentityFromConfigError {
-        config: Option<FileLineCol>,
-        source: LoadIdentityError,
+    pub struct ResolveDefaultIdentityFromSettingsError {
+        location: Option<FileLineCol>,
+        source: ResolveIdentityProfileError,
     }
 
     #[derive(Debug, Snafu)]
     #[snafu(module)]
-    pub enum LoadDefaultIdentityError {
+    pub enum ResolveDefaultIdentityProfileError {
         #[snafu(transparent)]
-        LoadDefaultConfig { source: LoadDefaultConfigError },
+        LoadSettings { source: LoadDhttpSettingsError },
         #[snafu(display("no default identity configured"))]
         NoDefaultIdentity,
         #[snafu(transparent)]
-        LoadIdentity {
-            source: LoadDefaultIdentityFromConfigError,
+        Resolve {
+            source: ResolveDefaultIdentityFromSettingsError,
         },
     }
 
-    impl DefaultConfigFile {
-        pub async fn load_default_identity(
+    impl DhttpSettingsFile {
+        /// Resolve the default identity profile referenced by `[default].name`,
+        /// or return `None` if no default is configured in this settings file.
+        pub async fn resolve_default_identity_profile(
             &self,
-            dhttp_config: &DhttpConfig,
-        ) -> Option<Result<IdentityConfig, LoadDefaultIdentityFromConfigError>> {
-            let name = self.config().name.as_ref()?;
+            home: &DhttpHome,
+        ) -> Option<Result<IdentityProfile, ResolveDefaultIdentityFromSettingsError>> {
+            let name = self.settings().default.name.as_ref()?;
 
             Some(
-                dhttp_config
-                    .load_identity(name.as_ref().clone())
+                home.resolve_identity_profile(name.as_ref().clone())
                     .await
                     .context(
-                    load_default_identity_from_config_error::LoadDefaultIdentityFromConfigSnafu {
-                        config: self.locate(name.span().start),
+                    resolve_default_identity_from_settings_error::ResolveDefaultIdentityFromSettingsSnafu {
+                        location: self.locate(name.span().start),
                     },
                 ),
             )
         }
     }
 
-    impl DhttpConfig {
-        pub async fn load_default_identity(
+    impl DhttpHome {
+        /// Read the settings file and resolve the default identity profile it points to.
+        pub async fn resolve_default_identity_profile(
             &self,
-        ) -> Result<IdentityConfig, LoadDefaultIdentityError> {
+        ) -> Result<IdentityProfile, ResolveDefaultIdentityProfileError> {
             Ok(self
-                .load_identity_default_config()
+                .load_settings()
                 .await?
-                .load_default_identity(self)
+                .resolve_default_identity_profile(self)
                 .await
-                .context(load_default_identity_error::NoDefaultIdentitySnafu)??)
+                .context(resolve_default_identity_profile_error::NoDefaultIdentitySnafu)??)
         }
     }
 }
 
-#[cfg(feature = "default-config")]
-pub use default_config_integration::*;
+#[cfg(feature = "settings")]
+pub use settings_integration::*;
 
 #[cfg(test)]
 mod tests {
@@ -493,10 +453,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock should be after unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "dhttp-config-{name}-{}-{stamp}",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("dhttp-home-{name}-{}-{stamp}", std::process::id()));
             fs::create_dir_all(&path).expect("test temp dir should be creatable");
             Self { path }
         }
@@ -515,13 +473,13 @@ mod tests {
     #[tokio::test]
     async fn missing_certificate_reports_certificate_path() {
         let temp = TempDir::new("missing-certificate");
-        let identity = IdentityConfig::try_from(temp.path().join("reimu.pilot")).unwrap();
+        let profile = IdentityProfile::try_from(temp.path().join("reimu.pilot")).unwrap();
 
-        let error = identity.certs().await.unwrap_err();
+        let error = profile.load_certs().await.unwrap_err();
 
         match error {
-            LoadCertError::Read { path, .. } => {
-                assert_eq!(path, identity.ssl_dir().join(CERT_FILE_NAME));
+            LoadCertsError::Read { path, .. } => {
+                assert_eq!(path, profile.ssl_dir().join(CERT_FILE_NAME));
             }
             other => panic!("expected certificate read error, got {other:?}"),
         }
@@ -530,34 +488,32 @@ mod tests {
     #[tokio::test]
     async fn missing_key_reports_key_metadata_path() {
         let temp = TempDir::new("missing-key");
-        let identity = IdentityConfig::try_from(temp.path().join("reimu.pilot")).unwrap();
+        let profile = IdentityProfile::try_from(temp.path().join("reimu.pilot")).unwrap();
 
-        let error = identity.key().await.unwrap_err();
+        let error = profile.load_key().await.unwrap_err();
 
         match error {
             LoadKeyError::Metadata { path, .. } => {
-                assert_eq!(path, identity.ssl_dir().join(KEY_FILE_NAME));
+                assert_eq!(path, profile.ssl_dir().join(KEY_FILE_NAME));
             }
             other => panic!("expected key metadata error, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn missing_identity_reports_exact_and_wildcard_paths() {
-        let temp = TempDir::new("missing-identity");
-        let config = DhttpConfig::new(temp.path().to_path_buf());
+    async fn missing_identity_profile_reports_exact_and_wildcard_paths() {
+        let temp = TempDir::new("missing-identity-profile");
+        let home = DhttpHome::new(temp.path().to_path_buf());
         let name = "reimu.pilot".parse().unwrap();
 
-        let error = config.load_identity(name).await.unwrap_err();
+        let error = home.resolve_identity_profile(name).await.unwrap_err();
 
         match error {
-            LoadIdentityError::Locate {
-                source: LocateIdentityError::NotFound { exact, wildcard },
-            } => {
+            ResolveIdentityProfileError::NotFound { exact, wildcard } => {
                 assert_eq!(exact, temp.path().join("reimu.pilot"));
                 assert_eq!(wildcard, temp.path().join("*.pilot"));
             }
-            other => panic!("expected locate-not-found error, got {other:?}"),
+            other => panic!("expected not-found error, got {other:?}"),
         }
     }
 }

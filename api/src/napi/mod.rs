@@ -203,23 +203,23 @@ impl Identity {
     }
 }
 
-#[napi(js_name = "Config")]
-pub struct Config {
-    inner: crate::config::Config,
+#[napi(js_name = "DhttpHome")]
+pub struct DhttpHome {
+    inner: crate::home::DhttpHome,
 }
 
 #[napi]
-impl Config {
+impl DhttpHome {
     #[napi(constructor)]
     pub fn new(path: String) -> Self {
         Self {
-            inner: crate::config::Config::from_path(path),
+            inner: crate::home::DhttpHome::from_path(path),
         }
     }
 
     #[napi]
-    pub fn load() -> NapiResult<Config> {
-        crate::config::Config::load()
+    pub fn load() -> NapiResult<DhttpHome> {
+        crate::home::DhttpHome::load()
             .map(|inner| Self { inner })
             .map_err(napi_error)
     }
@@ -230,43 +230,49 @@ impl Config {
     }
 
     #[napi]
-    pub fn identity_config(&self, name: String) -> NapiResult<IdentityConfig> {
+    pub fn identity_profile(&self, name: String) -> NapiResult<IdentityProfile> {
         self.inner
-            .identity_config(&name)
-            .map(|inner| IdentityConfig { inner })
+            .identity_profile(&name)
+            .map(|inner| IdentityProfile { inner })
             .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn load_identity(&self, name: String) -> NapiResult<IdentityConfig> {
+    pub async fn resolve_identity_profile(&self, name: String) -> NapiResult<IdentityProfile> {
         self.inner
-            .load_identity(&name)
+            .resolve_identity_profile(&name)
             .await
-            .map(|inner| IdentityConfig { inner })
+            .map(|inner| IdentityProfile { inner })
             .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn identity_exists(&self, name: String) -> NapiResult<bool> {
-        self.inner.identity_exists(&name).await.map_err(napi_error)
+    pub async fn identity_profile_exists(&self, name: String) -> NapiResult<bool> {
+        self.inner
+            .identity_profile_exists(&name)
+            .await
+            .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn identities(&self) -> NapiResult<Vec<String>> {
-        self.inner.identities().await.map_err(napi_error)
+    pub async fn identity_profile_names(&self) -> NapiResult<Vec<String>> {
+        self.inner
+            .identity_profile_names()
+            .await
+            .map_err(napi_error)
     }
 }
 
-#[napi(js_name = "IdentityConfig")]
-pub struct IdentityConfig {
-    inner: crate::config::IdentityConfig,
+#[napi(js_name = "IdentityProfile")]
+pub struct IdentityProfile {
+    inner: crate::home::IdentityProfile,
 }
 
 #[napi]
-impl IdentityConfig {
+impl IdentityProfile {
     #[napi]
-    pub fn from_path(path: String) -> NapiResult<IdentityConfig> {
-        crate::config::IdentityConfig::from_path(path)
+    pub fn from_path(path: String) -> NapiResult<IdentityProfile> {
+        crate::home::IdentityProfile::from_path(path)
             .map(|inner| Self { inner })
             .map_err(napi_error)
     }
@@ -282,9 +288,9 @@ impl IdentityConfig {
     }
 
     #[napi]
-    pub async fn identity(&self) -> NapiResult<Identity> {
+    pub async fn load_identity(&self) -> NapiResult<Identity> {
         self.inner
-            .identity()
+            .load_identity()
             .await
             .map(Identity::from)
             .map_err(napi_error)

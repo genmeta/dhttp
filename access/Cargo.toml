@@ -8,7 +8,7 @@ default = []
 cli = ["dep:clap"]
 orm = [
     "dep:chrono",
-    "dep:dhttp-config",
+    "dep:dhttp-home",
     "dep:sea-orm",
     "dep:tokio",
     "dep:tracing",
@@ -21,7 +21,7 @@ peg-trace = ["peg/trace"]
 clap = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 derive_more = { workspace = true, features = ["display", "from", "into", "as_ref"] }
-dhttp-config = { workspace = true, optional = true }
+dhttp-home = { workspace = true, optional = true }
 dhttp-identity = { workspace = true }
 globset = { workspace = true }
 http = { workspace = true, optional = true }
