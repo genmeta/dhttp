@@ -5,6 +5,11 @@ members = ["dhttp", "identity", "home", "api", "access"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/genmeta/dhttp"
+readme = "README.md"
+keywords = ["dhttp", "http3", "quic"]
+categories = ["network-programming"]
 
 [workspace.dependencies]
 bytes = "1"
@@ -36,12 +41,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # the git dhttp repository while building this workspace would create duplicate
 # crate instances and incompatible types. This is workspace-local only:
 # downstream crates that depend on `dhttp` via git do not inherit it.
-dhttp-identity = { path = "identity" }
-dhttp-home = { path = "home" }
+dhttp-identity = { path = "identity", version = "0.1.0" }
+dhttp-home = { path = "home", version = "0.1.0" }
 ddns = { git = "https://github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
 h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
-dhttp = { path = "dhttp" }
-dhttp-access = { path = "access" }
+dhttp = { path = "dhttp", version = "0.1.0" }
+dhttp-access = { path = "access", version = "0.1.0" }
 
 # Workspace-local identity/home unification.
 # The dhttp workspace exposes these crates as part of the same public type

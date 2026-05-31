@@ -1,7 +1,6 @@
 {
-  "name": "dhttp",
+  "name": "@genmeta/dhttp",
   "version": "0.1.0",
-  "private": true,
   "main": "js/index.js",
   "types": "js/index.d.ts",
   "exports": {
@@ -22,7 +21,7 @@
     "build": "napi build --platform -- --features napi",
     "build:release": "napi build --platform --release -- --features napi",
     "prepare": "npm run build",
-    "smoke": "node -e \"const dhttp = require('./js/index.js'); if (typeof dhttp.Endpoint.create !== 'function') throw new Error('missing Endpoint.create'); if (typeof dhttp.DhttpHome !== 'function') throw new Error('missing DhttpHome'); if (typeof dhttp.IdentityProfile !== 'function') throw new Error('missing IdentityProfile'); const h = new dhttp.DhttpHome('/tmp/dhttp-smoke'); if (h.path() !== '/tmp/dhttp-smoke') throw new Error('path mismatch'); const p = h.identityProfile('reimu.pilot'); if (p.name() !== 'reimu.pilot') throw new Error('name mismatch')\""
+    "smoke": "node -e \"const os = require('node:os'); const path = require('node:path'); const dhttp = require('./js/index.js'); if (typeof dhttp.Endpoint.create !== 'function') throw new Error('missing Endpoint.create'); if (typeof dhttp.DhttpHome !== 'function') throw new Error('missing DhttpHome'); if (typeof dhttp.IdentityProfile !== 'function') throw new Error('missing IdentityProfile'); const smokePath = path.join(os.tmpdir(), 'dhttp-smoke'); const h = new dhttp.DhttpHome(smokePath); if (h.path() !== smokePath) throw new Error('path mismatch'); const p = h.identityProfile('reimu.pilot'); if (p.name() !== 'reimu.pilot') throw new Error('name mismatch')\""
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.3.5"

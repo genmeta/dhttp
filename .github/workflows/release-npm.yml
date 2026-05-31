@@ -1,0 +1,130 @@
+name: Release npm
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+          - os: macos-13
+          - os: macos-15
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install Rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        working-directory: api
+
+      - name: Build native package
+        run: npm run build:release
+        working-directory: api
+
+      - name: Smoke test native package
+        run: npm run smoke
+        working-directory: api
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-native-${{ matrix.os }}
+          path: |
+            api/*.node
+            api/index.js
+            api/index.d.ts
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install Rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-native-*
+          path: api
+          merge-multiple: true
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        working-directory: api
+
+      - name: Smoke test package
+        run: npm run smoke
+        working-directory: api
+
+      - name: Dry-run npm publish
+        if: github.ref_type != 'tag' || !startsWith(github.ref_name, 'v')
+        run: npm publish --dry-run --ignore-scripts --access public
+        working-directory: api
+
+  publish:
+    needs: package
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install Rust stable toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-native-*
+          path: api
+          merge-multiple: true
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        working-directory: api
+
+      - name: Smoke test package
+        run: npm run smoke
+        working-directory: api
+
+      - name: Publish npm package
+        run: npm publish --ignore-scripts --access public --provenance
+        working-directory: api
