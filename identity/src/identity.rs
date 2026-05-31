@@ -154,6 +154,10 @@ pub trait LocalAuthority: Send + Sync + std::fmt::Debug {
     }
 }
 
+pub trait LocalAgent: LocalAuthority {}
+
+impl<T: LocalAuthority + ?Sized> LocalAgent for T {}
+
 pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 
@@ -173,6 +177,10 @@ pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
         Box::pin(std::future::ready(result))
     }
 }
+
+pub trait RemoteAgent: RemoteAuthority {}
+
+impl<T: RemoteAuthority + ?Sized> RemoteAgent for T {}
 
 pub fn extract_public_key<'d>(cert_chain: &'d [CertificateDer<'d>]) -> SubjectPublicKeyInfoDer<'d> {
     match x509_parser::certificate::X509Certificate::from_der(&cert_chain[0]) {
@@ -310,10 +318,14 @@ mod tests {
 
     #[test]
     fn identity_is_async_authority() {
+        fn assert_local_agent<T: crate::identity::LocalAgent>() {}
         fn assert_local_authority<T: crate::identity::LocalAuthority>() {}
+        fn assert_remote_agent<T: crate::identity::RemoteAgent>() {}
         fn assert_remote_authority<T: crate::identity::RemoteAuthority>() {}
 
+        assert_local_agent::<Identity>();
         assert_local_authority::<Identity>();
+        assert_remote_agent::<Identity>();
         assert_remote_authority::<Identity>();
     }
 }
