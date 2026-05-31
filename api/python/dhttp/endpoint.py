@@ -325,7 +325,7 @@ class Endpoint:
                 pass
             raise
 
-    def serve(self, handler: Handler):
+    def listen(self, handler: Handler):
         async def stream_handler(incoming: Any) -> None:
             read_stream = incoming.read_stream
             write_stream = incoming.write_stream
@@ -355,4 +355,4 @@ class Endpoint:
                     except Exception:
                         pass
 
-        return self._inner.serve_streams(stream_handler)
+        return self._inner.listen_streams(stream_handler)

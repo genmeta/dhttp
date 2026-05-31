@@ -27,10 +27,10 @@ fn incoming_stream_type_is_public_to_rust_wrapper_layer() {
 }
 
 #[tokio::test]
-async fn endpoint_serve_streams_exposes_low_level_handler() {
+async fn endpoint_listen_streams_exposes_low_level_handler() {
     let endpoint = Endpoint::create(None).await.unwrap();
 
-    let handle = endpoint.serve_streams(|incoming| {
+    let handle = endpoint.listen_streams(|incoming| {
         Box::pin(async move {
             let _stream_id = incoming.stream_id();
             let (_read_stream, _write_stream) = incoming.into_parts();

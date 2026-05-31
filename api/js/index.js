@@ -293,8 +293,8 @@ class Endpoint {
     return new Response(body, { status, headers });
   }
 
-  serve(handler) {
-    return this.#inner.serveStreams(async (incoming) => {
+  listen(handler) {
+    return this.#inner.listenStreams(async (incoming) => {
       const writeStream = incoming.writeStream;
       let requestState = null;
       try {
@@ -334,8 +334,8 @@ module.exports = {
   IdentityProfile: native.IdentityProfile,
   Identity: native.Identity,
   EndpointOptions: native.EndpointOptions,
-  LocalAgent: native.LocalAgent,
-  RemoteAgent: native.RemoteAgent,
+  LocalAuthority: native.LocalAuthority,
+  RemoteAuthority: native.RemoteAuthority,
   ServeHandle: native.ServeHandle,
   SignatureScheme,
 };

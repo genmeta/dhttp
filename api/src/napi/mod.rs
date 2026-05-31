@@ -225,13 +225,13 @@ impl Identity {
     }
 
     #[napi]
-    pub fn as_local_agent(&self) -> LocalAgent {
-        LocalAgent::from(self.inner.as_local_agent())
+    pub fn as_local_authority(&self) -> LocalAuthority {
+        LocalAuthority::from(self.inner.as_local_authority())
     }
 
     #[napi]
-    pub fn as_remote_agent(&self) -> RemoteAgent {
-        RemoteAgent::from(self.inner.as_remote_agent())
+    pub fn as_remote_authority(&self) -> RemoteAuthority {
+        RemoteAuthority::from(self.inner.as_remote_authority())
     }
 }
 
@@ -243,19 +243,19 @@ fn parse_signature_scheme(operation: &'static str, value: Either<u16, String>) -
     }
 }
 
-#[napi(js_name = "LocalAgent")]
-pub struct LocalAgent {
-    inner: crate::agent::LocalAgent,
+#[napi(js_name = "LocalAuthority")]
+pub struct LocalAuthority {
+    inner: crate::authority::LocalAuthority,
 }
 
-impl From<crate::agent::LocalAgent> for LocalAgent {
-    fn from(inner: crate::agent::LocalAgent) -> Self {
+impl From<crate::authority::LocalAuthority> for LocalAuthority {
+    fn from(inner: crate::authority::LocalAuthority) -> Self {
         Self { inner }
     }
 }
 
 #[napi]
-impl LocalAgent {
+impl LocalAuthority {
     #[napi]
     pub fn name(&self) -> String {
         self.inner.name()
@@ -273,7 +273,7 @@ impl LocalAgent {
 
     #[napi]
     pub async fn sign(&self, scheme: Either<u16, String>, data: Buffer) -> NapiResult<Buffer> {
-        let scheme = parse_signature_scheme("local_agent.sign", scheme)?;
+        let scheme = parse_signature_scheme("local_authority.sign", scheme)?;
         let data = data.as_ref().to_vec();
         self.inner
             .sign(scheme, data)
@@ -289,7 +289,7 @@ impl LocalAgent {
         data: Buffer,
         signature: Buffer,
     ) -> NapiResult<bool> {
-        let scheme = parse_signature_scheme("local_agent.verify", scheme)?;
+        let scheme = parse_signature_scheme("local_authority.verify", scheme)?;
         let data = data.as_ref().to_vec();
         let signature = signature.as_ref().to_vec();
         self.inner
@@ -299,19 +299,19 @@ impl LocalAgent {
     }
 }
 
-#[napi(js_name = "RemoteAgent")]
-pub struct RemoteAgent {
-    inner: crate::agent::RemoteAgent,
+#[napi(js_name = "RemoteAuthority")]
+pub struct RemoteAuthority {
+    inner: crate::authority::RemoteAuthority,
 }
 
-impl From<crate::agent::RemoteAgent> for RemoteAgent {
-    fn from(inner: crate::agent::RemoteAgent) -> Self {
+impl From<crate::authority::RemoteAuthority> for RemoteAuthority {
+    fn from(inner: crate::authority::RemoteAuthority) -> Self {
         Self { inner }
     }
 }
 
 #[napi]
-impl RemoteAgent {
+impl RemoteAuthority {
     #[napi]
     pub fn name(&self) -> String {
         self.inner.name()
@@ -334,7 +334,7 @@ impl RemoteAgent {
         data: Buffer,
         signature: Buffer,
     ) -> NapiResult<bool> {
-        let scheme = parse_signature_scheme("remote_agent.verify", scheme)?;
+        let scheme = parse_signature_scheme("remote_authority.verify", scheme)?;
         let data = data.as_ref().to_vec();
         let signature = signature.as_ref().to_vec();
         self.inner
@@ -954,20 +954,20 @@ impl Connection {
     }
 
     #[napi]
-    pub async fn local_agent(&self) -> NapiResult<Option<LocalAgent>> {
+    pub async fn local_authority(&self) -> NapiResult<Option<LocalAuthority>> {
         self.inner
-            .local_agent()
+            .local_authority()
             .await
-            .map(|opt| opt.map(LocalAgent::from))
+            .map(|opt| opt.map(LocalAuthority::from))
             .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn remote_agent(&self) -> NapiResult<Option<RemoteAgent>> {
+    pub async fn remote_authority(&self) -> NapiResult<Option<RemoteAuthority>> {
         self.inner
-            .remote_agent()
+            .remote_authority()
             .await
-            .map(|opt| opt.map(RemoteAgent::from))
+            .map(|opt| opt.map(RemoteAuthority::from))
             .map_err(napi_error)
     }
 }
@@ -1098,7 +1098,7 @@ impl Endpoint {
     }
 
     #[napi]
-    pub fn serve_streams(
+    pub fn listen_streams(
         &self,
         handler: Function<StreamHandlerArgs, StreamHandlerResult>,
     ) -> NapiResult<ServeHandle> {
@@ -1107,9 +1107,9 @@ impl Endpoint {
             .callee_handled::<false>()
             .build()?;
         let handler = Arc::new(handler);
-        let endpoint = self.inner("endpoint.serve_streams")?;
+        let endpoint = self.inner("endpoint.listen_streams")?;
         let inner = within_runtime_if_available(|| {
-            endpoint.serve_streams(move |incoming| {
+            endpoint.listen_streams(move |incoming| {
                 let handler = handler.clone();
                 Box::pin(async move {
                     let incoming = IncomingStream::from_core(incoming)

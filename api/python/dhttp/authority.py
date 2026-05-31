@@ -20,7 +20,7 @@ SchemeLike = int | str
 
 
 @runtime_checkable
-class LocalAgent(Protocol):
+class LocalAuthority(Protocol):
     def name(self) -> str: ...
     def cert_chain_der(self) -> list[bytes]: ...
     def public_key_der(self) -> bytes: ...
@@ -31,7 +31,7 @@ class LocalAgent(Protocol):
 
 
 @runtime_checkable
-class RemoteAgent(Protocol):
+class RemoteAuthority(Protocol):
     def name(self) -> str: ...
     def cert_chain_der(self) -> list[bytes]: ...
     def public_key_der(self) -> bytes: ...
@@ -40,14 +40,14 @@ class RemoteAgent(Protocol):
     ) -> bool: ...
 
 
-LocalAgentImpl = _native.LocalAgent
-RemoteAgentImpl = _native.RemoteAgent
+LocalAuthorityImpl = _native.LocalAuthority
+RemoteAuthorityImpl = _native.RemoteAuthority
 
 __all__ = [
-    "LocalAgent",
-    "LocalAgentImpl",
-    "RemoteAgent",
-    "RemoteAgentImpl",
+    "LocalAuthority",
+    "LocalAuthorityImpl",
+    "RemoteAuthority",
+    "RemoteAuthorityImpl",
     "SchemeLike",
     "SignatureScheme",
 ]

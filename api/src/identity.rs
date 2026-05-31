@@ -40,12 +40,12 @@ impl Identity {
             .map_err(|error| crate::error::DhttpError::from_error("identity.verify", error))
     }
 
-    pub fn as_local_agent(&self) -> crate::agent::LocalAgent {
-        crate::agent::LocalAgent::from(self.0.clone())
+    pub fn as_local_authority(&self) -> crate::authority::LocalAuthority {
+        crate::authority::LocalAuthority::from(self.0.clone())
     }
 
-    pub fn as_remote_agent(&self) -> crate::agent::RemoteAgent {
-        crate::agent::RemoteAgent::from(self.0.clone())
+    pub fn as_remote_authority(&self) -> crate::authority::RemoteAuthority {
+        crate::authority::RemoteAuthority::from(self.0.clone())
     }
 }
 

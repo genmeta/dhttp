@@ -1,4 +1,4 @@
-pub mod agent;
+pub mod authority;
 pub mod endpoint;
 pub mod error;
 pub mod home;

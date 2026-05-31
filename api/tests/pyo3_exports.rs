@@ -56,7 +56,7 @@ async def main():
         await incoming.write_stream.cancel(0)
         await incoming.read_stream.stop(0)
 
-    handle = endpoint.serve_streams(handler)
+    handle = endpoint.listen_streams(handler)
     handle.abort()
     await handle.closed()
 
@@ -101,7 +101,7 @@ async fn pyo3_native_stream_primitive_api_is_exposed(
     let _read_stream = incoming.read_stream().unwrap();
     let _write_stream = incoming.write_stream().unwrap();
 
-    let _handle = endpoint.serve_streams(handler).unwrap();
+    let _handle = endpoint.listen_streams(handler).unwrap();
     handle.shutdown().await.unwrap();
     handle.abort();
     let _is_finished = handle.is_finished();

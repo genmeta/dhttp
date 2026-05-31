@@ -22,7 +22,7 @@
 //! ```
 
 use bytes::{Buf, Bytes};
-use dhttp_identity::identity as agent;
+use dhttp_identity::identity as authority;
 use futures::{Stream, StreamExt};
 use http::{
     HeaderMap, HeaderValue, Method, Uri,
@@ -53,13 +53,13 @@ use crate::{
 #[snafu(module)]
 pub enum ResolveError {
     #[snafu(display("failed to read server local agent"))]
-    LocalAgent {
+    LocalAuthority {
         source: crate::h3x::quic::ConnectionError,
     },
     #[snafu(display("server request is missing local agent"))]
-    MissingLocalAgent,
-    #[snafu(display("failed to read server remote agent"))]
-    RemoteAgent {
+    MissingLocalAuthority,
+    #[snafu(display("failed to read server remote authority"))]
+    RemoteAuthority {
         source: crate::h3x::quic::ConnectionError,
     },
     #[snafu(display("failed to read request header"))]
@@ -73,17 +73,17 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
         write_stream,
         connection,
     } = request;
-    // Agents are backed by a watch channel — fetching them per-request
+    // Authorities are backed by a watch channel — fetching them per-request
     // is effectively a clone once the handshake has completed.
-    let local_agent = connection
-        .local_agent()
+    let local_authority = connection
+        .local_authority()
         .await
-        .context(resolve_error::LocalAgentSnafu)?
-        .context(resolve_error::MissingLocalAgentSnafu)?;
-    let remote_agent = connection
-        .remote_agent()
+        .context(resolve_error::LocalAuthoritySnafu)?
+        .context(resolve_error::MissingLocalAuthoritySnafu)?;
+    let remote_authority = connection
+        .remote_authority()
         .await
-        .context(resolve_error::RemoteAgentSnafu)?;
+        .context(resolve_error::RemoteAuthoritySnafu)?;
     let protocols = connection.protocols().clone();
 
     let mut read_stream = read_stream;
@@ -93,14 +93,14 @@ pub async fn resolve(request: UnresolvedRequest) -> Result<(Request, Response), 
     let request = Request {
         message: request_message,
         stream: read_stream,
-        agent: remote_agent,
+        authority: remote_authority,
         stream_id,
         protocols: protocols.clone(),
     };
     let response = Response {
         message: Some(ResponseMessage::default()),
         stream: Some(write_stream),
-        agent: local_agent,
+        authority: local_authority,
         stream_id,
         protocols,
     };
@@ -121,7 +121,7 @@ pub enum ResponseWriteError {
 pub struct Request {
     message: RequestMessage,
     stream: ReadStream,
-    agent: Option<Arc<dyn agent::RemoteAgent>>,
+    authority: Option<Arc<dyn authority::RemoteAuthority>>,
     stream_id: StreamId,
     protocols: Arc<Protocols>,
 }
@@ -201,8 +201,8 @@ impl Request {
         self.stream.stop(code).await
     }
 
-    pub fn agent(&self) -> Option<&Arc<dyn agent::RemoteAgent>> {
-        self.agent.as_ref()
+    pub fn remote_authority(&self) -> Option<&Arc<dyn authority::RemoteAuthority>> {
+        self.authority.as_ref()
     }
 
     /// Returns the QUIC stream identifier for this request.
@@ -238,7 +238,7 @@ impl Request {
 pub struct Response {
     message: Option<ResponseMessage>,
     stream: Option<WriteStream>,
-    agent: Arc<dyn agent::LocalAgent>,
+    authority: Arc<dyn authority::LocalAuthority>,
     stream_id: StreamId,
     protocols: Arc<Protocols>,
 }
@@ -425,8 +425,8 @@ impl Response {
         }
     }
 
-    pub fn agent(&self) -> &Arc<dyn agent::LocalAgent> {
-        &self.agent
+    pub fn local_authority(&self) -> &Arc<dyn authority::LocalAuthority> {
+        &self.authority
     }
 
     /// Returns the QUIC stream identifier for this response.

@@ -50,7 +50,7 @@ async fn endpoint_create_uses_options_and_exposes_identity_and_binds() {
 async fn endpoint_serve_returns_abortable_handle() {
     let endpoint = Endpoint::create(None).await.unwrap();
 
-    let handle = endpoint.serve_streams(|_incoming| Box::pin(async { Ok(()) }));
+    let handle = endpoint.listen_streams(|_incoming| Box::pin(async { Ok(()) }));
 
     handle.abort();
 }
@@ -73,7 +73,7 @@ fn test_identity() -> Identity {
 #[tokio::test]
 async fn serve_handle_closed_does_not_require_mut_binding() {
     let endpoint = Endpoint::create(None).await.unwrap();
-    let handle = endpoint.serve_streams(|_incoming| Box::pin(async { Ok(()) }));
+    let handle = endpoint.listen_streams(|_incoming| Box::pin(async { Ok(()) }));
 
     handle.abort();
     handle.closed().await.unwrap();

@@ -90,7 +90,7 @@ async fn napi_stream_server_api_is_exposed<'env>(
     incoming: dhttp_api::napi::IncomingStream,
     handle: &dhttp_api::napi::ServeHandle,
 ) {
-    let _handle = endpoint.serve_streams(handler).unwrap();
+    let _handle = endpoint.listen_streams(handler).unwrap();
     let _stream_id = incoming.stream_id();
     let _read_stream = incoming.read_stream().unwrap();
     let _write_stream = incoming.write_stream().unwrap();

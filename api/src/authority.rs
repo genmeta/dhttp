@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dhttp::identity::{
-    LocalAgent as CoreLocalAgent, RemoteAgent as CoreRemoteAgent, SignError as CoreSignError,
+    LocalAuthority as CoreLocalAuthority, RemoteAuthority as CoreRemoteAuthority, SignError as CoreSignError,
     VerifyError as CoreVerifyError,
 };
 use rustls::SignatureScheme;
@@ -11,12 +11,12 @@ use crate::error::DhttpError;
 pub type Result<T> = std::result::Result<T, DhttpError>;
 
 #[derive(Clone)]
-pub struct LocalAgent {
-    inner: Arc<dyn CoreLocalAgent>,
+pub struct LocalAuthority {
+    inner: Arc<dyn CoreLocalAuthority>,
 }
 
-impl LocalAgent {
-    pub fn new(inner: Arc<dyn CoreLocalAgent>) -> Self {
+impl LocalAuthority {
+    pub fn new(inner: Arc<dyn CoreLocalAuthority>) -> Self {
         Self { inner }
     }
 
@@ -41,7 +41,7 @@ impl LocalAgent {
         self.inner
             .sign(scheme, &data)
             .await
-            .map_err(|error: CoreSignError| DhttpError::from_error("local_agent.sign", error))
+            .map_err(|error: CoreSignError| DhttpError::from_error("local_authority.sign", error))
     }
 
     pub async fn verify(&self, scheme: u16, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {
@@ -49,17 +49,17 @@ impl LocalAgent {
         self.inner
             .verify(scheme, &data, &signature)
             .await
-            .map_err(|error: CoreVerifyError| DhttpError::from_error("local_agent.verify", error))
+            .map_err(|error: CoreVerifyError| DhttpError::from_error("local_authority.verify", error))
     }
 }
 
 #[derive(Clone)]
-pub struct RemoteAgent {
-    inner: Arc<dyn CoreRemoteAgent>,
+pub struct RemoteAuthority {
+    inner: Arc<dyn CoreRemoteAuthority>,
 }
 
-impl RemoteAgent {
-    pub fn new(inner: Arc<dyn CoreRemoteAgent>) -> Self {
+impl RemoteAuthority {
+    pub fn new(inner: Arc<dyn CoreRemoteAuthority>) -> Self {
         Self { inner }
     }
 
@@ -84,17 +84,17 @@ impl RemoteAgent {
         self.inner
             .verify(scheme, &data, &signature)
             .await
-            .map_err(|error: CoreVerifyError| DhttpError::from_error("remote_agent.verify", error))
+            .map_err(|error: CoreVerifyError| DhttpError::from_error("remote_authority.verify", error))
     }
 }
 
-impl From<dhttp::identity::Identity> for LocalAgent {
+impl From<dhttp::identity::Identity> for LocalAuthority {
     fn from(identity: dhttp::identity::Identity) -> Self {
         Self::new(Arc::new(identity))
     }
 }
 
-impl From<dhttp::identity::Identity> for RemoteAgent {
+impl From<dhttp::identity::Identity> for RemoteAuthority {
     fn from(identity: dhttp::identity::Identity) -> Self {
         Self::new(Arc::new(identity))
     }

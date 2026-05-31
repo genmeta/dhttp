@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    agent::{LocalAgent, RemoteAgent},
+    authority::{LocalAuthority, RemoteAuthority},
     error::DhttpError,
     stream::{ReadStream, WriteStream},
 };
@@ -28,19 +28,19 @@ impl Connection {
             .map_err(|error| DhttpError::from_error("connection.open_request_stream", error))
     }
 
-    pub async fn local_agent(&self) -> Result<Option<LocalAgent>> {
+    pub async fn local_authority(&self) -> Result<Option<LocalAuthority>> {
         self.inner
-            .local_agent()
+            .local_authority()
             .await
-            .map(|opt| opt.map(LocalAgent::new))
-            .map_err(|error| DhttpError::from_error("connection.local_agent", error))
+            .map(|opt| opt.map(LocalAuthority::new))
+            .map_err(|error| DhttpError::from_error("connection.local_authority", error))
     }
 
-    pub async fn remote_agent(&self) -> Result<Option<RemoteAgent>> {
+    pub async fn remote_authority(&self) -> Result<Option<RemoteAuthority>> {
         self.inner
-            .remote_agent()
+            .remote_authority()
             .await
-            .map(|opt| opt.map(RemoteAgent::new))
-            .map_err(|error| DhttpError::from_error("connection.remote_agent", error))
+            .map(|opt| opt.map(RemoteAuthority::new))
+            .map_err(|error| DhttpError::from_error("connection.remote_authority", error))
     }
 }

@@ -126,7 +126,7 @@ impl Identity {
     }
 }
 
-pub trait LocalAgent: Send + Sync + std::fmt::Debug {
+pub trait LocalAuthority: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 
     fn cert_chain(&self) -> &[CertificateDer<'static>];
@@ -154,7 +154,7 @@ pub trait LocalAgent: Send + Sync + std::fmt::Debug {
     }
 }
 
-pub trait RemoteAgent: Send + Sync + std::fmt::Debug {
+pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 
     fn cert_chain(&self) -> &[CertificateDer<'static>];
@@ -227,7 +227,7 @@ pub fn verify_signature(
     )
 }
 
-impl LocalAgent for Identity {
+impl LocalAuthority for Identity {
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -250,7 +250,7 @@ impl LocalAgent for Identity {
     }
 }
 
-impl RemoteAgent for Identity {
+impl RemoteAuthority for Identity {
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -309,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn identity_is_async_agent() {
-        fn assert_local_agent<T: crate::identity::LocalAgent>() {}
-        fn assert_remote_agent<T: crate::identity::RemoteAgent>() {}
+    fn identity_is_async_authority() {
+        fn assert_local_authority<T: crate::identity::LocalAuthority>() {}
+        fn assert_remote_authority<T: crate::identity::RemoteAuthority>() {}
 
-        assert_local_agent::<Identity>();
-        assert_remote_agent::<Identity>();
+        assert_local_authority::<Identity>();
+        assert_remote_authority::<Identity>();
     }
 }

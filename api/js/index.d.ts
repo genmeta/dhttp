@@ -15,7 +15,7 @@ export enum SignatureScheme {
   Ed25519 = 0x0807,
 }
 
-export interface LocalAgentLike {
+export interface LocalAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
@@ -23,14 +23,14 @@ export interface LocalAgentLike {
   verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
-export interface RemoteAgentLike {
+export interface RemoteAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
   verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
-export class LocalAgent implements LocalAgentLike {
+export class LocalAuthority implements LocalAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
@@ -38,7 +38,7 @@ export class LocalAgent implements LocalAgentLike {
   verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
-export class RemoteAgent implements RemoteAgentLike {
+export class RemoteAuthority implements RemoteAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
@@ -74,8 +74,8 @@ export class Identity {
   publicKeyDer(): Uint8Array;
   sign(scheme: SchemeLike, data: Uint8Array): Uint8Array;
   verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): boolean;
-  asLocalAgent(): LocalAgent;
-  asRemoteAgent(): RemoteAgent;
+  asLocalAuthority(): LocalAuthority;
+  asRemoteAuthority(): RemoteAuthority;
 }
 
 export class EndpointOptions {
@@ -105,5 +105,5 @@ export class Endpoint {
   identity(): Identity | null;
   bindPatterns(): string[];
   fetch(input: FetchInput, init?: RequestInit): Promise<Response>;
-  serve(handler: FetchHandler): ServeHandle;
+  listen(handler: FetchHandler): ServeHandle;
 }

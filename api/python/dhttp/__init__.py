@@ -1,11 +1,11 @@
 """Python bindings for DHTTP."""
 
 from . import _native
-from .agent import (
-    LocalAgent,
-    LocalAgentImpl,
-    RemoteAgent,
-    RemoteAgentImpl,
+from .authority import (
+    LocalAuthority,
+    LocalAuthorityImpl,
+    RemoteAuthority,
+    RemoteAuthorityImpl,
     SchemeLike,
     SignatureScheme,
 )
@@ -26,10 +26,10 @@ __all__ = [
     "Headers",
     "Identity",
     "IdentityProfile",
-    "LocalAgent",
-    "LocalAgentImpl",
-    "RemoteAgent",
-    "RemoteAgentImpl",
+    "LocalAuthority",
+    "LocalAuthorityImpl",
+    "RemoteAuthority",
+    "RemoteAuthorityImpl",
     "Response",
     "SchemeLike",
     "ServeHandle",

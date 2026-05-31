@@ -4,7 +4,7 @@ use bon::bon;
 use http::uri::Authority;
 use snafu::ResultExt;
 
-use crate::ddns::DnsScheme;
+use crate::ddns::resolvers::DnsScheme;
 use crate::ddns::resolvers::Resolvers;
 use crate::dquic::{
     Identity, Network, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
@@ -291,19 +291,23 @@ impl Endpoint {
         self.inner.quic().bind_patterns().clone()
     }
 
-    pub fn publisher(&self) -> Result<crate::ddns::Publisher, crate::ddns::CreatePublisherError> {
-        self.publisher_with_options(crate::ddns::PublishOptions::default())
+    pub fn publisher(
+        &self,
+    ) -> Result<crate::ddns::publisher::Publisher, crate::ddns::publisher::CreatePublisherError>
+    {
+        self.publisher_with_options(crate::ddns::publisher::PublishOptions::default())
     }
 
     pub fn publisher_with_options(
         &self,
-        options: crate::ddns::PublishOptions,
-    ) -> Result<crate::ddns::Publisher, crate::ddns::CreatePublisherError> {
+        options: crate::ddns::publisher::PublishOptions,
+    ) -> Result<crate::ddns::publisher::Publisher, crate::ddns::publisher::CreatePublisherError>
+    {
         let identity = self
             .identity()
-            .ok_or(crate::ddns::CreatePublisherError::AnonymousEndpoint)?;
-        let identity: Arc<dyn dhttp_identity::identity::LocalAgent> = identity;
-        Ok(crate::ddns::Publisher::new(
+            .ok_or(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint)?;
+        let identity: Arc<dyn dhttp_identity::identity::LocalAuthority> = identity;
+        Ok(crate::ddns::publisher::Publisher::new(
             identity,
             self.network(),
             self.resolver(),
@@ -446,16 +450,17 @@ impl Endpoint {
             .context(connect_error::ConnectSnafu)
     }
 
-    /// Serve HTTP/3 requests on this endpoint.
+    /// Listen for HTTP/3 requests on this endpoint.
     ///
     /// The returned future does not capture `&self`, so it can be
     /// spawned:
     ///
     /// ```ignore
     /// let ep: Arc<Endpoint> = ...;
-    /// tokio::spawn(ep.serve(router));
+    /// tokio::spawn(ep.listen(router));
     /// ```
-    pub fn serve<S>(
+    #[doc(alias = "serve")]
+    pub fn listen<S>(
         &self,
         service: S,
     ) -> impl Future<Output = Result<(), h3x::dquic::AcceptError>> + use<S>
@@ -468,7 +473,7 @@ impl Endpoint {
         S::Future: Send,
         S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        self.inner.serve_owned(service)
+        self.inner.listen_owned(service)
     }
 }
 
@@ -497,7 +502,7 @@ impl crate::h3x::quic::Connect for Endpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ddns::DnsScheme;
+    use crate::ddns::resolvers::DnsScheme;
     use std::fmt;
 
     #[test]
@@ -583,7 +588,7 @@ mod tests {
         let error = endpoint.publisher().unwrap_err();
         assert!(matches!(
             error,
-            crate::ddns::CreatePublisherError::AnonymousEndpoint
+            crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint
         ));
     }
 
@@ -635,7 +640,9 @@ mod tests {
             .expect("dhttp identity should build endpoint");
 
         let publisher = endpoint
-            .publisher_with_options(crate::ddns::PublishOptions { server_id: Some(7) })
+            .publisher_with_options(crate::ddns::publisher::PublishOptions {
+                server_id: Some(7),
+            })
             .expect("named endpoint can publish");
 
         assert_eq!(publisher.options().server_id, Some(7));

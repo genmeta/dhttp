@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use ddns::DnsScheme;
+use ddns::resolvers::DnsScheme;
 use futures::future::BoxFuture;
 use h3x::{
     dquic::{AcceptError, binds::BindPattern},
@@ -155,7 +155,8 @@ impl Endpoint {
             .map_err(|error| DhttpError::from_error("endpoint.connect", error))
     }
 
-    pub fn serve_streams<H>(&self, handler: H) -> ServeHandle
+    #[doc(alias = "serve_streams")]
+    pub fn listen_streams<H>(&self, handler: H) -> ServeHandle
     where
         H: Fn(incoming::IncomingStream) -> BoxFuture<'static, Result<()>>
             + Clone
@@ -165,7 +166,7 @@ impl Endpoint {
     {
         let endpoint = self.inner.clone();
         let service = IncomingStreamService { handler };
-        let task = tokio::spawn(async move { endpoint.serve(service).await }.in_current_span());
+        let task = tokio::spawn(async move { endpoint.listen(service).await }.in_current_span());
         ServeHandle::new(self.inner.clone(), task)
     }
 }
@@ -305,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn serve_handle_closed_clears_failed_join_handle() {
         async fn panic_task() -> std::result::Result<(), AcceptError> {
-            panic!("serve task failed");
+            panic!("listen task failed");
         }
 
         let endpoint = Arc::new(dhttp::endpoint::Endpoint::builder().build().await.unwrap());

@@ -83,7 +83,7 @@ class Headers:
 
 
 class Response:
-    """Server response returned by an ``Endpoint.serve`` handler."""
+    """Server response returned by an ``Endpoint.listen`` handler."""
 
     def __init__(
         self,

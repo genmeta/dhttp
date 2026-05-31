@@ -20,7 +20,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use dhttp_identity::identity as agent;
+use dhttp_identity::identity as authority;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use http::{
     HeaderMap, HeaderValue, Method, Uri,
@@ -497,12 +497,12 @@ impl RequestState {
         let mut stream = self.take_read_stream().await?;
         let message = ResponseMessage::read_from(&mut stream).await?;
 
-        let agent = stream.connection().remote_agent().await?.expect(
-            "remote agent should be present(should be guaranteed by h3 connection establishment)",
+        let remote_authority = stream.connection().remote_authority().await?.expect(
+            "remote authority should be present(should be guaranteed by h3 connection establishment)",
         );
         Ok(Response {
             message,
-            agent,
+            authority: remote_authority,
             stream,
         })
     }
@@ -655,12 +655,12 @@ impl RequestState {
         let mut read_stream = self.take_read_stream().await?;
         let response_message = ResponseMessage::read_from(&mut read_stream).await?;
 
-        let agent = read_stream.connection().remote_agent().await?.expect(
-            "remote agent should be present(should be guaranteed by h3 connection establishment)",
+        let remote_authority = read_stream.connection().remote_authority().await?.expect(
+            "remote authority should be present(should be guaranteed by h3 connection establishment)",
         );
         Ok(Response {
             message: response_message,
-            agent,
+            authority: remote_authority,
             stream: read_stream,
         })
     }
@@ -923,7 +923,7 @@ impl IntoFuture for Request {
 pub struct Response {
     message: ResponseMessage,
     stream: ReadStream,
-    agent: Arc<dyn agent::RemoteAgent>,
+    authority: Arc<dyn authority::RemoteAuthority>,
 }
 
 impl Response {
@@ -986,8 +986,8 @@ impl Response {
         self.stream.stop(code).await
     }
 
-    pub fn agent(&self) -> &Arc<dyn agent::RemoteAgent> {
-        &self.agent
+    pub fn remote_authority(&self) -> &Arc<dyn authority::RemoteAuthority> {
+        &self.authority
     }
 }
 
