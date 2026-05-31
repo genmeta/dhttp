@@ -64,3 +64,15 @@ dhttp-access = { path = "access", version = "0.1.0" }
 [patch."https://github.com/genmeta/dhttp.git"]
 dhttp-identity = { path = "identity" }
 dhttp-home = { path = "home" }
+
+# Local stack coherence patches for this multi-repo checkout. Cargo patches are
+# root-only, so dhttp must declare these explicitly when testing against the
+# sibling h3x/dquic repositories instead of stale git revisions.
+[patch."https://github.com/genmeta/h3x.git"]
+h3x = { path = "../h3x" }
+
+[patch."https://github.com/genmeta/ddns.git"]
+ddns = { path = "../ddns" }
+
+[patch."https://github.com/genmeta/dquic.git"]
+dquic = { path = "../dquic/dquic" }

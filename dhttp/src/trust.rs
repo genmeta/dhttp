@@ -77,6 +77,7 @@ pub fn default_client_quic_config() -> ClientQuicConfig {
 pub fn default_server_quic_config() -> ServerQuicConfig {
     ServerQuicConfig {
         alpns: vec![b"h3".to_vec()],
+        backlog: 1024,
         client_cert_verifier: dhttp_client_cert_verifier(ClientIdentityPolicy::Optional),
         ..Default::default()
     }
@@ -107,6 +108,7 @@ mod tests {
         let config = default_server_quic_config();
 
         assert_eq!(config.alpns, vec![b"h3".to_vec()]);
+        assert_eq!(config.backlog, 1024);
         assert!(Arc::strong_count(&config.client_cert_verifier) >= 1);
     }
 
