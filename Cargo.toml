@@ -43,8 +43,14 @@ chrono = { version = "0.4", features = ["serde"] }
 # downstream crates that depend on `dhttp` via git do not inherit it.
 dhttp-identity = { path = "identity", version = "0.1.0" }
 dhttp-home = { path = "home", version = "0.1.0" }
-ddns = { git = "https://github.com/genmeta/ddns.git", branch = "endpoint", features = ["h3x-resolver", "mdns-resolver", "http-resolver"] }
-h3x = { git = "https://github.com/genmeta/h3x.git", features = ["dquic"], branch = "endpoint" }
+ddns = { git = "https://github.com/genmeta/ddns.git", branch = "endpoint", features = [
+    "h3x-resolver",
+    "mdns-resolver",
+    "http-resolver",
+] }
+h3x = { git = "https://github.com/genmeta/h3x.git", features = [
+    "dquic",
+], branch = "endpoint" }
 dhttp = { path = "dhttp", version = "0.1.0" }
 dhttp-access = { path = "access", version = "0.1.0" }
 
