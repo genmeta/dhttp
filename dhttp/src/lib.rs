@@ -3,6 +3,7 @@ mod bootstrap;
 pub mod ddns;
 pub mod endpoint;
 pub mod message;
+pub mod network;
 pub mod identity {
     pub use dhttp_identity::identity::*;
 }

@@ -63,11 +63,12 @@ pub fn dhttp_client_cert_verifier(policy: ClientIdentityPolicy) -> Arc<dyn Clien
 /// Verifies server certificates against the DHTTP ecosystem root and offers the
 /// HTTP/3 ALPN.
 pub fn default_client_quic_config() -> ClientQuicConfig {
-    ClientQuicConfig {
+    static CONFIG: LazyLock<ClientQuicConfig> = LazyLock::new(|| ClientQuicConfig {
         verifier: ServerCertVerifierChoice::WebPki(dhttp_server_cert_verifier()),
         alpns: vec![b"h3".to_vec()],
         ..Default::default()
-    }
+    });
+    CONFIG.clone()
 }
 
 /// Default DHTTP server-side QUIC configuration.
@@ -75,12 +76,13 @@ pub fn default_client_quic_config() -> ClientQuicConfig {
 /// Verifies client certificates when provided, allows anonymous clients by
 /// default, and advertises the HTTP/3 ALPN.
 pub fn default_server_quic_config() -> ServerQuicConfig {
-    ServerQuicConfig {
+    static CONFIG: LazyLock<ServerQuicConfig> = LazyLock::new(|| ServerQuicConfig {
         alpns: vec![b"h3".to_vec()],
         backlog: 1024,
         client_cert_verifier: dhttp_client_cert_verifier(ClientIdentityPolicy::Optional),
         ..Default::default()
-    }
+    });
+    CONFIG.clone()
 }
 
 #[cfg(test)]
@@ -104,12 +106,28 @@ mod tests {
     }
 
     #[test]
+    fn default_client_config_is_stable_across_calls() {
+        let a = default_client_quic_config();
+        let b = default_client_quic_config();
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn default_server_config_uses_optional_dhttp_client_auth_and_h3_alpn() {
         let config = default_server_quic_config();
 
         assert_eq!(config.alpns, vec![b"h3".to_vec()]);
         assert_eq!(config.backlog, 1024);
         assert!(Arc::strong_count(&config.client_cert_verifier) >= 1);
+    }
+
+    #[test]
+    fn default_server_config_is_stable_across_calls() {
+        let a = default_server_quic_config();
+        let b = default_server_quic_config();
+
+        assert_eq!(a, b);
     }
 
     #[test]

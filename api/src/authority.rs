@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use dhttp::identity::{
-    LocalAuthority as CoreLocalAuthority, RemoteAuthority as CoreRemoteAuthority, SignError as CoreSignError,
-    VerifyError as CoreVerifyError,
+    LocalAuthority as CoreLocalAuthority, RemoteAuthority as CoreRemoteAuthority,
+    SignError as CoreSignError, VerifyError as CoreVerifyError,
 };
 use rustls::SignatureScheme;
 
@@ -49,7 +49,9 @@ impl LocalAuthority {
         self.inner
             .verify(scheme, &data, &signature)
             .await
-            .map_err(|error: CoreVerifyError| DhttpError::from_error("local_authority.verify", error))
+            .map_err(|error: CoreVerifyError| {
+                DhttpError::from_error("local_authority.verify", error)
+            })
     }
 }
 
@@ -84,7 +86,9 @@ impl RemoteAuthority {
         self.inner
             .verify(scheme, &data, &signature)
             .await
-            .map_err(|error: CoreVerifyError| DhttpError::from_error("remote_authority.verify", error))
+            .map_err(|error: CoreVerifyError| {
+                DhttpError::from_error("remote_authority.verify", error)
+            })
     }
 }
 
