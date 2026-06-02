@@ -316,7 +316,7 @@ impl Endpoint {
         let identity = self
             .identity()
             .ok_or(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint)?;
-        let identity: Arc<dyn dhttp_identity::identity::LocalAgent> = identity;
+        let identity: Arc<dyn dhttp_identity::identity::LocalAuthority> = identity;
         Ok(crate::ddns::publisher::Publisher::new(
             identity,
             self.network().network().clone(),
