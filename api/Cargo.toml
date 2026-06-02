@@ -39,6 +39,4 @@ pyo3-async-runtimes = { version = "0.28.0", features = [
 ], optional = true }
 
 [dev-dependencies]
-trybuild = "1"
-rustls = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
