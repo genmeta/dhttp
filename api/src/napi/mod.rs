@@ -915,10 +915,10 @@ impl WriteStream {
     }
 
     #[napi]
-    pub async fn cancel(&self, code: u32) -> NapiResult<()> {
-        let operation = "write_stream.cancel";
+    pub async fn reset(&self, code: u32) -> NapiResult<()> {
+        let operation = "write_stream.reset";
         let mut inner = self.take_inner(operation)?;
-        match inner.cancel(u64::from(code)).await {
+        match inner.reset(u64::from(code)).await {
             Ok(()) => {
                 self.closed.store(true, Ordering::SeqCst);
                 Ok(())

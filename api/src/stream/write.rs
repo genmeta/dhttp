@@ -56,15 +56,15 @@ impl WriteStream {
         Ok(())
     }
 
-    pub async fn cancel(&mut self, code: u64) -> Result<()> {
-        let code = crate::endpoint::code_from_u64("write_stream.cancel", code)?;
+    pub async fn reset(&mut self, code: u64) -> Result<()> {
+        let code = crate::endpoint::code_from_u64("write_stream.reset", code)?;
         let stream = self.inner.as_mut().ok_or_else(|| {
-            DhttpError::from_message("write_stream.cancel", "write stream is closed")
+            DhttpError::from_message("write_stream.reset", "write stream is closed")
         })?;
         stream
-            .cancel(code)
+            .reset(code)
             .await
-            .map_err(|error| DhttpError::from_error("write_stream.cancel", error))?;
+            .map_err(|error| DhttpError::from_error("write_stream.reset", error))?;
         self.inner = None;
         Ok(())
     }

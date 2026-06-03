@@ -782,10 +782,10 @@ impl WriteStream {
         }
     }
 
-    pub async fn cancel(&self, code: u64) -> PyResult<()> {
-        let operation = "write_stream.cancel";
+    pub async fn reset(&self, code: u64) -> PyResult<()> {
+        let operation = "write_stream.reset";
         let mut inner = self.take_inner(operation)?;
-        match with_tokio(inner.cancel(code)).await {
+        match with_tokio(inner.reset(code)).await {
             Ok(()) => {
                 self.closed.store(true, Ordering::SeqCst);
                 Ok(())

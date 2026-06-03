@@ -416,10 +416,10 @@ impl Response {
         }
     }
 
-    pub async fn cancel(&mut self, code: Code) -> Result<(), MessageStreamError> {
+    pub async fn reset(&mut self, code: Code) -> Result<(), MessageStreamError> {
         self.message = None;
         if let Some(mut stream) = self.stream.take() {
-            stream.cancel(code).await
+            stream.reset(code).await
         } else {
             Ok(())
         }
@@ -473,7 +473,7 @@ impl Response {
                     error = %report,
                     "response stream cannot be closed without a final response",
                 );
-                _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                _ = stream.reset(Code::H3_MESSAGE_ERROR).await;
                 return Err(MessageStreamError::MessageSendFailed);
             }
 

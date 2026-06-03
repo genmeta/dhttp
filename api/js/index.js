@@ -304,7 +304,7 @@ class Endpoint {
         await writeResponse(writeStream, request.method, response);
       } catch (error) {
         try {
-          await writeStream.cancel(0);
+          await writeStream.reset(0);
         } catch (_) {
           // Preserve the original handler/write error; the stream may already be closed.
         }

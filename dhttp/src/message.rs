@@ -1281,7 +1281,7 @@ where
                         .context(write_streaming_body_error::CommitSnafu)
                 }
                 StreamingBodyAction::Malformed(error) => {
-                    _ = stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                    _ = stream.reset(Code::H3_MESSAGE_ERROR).await;
                     Err(error).context(write_streaming_body_error::PrepareSnafu)
                 }
             }

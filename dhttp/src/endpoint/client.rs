@@ -589,7 +589,7 @@ impl RequestState {
         let prepared = match prepared {
             BodyWritePreparation::Send(prepared) => prepared,
             BodyWritePreparation::Malformed(error) => {
-                _ = write_stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                _ = write_stream.reset(Code::H3_MESSAGE_ERROR).await;
                 let error = Err::<(), _>(error)
                     .context(write_streaming_body_error::PrepareSnafu)
                     .expect_err("write streaming body prepare error conversion must fail");
@@ -622,7 +622,7 @@ impl RequestState {
         match result {
             Ok(()) => Ok(()),
             Err(error) => {
-                _ = write_stream.cancel(Code::H3_MESSAGE_ERROR).await;
+                _ = write_stream.reset(Code::H3_MESSAGE_ERROR).await;
                 let error = Err::<(), _>(error)
                     .context(write_streaming_body_error::CommitSnafu)
                     .expect_err("write streaming body commit error conversion must fail");
@@ -641,8 +641,8 @@ impl RequestState {
         Ok(())
     }
 
-    async fn cancel_request(&self, code: Code) -> Result<(), RequestError> {
-        self.acquire_write_stream().await?.cancel(code).await?;
+    async fn reset_request(&self, code: Code) -> Result<(), RequestError> {
+        self.acquire_write_stream().await?.reset(code).await?;
         Ok(())
     }
 
@@ -880,8 +880,8 @@ impl Request {
         self.state.close_request().await
     }
 
-    pub async fn cancel(&self, code: Code) -> Result<(), RequestError> {
-        self.state.cancel_request(code).await
+    pub async fn reset(&self, code: Code) -> Result<(), RequestError> {
+        self.state.reset_request(code).await
     }
 
     /// Sends the request header and waits for the response.

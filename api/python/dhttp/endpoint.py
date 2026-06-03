@@ -320,7 +320,7 @@ class Endpoint:
             except Exception:
                 pass
             try:
-                await write_stream.cancel(0)
+                await write_stream.reset(0)
             except Exception:
                 pass
             raise
@@ -342,7 +342,7 @@ class Endpoint:
                 await _write_body(write_stream, body)
             except Exception:
                 try:
-                    await write_stream.cancel(0)
+                    await write_stream.reset(0)
                 except Exception:
                     pass
                 raise

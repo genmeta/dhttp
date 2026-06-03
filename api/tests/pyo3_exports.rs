@@ -53,7 +53,7 @@ async def main():
     endpoint = await dhttp_native.Endpoint.create(None)
 
     async def handler(incoming):
-        await incoming.write_stream.cancel(0)
+        await incoming.write_stream.reset(0)
         await incoming.read_stream.stop(0)
 
     handle = endpoint.listen_streams(handler)
@@ -95,7 +95,7 @@ async fn pyo3_native_stream_primitive_api_is_exposed(
     write_stream.send_data(b"hello".to_vec()).await.unwrap();
     write_stream.flush().await.unwrap();
     write_stream.close().await.unwrap();
-    write_stream.cancel(0).await.unwrap();
+    write_stream.reset(0).await.unwrap();
 
     let _stream_id = incoming.stream_id();
     let _read_stream = incoming.read_stream().unwrap();

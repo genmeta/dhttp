@@ -80,7 +80,7 @@ async fn napi_stream_primitive_api_is_exposed(
         .unwrap();
     write_stream.flush().await.unwrap();
     write_stream.close().await.unwrap();
-    write_stream.cancel(0).await.unwrap();
+    write_stream.reset(0).await.unwrap();
 }
 
 #[allow(dead_code)]
@@ -188,7 +188,7 @@ fn node_wrapper_exports_match_type_declarations_and_hide_native_entry() {
 }
 
 #[test]
-fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_cancel() {
+fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_reset() {
     let source = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("js/index.js"),
     )
@@ -198,7 +198,7 @@ fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_cancel() {
     assert!(source.contains("requestStop"));
     assert!(source.contains("return { stream, stop: requestStop }"));
     assert!(source.contains("await requestState.stopBody()"));
-    assert!(source.contains("await writeStream.cancel(0)"));
+    assert!(source.contains("await writeStream.reset(0)"));
 }
 
 #[test]
