@@ -37,7 +37,7 @@ use crate::{
     h3x::{
         endpoint::server::UnresolvedRequest,
         error::Code,
-        message::stream::{MessageStreamError, ReadStream, WriteStream},
+        message::stream::{MessageReader, MessageStreamError, MessageWriter},
         protocol::Protocols,
         qpack::field::Protocol,
         stream_id::StreamId,
@@ -120,7 +120,7 @@ pub enum ResponseWriteError {
 
 pub struct Request {
     message: RequestMessage,
-    stream: ReadStream,
+    stream: MessageReader,
     authority: Option<Arc<dyn authority::RemoteAuthority>>,
     stream_id: StreamId,
     protocols: Arc<Protocols>,
@@ -237,7 +237,7 @@ impl Request {
 
 pub struct Response {
     message: Option<ResponseMessage>,
-    stream: Option<WriteStream>,
+    stream: Option<MessageWriter>,
     authority: Arc<dyn authority::LocalAuthority>,
     stream_id: StreamId,
     protocols: Arc<Protocols>,

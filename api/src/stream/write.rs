@@ -5,11 +5,11 @@ use crate::{error::DhttpError, http as api_http};
 pub type Result<T> = std::result::Result<T, DhttpError>;
 
 pub struct WriteStream {
-    inner: Option<h3x::endpoint::server::WriteStream>,
+    inner: Option<h3x::endpoint::server::MessageWriter>,
 }
 
 impl WriteStream {
-    pub(crate) fn new(inner: h3x::endpoint::server::WriteStream) -> Self {
+    pub(crate) fn new(inner: h3x::endpoint::server::MessageWriter) -> Self {
         Self { inner: Some(inner) }
     }
 

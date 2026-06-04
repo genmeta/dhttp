@@ -35,7 +35,9 @@ use crate::{
     h3x::{
         buflist::BuflistCursor,
         error::Code,
-        message::stream::{InitialMessageStreamError, MessageStreamError, ReadStream, WriteStream},
+        message::stream::{
+            InitialMessageStreamError, MessageReader, MessageStreamError, MessageWriter,
+        },
         pool::ConnectError,
         qpack::field::{FieldSection, MalformedHeaderSection, PseudoHeaders},
         quic,
@@ -319,8 +321,8 @@ impl ActiveRequestMessage {
 
 pub(crate) struct RequestState {
     message: SyncMutex<RequestMessageState>,
-    write_stream: AsyncMutex<Option<WriteStream>>,
-    read_stream: AsyncMutex<Option<ReadStream>>,
+    write_stream: AsyncMutex<Option<MessageWriter>>,
+    read_stream: AsyncMutex<Option<MessageReader>>,
     // Shared result slot for both synchronous request construction failures and
     // asynchronous stream initialization. Synchronous setters cannot await, so
     // `init_lock` only serializes the async initialization path.
@@ -452,7 +454,7 @@ impl RequestState {
         self.store_init_result(result)
     }
 
-    async fn take_read_stream(&self) -> Result<ReadStream, RequestError> {
+    async fn take_read_stream(&self) -> Result<MessageReader, RequestError> {
         self.ensure_stream_init().await?;
         self.read_stream
             .lock()
@@ -465,7 +467,7 @@ impl RequestState {
 
     async fn initialized_write_stream(
         &self,
-    ) -> Result<tokio::sync::MappedMutexGuard<'_, WriteStream>, RequestError> {
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, MessageWriter>, RequestError> {
         let write_guard = self.write_stream.lock().await;
         if write_guard.is_none() {
             return Err(RequestError::Acquire {
@@ -481,14 +483,14 @@ impl RequestState {
 
     async fn acquire_write_stream(
         &self,
-    ) -> Result<tokio::sync::MappedMutexGuard<'_, WriteStream>, RequestError> {
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, MessageWriter>, RequestError> {
         self.ensure_stream_init().await?;
         self.initialized_write_stream().await
     }
 
     async fn write_stream(
         &self,
-    ) -> Result<tokio::sync::MappedMutexGuard<'_, WriteStream>, RequestError> {
+    ) -> Result<tokio::sync::MappedMutexGuard<'_, MessageWriter>, RequestError> {
         self.send_buffered_request().await?;
         self.initialized_write_stream().await
     }
@@ -922,7 +924,7 @@ impl IntoFuture for Request {
 
 pub struct Response {
     message: ResponseMessage,
-    stream: ReadStream,
+    stream: MessageReader,
     authority: Arc<dyn authority::RemoteAuthority>,
 }
 

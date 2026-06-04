@@ -12,7 +12,7 @@ use crate::h3x::{
     buflist::{BufList, BuflistCursor},
     connection,
     error::{Code, H3FrameUnexpected, H3MessageError},
-    message::stream::{MessageStreamError, ReadStream, WriteStream},
+    message::stream::{MessageReader, MessageStreamError, MessageWriter},
     qpack::field::{
         FieldLine, FieldSection, MalformedHeaderSection, Protocol, malformed_header_section,
     },
@@ -967,7 +967,7 @@ pub enum ReadToStringError {
 }
 
 async fn send_data_to(
-    stream: &mut WriteStream,
+    stream: &mut MessageWriter,
     data: impl Buf + Send,
 ) -> Result<(), MessageStreamError> {
     stream.write_data(data).await
@@ -979,15 +979,15 @@ where
 {
     async fn try_read_io<T>(
         &mut self,
-        stream: &mut ReadStream,
-        f: impl AsyncFnOnce(&mut ReadStream, &mut Self) -> Result<T, connection::StreamError>,
+        stream: &mut MessageReader,
+        f: impl AsyncFnOnce(&mut MessageReader, &mut Self) -> Result<T, connection::StreamError>,
     ) -> Result<T, MessageStreamError> {
         stream
             .try_stream_io(async move |stream| f(stream, self).await)
             .await
     }
 
-    pub async fn read_from(stream: &mut ReadStream) -> Result<Self, MessageStreamError> {
+    pub async fn read_from(stream: &mut MessageReader) -> Result<Self, MessageStreamError> {
         let header = stream
             .try_stream_io(async |stream| {
                 let Some(field_section) = stream.read_header_frame().await? else {
@@ -1014,7 +1014,7 @@ where
 
     pub async fn read_header_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Result<&H, MessageStreamError> {
         match self.stage {
             MessageStage::Header => {}
@@ -1045,7 +1045,7 @@ where
 
     pub async fn read_streaming_body_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Option<Result<Bytes, ReadStreamingBodyError>> {
         match self
             .prepare_streaming_body_read()
@@ -1101,7 +1101,7 @@ where
 
     pub async fn read_buffered_body_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Result<impl Buf + '_, ReadBufferedBodyError> {
         match self
             .prepare_buffered_body_read()
@@ -1155,7 +1155,7 @@ where
 
     pub async fn collect_bytes_body_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Result<Bytes, ReadBufferedBodyError> {
         let mut bytes = self.read_buffered_body_from(stream).await?;
         Ok(bytes.copy_to_bytes(bytes.remaining()))
@@ -1163,7 +1163,7 @@ where
 
     pub async fn collect_string_body_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Result<String, ReadToStringError> {
         let mut body = self
             .read_buffered_body_from(stream)
@@ -1181,7 +1181,7 @@ where
 
     pub async fn read_trailers_from(
         &mut self,
-        stream: &mut ReadStream,
+        stream: &mut MessageReader,
     ) -> Result<&HeaderMap, ReadTrailersError> {
         match self.stage {
             MessageStage::Header | MessageStage::Body => match &self.body {
@@ -1217,7 +1217,7 @@ where
         Ok(self.trailers())
     }
 
-    pub async fn read_all_from(&mut self, stream: &mut ReadStream) -> Result<(), ReadAllError> {
+    pub async fn read_all_from(&mut self, stream: &mut MessageReader) -> Result<(), ReadAllError> {
         self.read_header_from(stream)
             .await
             .context(read_all_error::HeaderSnafu)?;
@@ -1232,7 +1232,7 @@ where
 
     pub fn write_next_part_to<'m, 's>(
         &'m mut self,
-        stream: &'s mut WriteStream,
+        stream: &'s mut MessageWriter,
         goal: MessageWriteGoal,
     ) -> impl Future<Output = MessageWriteFlow> + use<'m, 's, H> {
         let prepared = prepare_message_write_next_part_to(self, goal);
@@ -1253,14 +1253,14 @@ where
 
     pub async fn write_header_to(
         &mut self,
-        stream: &mut WriteStream,
+        stream: &mut MessageWriter,
     ) -> Result<(), MessageStreamError> {
         drive_message_to(self, stream, MessageWriteGoal::Header).await
     }
 
     pub fn write_streaming_body_to<'m, 's, B>(
         &'m mut self,
-        stream: &'s mut WriteStream,
+        stream: &'s mut MessageWriter,
         content: B,
     ) -> impl Future<Output = Result<(), WriteStreamingBodyError>> + use<'m, 's, B, H>
     where
@@ -1290,7 +1290,7 @@ where
 
     pub async fn write_buffered_body_to(
         &mut self,
-        stream: &mut WriteStream,
+        stream: &mut MessageWriter,
     ) -> Result<(), WriteBufferedBodyError> {
         self.buffered_body()
             .context(write_buffered_body_error::BodyModeSnafu)?;
@@ -1301,7 +1301,7 @@ where
 
     pub async fn write_trailers_to(
         &mut self,
-        stream: &mut WriteStream,
+        stream: &mut MessageWriter,
     ) -> Result<(), MessageStreamError> {
         if matches!(self.stage, MessageStage::Header | MessageStage::Body)
             && matches!(self.body, BodyState::Pending)
@@ -1315,14 +1315,14 @@ where
 
     pub async fn write_all_to(
         &mut self,
-        stream: &mut WriteStream,
+        stream: &mut MessageWriter,
     ) -> Result<(), MessageStreamError> {
         drive_message_to(self, stream, MessageWriteGoal::Complete).await
     }
 }
 
 async fn send_trailer_header(
-    stream: &mut WriteStream,
+    stream: &mut MessageWriter,
     field_lines: impl IntoIterator<Item = FieldLine> + Send,
 ) -> Result<(), MessageStreamError> {
     match stream.send_header(field_lines).await {
@@ -1334,7 +1334,7 @@ async fn send_trailer_header(
 
 async fn drive_message_to<H>(
     message: &mut Message<H>,
-    stream: &mut WriteStream,
+    stream: &mut MessageWriter,
     goal: MessageWriteGoal,
 ) -> Result<(), MessageStreamError>
 where
@@ -1473,7 +1473,7 @@ impl MessageWriteStepFlow {
 }
 
 pub(crate) async fn execute_prepared_message_write(
-    stream: &mut WriteStream,
+    stream: &mut MessageWriter,
     prepared: PreparedMessageWrite,
 ) -> Result<ExecutedMessageWrite, MessageStreamError> {
     let PreparedMessageWrite { action, commit, .. } = prepared;
@@ -1690,7 +1690,7 @@ pub(crate) struct PreparedStreamingBodyCommit {
 }
 
 pub(crate) async fn execute_prepared_streaming_body_write(
-    stream: &mut WriteStream,
+    stream: &mut MessageWriter,
     prepared: PreparedStreamingBody,
 ) -> Result<PreparedStreamingBodyCommit, MessageStreamError> {
     let PreparedStreamingBody {
@@ -1719,7 +1719,7 @@ mod tests {
 
     use bytes::{Buf, Bytes, BytesMut};
 
-    use crate::h3x::message::stream::{ReadStream, WriteStream};
+    use crate::h3x::message::stream::{MessageReader, MessageWriter};
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
@@ -1978,7 +1978,7 @@ mod tests {
     #[allow(dead_code)]
     fn write_streaming_body_accepts_non_send_into_body(
         message: &mut super::ResponseMessage,
-        stream: &mut WriteStream,
+        stream: &mut MessageWriter,
         body: NonSendBody,
     ) {
         let _future = message.write_streaming_body_to(stream, body);
@@ -1987,7 +1987,7 @@ mod tests {
     #[allow(dead_code)]
     fn read_streaming_body_returns_operation_error<'a>(
         message: &'a mut super::ResponseMessage,
-        stream: &'a mut ReadStream,
+        stream: &'a mut MessageReader,
     ) -> impl Future<Output = Option<Result<Bytes, super::ReadStreamingBodyError>>> + 'a {
         message.read_streaming_body_from(stream)
     }
@@ -1995,7 +1995,7 @@ mod tests {
     #[allow(dead_code)]
     fn read_buffered_body_returns_operation_error<'a>(
         message: &'a mut super::ResponseMessage,
-        stream: &'a mut ReadStream,
+        stream: &'a mut MessageReader,
     ) -> impl Future<Output = Result<impl Buf + 'a, super::ReadBufferedBodyError>> + 'a {
         message.read_buffered_body_from(stream)
     }
@@ -2003,7 +2003,7 @@ mod tests {
     #[allow(dead_code)]
     fn write_streaming_body_returns_operation_error<'a>(
         message: &'a mut super::ResponseMessage,
-        stream: &'a mut WriteStream,
+        stream: &'a mut MessageWriter,
     ) -> impl Future<Output = Result<(), super::WriteStreamingBodyError>> + 'a {
         message.write_streaming_body_to(stream, "body")
     }
