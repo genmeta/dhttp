@@ -983,13 +983,13 @@ where
         f: impl AsyncFnOnce(&mut MessageReader, &mut Self) -> Result<T, connection::StreamError>,
     ) -> Result<T, MessageStreamError> {
         stream
-            .try_stream_io(async move |stream| f(stream, self).await)
+            .try_stream_read(async move |stream| f(stream, self).await)
             .await
     }
 
     pub async fn read_from(stream: &mut MessageReader) -> Result<Self, MessageStreamError> {
         let header = stream
-            .try_stream_io(async |stream| {
+            .try_stream_read(async |stream| {
                 let Some(field_section) = stream.read_header_frame().await? else {
                     if stream.peek_frame().await.transpose()?.is_some() {
                         return Err(H3FrameUnexpected::UnexpectedFrameType.into());
