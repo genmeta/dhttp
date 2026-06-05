@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import Any
 
 HEADER_ENCODING = "latin-1"
-EMPTY_BODY_STATUSES = {101, 103, 204, 205, 304}
+EMPTY_BODY_STATUSES = {204, 205, 304}
 
 HeaderInput = Mapping[str, str] | Iterable[tuple[str, str]] | None
 
@@ -35,12 +35,29 @@ def normalize_headers(headers: HeaderInput) -> list[tuple[str, str]]:
     return [(str(name), str(value)) for name, value in items]
 
 
+def _outbound_header_name(name: str) -> str:
+    if not name:
+        raise ValueError("header name must not be empty")
+    if name.startswith(":"):
+        raise ValueError("header name must not be a pseudo-header")
+    if any(ord(char) <= 32 or ord(char) == 127 for char in name):
+        raise ValueError("header name must not contain control characters")
+    return name.lower()
+
+
 def header_fields(headers: HeaderInput) -> list[tuple[bytes, bytes]]:
-    return [header_field(name, value) for name, value in normalize_headers(headers)]
+    return [
+        header_field(_outbound_header_name(name), value)
+        for name, value in normalize_headers(headers)
+    ]
 
 
 def has_body(method: str, status: int) -> bool:
-    return method.upper() != "HEAD" and status not in EMPTY_BODY_STATUSES
+    return (
+        method.upper() != "HEAD"
+        and not 100 <= status < 200
+        and status not in EMPTY_BODY_STATUSES
+    )
 
 
 class Headers:
@@ -124,6 +141,15 @@ class Response:
         return cls(_json.dumps(data).encode("utf-8"), status=status, headers=pairs)
 
 
+def json_response(
+    data: Any,
+    *,
+    status: int = 200,
+    headers: HeaderInput = None,
+) -> Response:
+    return Response.json(data, status=status, headers=headers)
+
+
 class StreamContent:
     """aiohttp-like response/request body stream helper."""
 
@@ -163,13 +189,24 @@ class StreamContent:
 class ClientResponse:
     """Client response returned by request context managers."""
 
-    def __init__(self, read_stream: Any, status: int, headers: HeaderInput):
+    def __init__(
+        self,
+        read_stream: Any,
+        status: int,
+        headers: HeaderInput,
+        *,
+        method: str,
+        url: str,
+    ):
         self._read_stream = read_stream
         self._body: bytes | None = None
         self._released = False
         self.content = StreamContent(read_stream)
         self.status = int(status)
         self.headers = Headers(headers)
+        self.method = method.upper()
+        self.url = url
+        self.ok = 200 <= self.status < 400
 
     async def read(self) -> bytes:
         if self._body is not None:

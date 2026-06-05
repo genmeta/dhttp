@@ -169,9 +169,20 @@ fn python_wrapper_uses_aiohttp_like_request_and_body_helpers() {
     assert!(endpoint.contains("bind_patterns"));
     assert!(endpoint.contains("pass either options or keyword configuration, not both"));
     assert!(endpoint.contains("json: Any = None"));
-    assert!(endpoint.contains("content: BodyInput = None"));
-    assert!(endpoint.contains("only one of data, json, or content may be provided"));
+    assert!(endpoint.contains("class QueryParams"));
+    assert!(endpoint.contains("def from_query_string"));
+    assert!(endpoint.contains("self.query = QueryParams.from_query_string"));
+    assert!(endpoint.contains("async def json"));
+    assert!(endpoint.contains("self.method = method.upper()"));
+    assert!(!endpoint.contains("content: BodyInput = None"));
+    assert!(!endpoint.contains("content if content is not None else data"));
+    assert!(endpoint.contains("only one of data or json may be provided"));
+    assert!(response.contains("def _outbound_header_name"));
     assert!(response.contains("class StreamContent"));
     assert!(response.contains("async def iter_chunked"));
     assert!(response.contains("async def json"));
+    assert!(response.contains("def json_response"));
+    assert!(response.contains("self.ok = 200 <= self.status < 400"));
+    assert!(response.contains("method: str"));
+    assert!(response.contains("url: str"));
 }

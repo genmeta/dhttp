@@ -7,8 +7,8 @@ from .authority import (
     RemoteAuthority,
     RemoteAuthorityImpl,
 )
-from .endpoint import Endpoint, ServerRequest
-from .response import ClientResponse, Headers, Response, StreamContent
+from .endpoint import Endpoint, QueryParams, ServerRequest
+from .response import ClientResponse, Headers, Response, StreamContent, json_response
 
 DhttpHome = _native.DhttpHome
 IdentityProfile = _native.IdentityProfile
@@ -26,10 +26,12 @@ __all__ = [
     "IdentityProfile",
     "LocalAuthority",
     "LocalAuthorityImpl",
+    "QueryParams",
     "RemoteAuthority",
     "RemoteAuthorityImpl",
     "Response",
     "ServeHandle",
     "ServerRequest",
     "StreamContent",
+    "json_response",
 ]

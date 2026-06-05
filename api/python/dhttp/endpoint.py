@@ -6,7 +6,7 @@ import json as _json
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from inspect import isawaitable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from . import _native
 from .response import (
@@ -23,7 +23,8 @@ from .response import (
 )
 
 BodyInput = bytes | bytearray | memoryview | str | Iterable[bytes] | AsyncIterator[bytes] | None
-Handler = Callable[..., Response | bytes | str | None | Awaitable[Response | bytes | str | None]]
+Handler = Callable[..., Response | bytes | str |
+                   None | Awaitable[Response | bytes | str | None]]
 
 
 def _path_with_query(url: str) -> str:
@@ -59,14 +60,12 @@ def _request_body_and_headers(
     headers: HeaderInput,
     data: BodyInput,
     json: Any,
-    content: BodyInput,
 ) -> tuple[HeaderInput, BodyInput]:
-    provided = sum(value is not None for value in (data, json, content))
-    if provided > 1:
-        raise ValueError("only one of data, json, or content may be provided")
+    if data is not None and json is not None:
+        raise ValueError("only one of data or json may be provided")
 
     if json is None:
-        return headers, content if content is not None else data
+        return headers, data
 
     pairs = normalize_headers(headers)
     if not any(name.lower() == "content-type" for name, _ in pairs):
@@ -84,7 +83,8 @@ def _endpoint_options(
     has_keywords = identity is not None or dns_schemes is not None or bind_patterns is not None
     if options is not None:
         if has_keywords:
-            raise ValueError("pass either options or keyword configuration, not both")
+            raise ValueError(
+                "pass either options or keyword configuration, not both")
         return options
     if not has_keywords:
         return None
@@ -168,15 +168,61 @@ async def _write_body(write_stream: Any, body: BodyInput) -> None:
     await write_stream.close()
 
 
+class QueryParams:
+    """Ordered case-sensitive query parameter view preserving duplicate keys."""
+
+    def __init__(self, pairs: Iterable[tuple[str, str]] = ()):
+        self._pairs = [(str(name), str(value)) for name, value in pairs]
+
+    @classmethod
+    def from_query_string(cls, query_string: str) -> "QueryParams":
+        return cls(parse_qsl(query_string, keep_blank_values=True))
+
+    def __iter__(self):
+        return iter(self._pairs)
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+    def __contains__(self, name: object) -> bool:
+        if not isinstance(name, str):
+            return False
+        return any(param == name for param, _ in self._pairs)
+
+    def items(self) -> list[tuple[str, str]]:
+        return list(self._pairs)
+
+    def get(self, name: str, default: str | None = None) -> str | None:
+        for param, value in self._pairs:
+            if param == name:
+                return value
+        return default
+
+    def getall(self, name: str) -> list[str]:
+        return [value for param, value in self._pairs if param == name]
+
+    def __getitem__(self, name: str) -> str:
+        for param, value in self._pairs:
+            if param == name:
+                return value
+        raise KeyError(name)
+
+
 class ServerRequest:
     def __init__(self, read_stream: Any, method: str, url: str, headers: Headers):
         self._read_stream = read_stream
         self._body: bytes | None = None
         self._released = False
         self.content = StreamContent(read_stream)
-        self.method = method
+        self.method = method.upper()
         self.url = url
         self.headers = headers
+        parts = urlsplit(url)
+        self.scheme = parts.scheme
+        self.host = parts.netloc
+        self.path = parts.path or "/"
+        self.query_string = parts.query
+        self.query = QueryParams.from_query_string(parts.query)
 
     async def read(self) -> bytes:
         if self._body is not None:
@@ -190,6 +236,9 @@ class ServerRequest:
 
     async def text(self, encoding: str = "utf-8") -> str:
         return (await self.read()).decode(encoding)
+
+    async def json(self) -> Any:
+        return _json.loads(await self.text())
 
     async def release(self) -> None:
         if self._released:
@@ -264,10 +313,10 @@ class Endpoint:
         headers: HeaderInput = None,
         data: BodyInput = None,
         json: Any = None,
-        content: BodyInput = None,
     ) -> _RequestContextManager:
         return _RequestContextManager(
-            self._request(method, url, headers=headers, data=data, json=json, content=content)
+            self._request(method, url, headers=headers,
+                          data=data, json=json)
         )
 
     def get(self, url: str, **kwargs: Any) -> _RequestContextManager:
@@ -302,9 +351,8 @@ class Endpoint:
         headers: HeaderInput,
         data: BodyInput,
         json: Any,
-        content: BodyInput,
     ) -> ClientResponse:
-        headers, body = _request_body_and_headers(headers, data, json, content)
+        headers, body = _request_body_and_headers(headers, data, json)
         connection = await self._inner.connect(_authority(url))
         pair = await connection.open_request_stream()
         read_stream = pair.read_stream
@@ -313,7 +361,13 @@ class Endpoint:
             await write_stream.send_header(_request_header_fields(method, url, headers))
             await _write_body(write_stream, body)
             status, response_headers = _parse_response_header(await read_stream.read_header_frame())
-            return ClientResponse(read_stream, status, response_headers.items())
+            return ClientResponse(
+                read_stream,
+                status,
+                response_headers.items(),
+                method=method.upper(),
+                url=url,
+            )
         except Exception:
             try:
                 await read_stream.stop(0)
@@ -336,9 +390,11 @@ class Endpoint:
                 result = handler(request)
                 if isawaitable(result):
                     result = await result
-                response = result if isinstance(result, Response) else Response(result)
+                response = result if isinstance(
+                    result, Response) else Response(result)
                 await write_stream.send_header(_response_header_fields(response))
-                body = response.body if has_body(method, response.status) else None
+                body = response.body if has_body(
+                    method, response.status) else None
                 await _write_body(write_stream, body)
             except Exception:
                 try:
