@@ -6,10 +6,23 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer},
 };
 use snafu::{ResultExt, Snafu};
-use verify_error::UnsupportedSchemeSnafu as VerifyUnsupportedScheme;
 use x509_parser::prelude::FromDer;
+use x509_parser::{
+    oid_registry::{
+        OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY, OID_NIST_EC_P384, OID_PKCS1_RSAENCRYPTION,
+        OID_SIG_ED25519,
+    },
+    x509::SubjectPublicKeyInfo,
+};
 
 use crate::name::Name;
+
+const RSA_CANONICAL_SCHEME: SignatureScheme = SignatureScheme::RSA_PSS_SHA512;
+const ECDSA_CANONICAL_SCHEMES: &[SignatureScheme] = &[
+    SignatureScheme::ECDSA_NISTP256_SHA256,
+    SignatureScheme::ECDSA_NISTP384_SHA384,
+];
+const ED25519_CANONICAL_SCHEME: SignatureScheme = SignatureScheme::ED25519;
 
 /// A TLS identity backed by a certificate chain and private key.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,8 +36,8 @@ pub struct Identity {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum SignError {
-    #[snafu(display("unsupported signature scheme {scheme:?}"))]
-    UnsupportedScheme { scheme: SignatureScheme },
+    #[snafu(display("unsupported signing key type"))]
+    UnsupportedKey,
     #[snafu(display("cryptographic operation failed"))]
     Crypto { source: rustls::Error },
 }
@@ -32,8 +45,8 @@ pub enum SignError {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum VerifyError {
-    #[snafu(display("unsupported signature scheme {scheme:?}"))]
-    UnsupportedScheme { scheme: SignatureScheme },
+    #[snafu(display("unsupported public key type"))]
+    UnsupportedKey,
 }
 
 impl Identity {
@@ -77,83 +90,61 @@ impl Identity {
         }
     }
 
-    pub fn sign_algorithm(&self) -> Result<rustls::SignatureAlgorithm, SignError> {
-        use snafu::ResultExt;
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, SignError> {
         let key = rustls::crypto::ring::sign::any_supported_type(&self.key)
             .context(sign_error::CryptoSnafu)?;
-        Ok(key.algorithm())
+        sign_with_key(key.as_ref(), data)
     }
 
-    pub fn sign(&self, scheme: SignatureScheme, data: &[u8]) -> Result<Vec<u8>, SignError> {
-        let key = rustls::crypto::ring::sign::any_supported_type(&self.key)
-            .context(sign_error::CryptoSnafu)?;
-        let signer = key
-            .choose_scheme(&[scheme])
-            .ok_or_else(|| sign_error::UnsupportedSchemeSnafu { scheme }.build())?;
-        signer.sign(data).context(sign_error::CryptoSnafu)
-    }
-
-    pub fn verify(
-        &self,
-        scheme: SignatureScheme,
-        data: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, VerifyError> {
-        let algorithm: &'static dyn ring::signature::VerificationAlgorithm = match scheme {
-            SignatureScheme::ECDSA_NISTP384_SHA384 => &ring::signature::ECDSA_P384_SHA384_ASN1,
-            SignatureScheme::ECDSA_NISTP256_SHA256 => &ring::signature::ECDSA_P256_SHA256_ASN1,
-            SignatureScheme::ED25519 => &ring::signature::ED25519,
-            SignatureScheme::RSA_PKCS1_SHA256 => &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384 => &ring::signature::RSA_PKCS1_2048_8192_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512 => &ring::signature::RSA_PKCS1_2048_8192_SHA512,
-            SignatureScheme::RSA_PSS_SHA256 => &ring::signature::RSA_PSS_2048_8192_SHA256,
-            SignatureScheme::RSA_PSS_SHA384 => &ring::signature::RSA_PSS_2048_8192_SHA384,
-            SignatureScheme::RSA_PSS_SHA512 => &ring::signature::RSA_PSS_2048_8192_SHA512,
-            _ => return VerifyUnsupportedScheme { scheme }.fail(),
-        };
-
-        let spki = self.public_key();
-        let public_key = match x509_parser::x509::SubjectPublicKeyInfo::from_der(&spki) {
-            Ok((_remain, spki)) => spki.subject_public_key,
-            Err(_) => unreachable!("rustls returned an invalid peer_certificates"),
-        };
-
-        Ok(
-            ring::signature::UnparsedPublicKey::new(algorithm, public_key)
-                .verify(data, signature)
-                .is_ok(),
-        )
+    pub fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, VerifyError> {
+        verify_signature(self.public_key(), data, signature)
     }
 }
 
+/// Local authority for DHTTP identity material.
+///
+/// Signatures use DHTTP's canonical key-to-signature-scheme policy instead of
+/// accepting a caller-supplied scheme. The policy is:
+///
+/// - Ed25519 keys use [`SignatureScheme::ED25519`].
+/// - ECDSA P-256 keys use [`SignatureScheme::ECDSA_NISTP256_SHA256`].
+/// - ECDSA P-384 keys use [`SignatureScheme::ECDSA_NISTP384_SHA384`].
+/// - RSA keys use [`SignatureScheme::RSA_PSS_SHA512`], matching the QUIC/TLS
+///   RSA signing preference used by rustls.
+///
+/// Callers should treat `sign` and `verify` as DHTTP identity operations, not
+/// as general-purpose cryptographic primitives with negotiable algorithms.
 pub trait LocalAuthority: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 
     fn cert_chain(&self) -> &[CertificateDer<'static>];
 
-    fn sign_algorithm(&self) -> rustls::SignatureAlgorithm;
-
-    fn sign(
-        &self,
-        scheme: SignatureScheme,
-        data: &[u8],
-    ) -> BoxFuture<'_, Result<Vec<u8>, SignError>>;
+    fn sign(&self, data: &[u8]) -> BoxFuture<'_, Result<Vec<u8>, SignError>>;
 
     fn public_key(&self) -> SubjectPublicKeyInfoDer<'_> {
         extract_public_key(self.cert_chain())
     }
 
-    fn verify(
-        &self,
-        scheme: SignatureScheme,
-        data: &[u8],
-        signature: &[u8],
-    ) -> BoxFuture<'_, Result<bool, VerifyError>> {
-        let result = verify_signature(self.public_key(), scheme, data, signature);
+    fn verify(&self, data: &[u8], signature: &[u8]) -> BoxFuture<'_, Result<bool, VerifyError>> {
+        let result = verify_signature(self.public_key(), data, signature);
         Box::pin(std::future::ready(result))
     }
 }
 
+/// Remote authority for DHTTP identity material.
+///
+/// Verification uses the same DHTTP canonical key-to-signature-scheme policy
+/// as [`LocalAuthority`]. The policy is:
+///
+/// - Ed25519 keys use [`SignatureScheme::ED25519`].
+/// - ECDSA P-256 keys use [`SignatureScheme::ECDSA_NISTP256_SHA256`].
+/// - ECDSA P-384 keys use [`SignatureScheme::ECDSA_NISTP384_SHA384`].
+/// - RSA keys use [`SignatureScheme::RSA_PSS_SHA512`], matching the QUIC/TLS
+///   RSA signing preference used by rustls.
+///
+/// A remote authority does not carry an explicit signature scheme in its API;
+/// the scheme is derived from the authority public key according to the
+/// documented DHTTP policy.
 pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 
@@ -163,13 +154,8 @@ pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
         extract_public_key(self.cert_chain())
     }
 
-    fn verify(
-        &self,
-        scheme: SignatureScheme,
-        data: &[u8],
-        signature: &[u8],
-    ) -> BoxFuture<'_, Result<bool, VerifyError>> {
-        let result = verify_signature(self.public_key(), scheme, data, signature);
+    fn verify(&self, data: &[u8], signature: &[u8]) -> BoxFuture<'_, Result<bool, VerifyError>> {
+        let result = verify_signature(self.public_key(), data, signature);
         Box::pin(std::future::ready(result))
     }
 }
@@ -187,37 +173,34 @@ pub fn extract_public_key<'d>(cert_chain: &'d [CertificateDer<'d>]) -> SubjectPu
 
 pub fn sign_with_key(
     key: &(impl rustls::sign::SigningKey + ?Sized),
-    scheme: SignatureScheme,
     data: &[u8],
 ) -> Result<Vec<u8>, SignError> {
-    let signer = key
-        .choose_scheme(&[scheme])
-        .ok_or_else(|| sign_error::UnsupportedSchemeSnafu { scheme }.build())?;
-    signer.sign(data).context(sign_error::CryptoSnafu)
+    for scheme in canonical_signing_schemes(key.algorithm()) {
+        if let Some(signer) = key.choose_scheme(&[*scheme]) {
+            return signer.sign(data).context(sign_error::CryptoSnafu);
+        }
+    }
+
+    sign_error::UnsupportedKeySnafu.fail()
 }
 
 pub fn verify_signature(
     spki: SubjectPublicKeyInfoDer,
-    scheme: SignatureScheme,
     data: &[u8],
     signature: &[u8],
 ) -> Result<bool, VerifyError> {
+    let scheme = canonical_verification_scheme(spki.as_ref())?;
     let algorithm: &'static dyn ring::signature::VerificationAlgorithm = match scheme {
         SignatureScheme::ECDSA_NISTP384_SHA384 => &ring::signature::ECDSA_P384_SHA384_ASN1,
         SignatureScheme::ECDSA_NISTP256_SHA256 => &ring::signature::ECDSA_P256_SHA256_ASN1,
         SignatureScheme::ED25519 => &ring::signature::ED25519,
-        SignatureScheme::RSA_PKCS1_SHA256 => &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-        SignatureScheme::RSA_PKCS1_SHA384 => &ring::signature::RSA_PKCS1_2048_8192_SHA384,
-        SignatureScheme::RSA_PKCS1_SHA512 => &ring::signature::RSA_PKCS1_2048_8192_SHA512,
-        SignatureScheme::RSA_PSS_SHA256 => &ring::signature::RSA_PSS_2048_8192_SHA256,
-        SignatureScheme::RSA_PSS_SHA384 => &ring::signature::RSA_PSS_2048_8192_SHA384,
         SignatureScheme::RSA_PSS_SHA512 => &ring::signature::RSA_PSS_2048_8192_SHA512,
-        _ => return VerifyUnsupportedScheme { scheme }.fail(),
+        _ => return verify_error::UnsupportedKeySnafu.fail(),
     };
 
-    let public_key = match x509_parser::x509::SubjectPublicKeyInfo::from_der(&spki) {
+    let public_key = match SubjectPublicKeyInfo::from_der(&spki) {
         Ok((_remain, spki)) => spki.subject_public_key,
-        Err(_) => unreachable!("rustls returned an invalid peer_certificates"),
+        Err(_) => return verify_error::UnsupportedKeySnafu.fail(),
     };
 
     Ok(
@@ -225,6 +208,50 @@ pub fn verify_signature(
             .verify(data, signature)
             .is_ok(),
     )
+}
+
+fn canonical_signing_schemes(algorithm: rustls::SignatureAlgorithm) -> &'static [SignatureScheme] {
+    match algorithm {
+        rustls::SignatureAlgorithm::RSA => &[RSA_CANONICAL_SCHEME],
+        rustls::SignatureAlgorithm::ECDSA => ECDSA_CANONICAL_SCHEMES,
+        rustls::SignatureAlgorithm::ED25519 => &[ED25519_CANONICAL_SCHEME],
+        _ => &[],
+    }
+}
+
+fn canonical_verification_scheme(spki: &[u8]) -> Result<SignatureScheme, VerifyError> {
+    let Ok((_remain, spki)) = SubjectPublicKeyInfo::from_der(spki) else {
+        return verify_error::UnsupportedKeySnafu.fail();
+    };
+
+    if spki.algorithm.algorithm == OID_SIG_ED25519 {
+        return Ok(ED25519_CANONICAL_SCHEME);
+    }
+
+    if spki.algorithm.algorithm == OID_PKCS1_RSAENCRYPTION {
+        return Ok(RSA_CANONICAL_SCHEME);
+    }
+
+    if spki.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY {
+        return verify_error::UnsupportedKeySnafu.fail();
+    }
+
+    let Some(curve) = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|parameters| parameters.as_oid().ok())
+    else {
+        return verify_error::UnsupportedKeySnafu.fail();
+    };
+
+    if curve == OID_EC_P256 {
+        Ok(SignatureScheme::ECDSA_NISTP256_SHA256)
+    } else if curve == OID_NIST_EC_P384 {
+        Ok(SignatureScheme::ECDSA_NISTP384_SHA384)
+    } else {
+        verify_error::UnsupportedKeySnafu.fail()
+    }
 }
 
 impl LocalAuthority for Identity {
@@ -236,16 +263,8 @@ impl LocalAuthority for Identity {
         self.cert_chain()
     }
 
-    fn sign_algorithm(&self) -> rustls::SignatureAlgorithm {
-        Identity::sign_algorithm(self).expect("identity private key should be supported by rustls")
-    }
-
-    fn sign(
-        &self,
-        scheme: SignatureScheme,
-        data: &[u8],
-    ) -> BoxFuture<'_, Result<Vec<u8>, SignError>> {
-        let result = Identity::sign(self, scheme, data);
+    fn sign(&self, data: &[u8]) -> BoxFuture<'_, Result<Vec<u8>, SignError>> {
+        let result = Identity::sign(self, data);
         Box::pin(std::future::ready(result))
     }
 }
@@ -264,7 +283,10 @@ impl RemoteAuthority for Identity {
 mod tests {
     use std::sync::Arc;
 
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use ring::signature::KeyPair;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rustls::sign::{Signer, SigningKey};
+    use rustls::{SignatureAlgorithm, SignatureScheme};
 
     use crate::identity::Identity;
     use crate::name::Name;
@@ -279,6 +301,59 @@ mod tests {
 
     fn dummy_key() -> PrivateKeyDer<'static> {
         PrivateKeyDer::Pkcs8(b"dummy".to_vec().into())
+    }
+
+    fn ed25519_identity() -> Identity {
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let keypair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+        let mut spki = Vec::with_capacity(44);
+        spki.extend_from_slice(&[
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ]);
+        spki.extend_from_slice(keypair.public_key().as_ref());
+
+        Identity::new(
+            dummy_name(),
+            vec![CertificateDer::from(spki)],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8.as_ref().to_vec())),
+        )
+    }
+
+    #[derive(Debug)]
+    struct RsaPssSha512OnlyKey;
+
+    #[derive(Debug)]
+    struct RsaPssSha512Signer;
+
+    impl SigningKey for RsaPssSha512OnlyKey {
+        fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
+            offered
+                .contains(&SignatureScheme::RSA_PSS_SHA512)
+                .then(|| Box::new(RsaPssSha512Signer) as Box<dyn Signer>)
+        }
+
+        fn algorithm(&self) -> SignatureAlgorithm {
+            SignatureAlgorithm::RSA
+        }
+    }
+
+    impl Signer for RsaPssSha512Signer {
+        fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+            Ok(b"rsa-pss-sha512".to_vec())
+        }
+
+        fn scheme(&self) -> SignatureScheme {
+            SignatureScheme::RSA_PSS_SHA512
+        }
+    }
+
+    fn rsa_subject_public_key_info() -> Vec<u8> {
+        vec![
+            0x30, 0x12, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+            0x01, 0x05, 0x00, 0x03, 0x01, 0x00,
+        ]
     }
 
     #[test]
@@ -315,5 +390,58 @@ mod tests {
 
         assert_local_authority::<Identity>();
         assert_remote_authority::<Identity>();
+    }
+
+    #[test]
+    fn rsa_canonical_scheme_matches_quic_tls_preference() {
+        assert_eq!(
+            super::sign_with_key(&RsaPssSha512OnlyKey, b"payload")
+                .expect("rsa canonical signature"),
+            b"rsa-pss-sha512"
+        );
+        assert_eq!(
+            super::canonical_verification_scheme(&rsa_subject_public_key_info())
+                .expect("rsa canonical verification scheme"),
+            SignatureScheme::RSA_PSS_SHA512
+        );
+    }
+
+    #[test]
+    fn identity_signs_and_verifies_with_canonical_scheme() {
+        let identity = ed25519_identity();
+        let signature = identity.sign(b"payload").expect("canonical signature");
+
+        assert!(
+            identity
+                .verify(b"payload", &signature)
+                .expect("canonical verification")
+        );
+        assert!(
+            !identity
+                .verify(b"wrong payload", &signature)
+                .expect("canonical verification")
+        );
+    }
+
+    #[test]
+    fn authority_traits_do_not_require_signature_scheme() {
+        let identity = ed25519_identity();
+        let signature = futures::executor::block_on(crate::identity::LocalAuthority::sign(
+            &identity, b"payload",
+        ))
+        .expect("canonical authority signature");
+
+        assert!(
+            futures::executor::block_on(crate::identity::LocalAuthority::verify(
+                &identity, b"payload", &signature,
+            ))
+            .expect("canonical local authority verification")
+        );
+        assert!(
+            futures::executor::block_on(crate::identity::RemoteAuthority::verify(
+                &identity, b"payload", &signature,
+            ))
+            .expect("canonical remote authority verification")
+        );
     }
 }

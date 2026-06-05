@@ -316,18 +316,6 @@ class Endpoint {
   }
 }
 
-const SignatureScheme = Object.freeze({
-  RsaPkcs1Sha256: 0x0401,
-  RsaPkcs1Sha384: 0x0501,
-  RsaPkcs1Sha512: 0x0601,
-  EcdsaNistp256Sha256: 0x0403,
-  EcdsaNistp384Sha384: 0x0503,
-  RsaPssSha256: 0x0804,
-  RsaPssSha384: 0x0805,
-  RsaPssSha512: 0x0806,
-  Ed25519: 0x0807,
-});
-
 module.exports = {
   Endpoint,
   DhttpHome: native.DhttpHome,
@@ -337,5 +325,4 @@ module.exports = {
   LocalAuthority: native.LocalAuthority,
   RemoteAuthority: native.RemoteAuthority,
   ServeHandle: native.ServeHandle,
-  SignatureScheme,
 };

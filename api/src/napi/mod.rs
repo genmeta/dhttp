@@ -203,24 +203,17 @@ impl Identity {
     }
 
     #[napi]
-    pub fn sign(&self, scheme: Either<u16, String>, data: Buffer) -> NapiResult<Buffer> {
-        let scheme = parse_signature_scheme("identity.sign", scheme)?;
+    pub fn sign(&self, data: Buffer) -> NapiResult<Buffer> {
         self.inner
-            .sign(scheme, data.as_ref())
+            .sign(data.as_ref())
             .map(Buffer::from)
             .map_err(napi_error)
     }
 
     #[napi]
-    pub fn verify(
-        &self,
-        scheme: Either<u16, String>,
-        data: Buffer,
-        signature: Buffer,
-    ) -> NapiResult<bool> {
-        let scheme = parse_signature_scheme("identity.verify", scheme)?;
+    pub fn verify(&self, data: Buffer, signature: Buffer) -> NapiResult<bool> {
         self.inner
-            .verify(scheme, data.as_ref(), signature.as_ref())
+            .verify(data.as_ref(), signature.as_ref())
             .map_err(napi_error)
     }
 
@@ -232,14 +225,6 @@ impl Identity {
     #[napi]
     pub fn as_remote_authority(&self) -> RemoteAuthority {
         RemoteAuthority::from(self.inner.as_remote_authority())
-    }
-}
-
-fn parse_signature_scheme(operation: &'static str, value: Either<u16, String>) -> NapiResult<u16> {
-    match value {
-        Either::A(code) => Ok(code),
-        Either::B(name) => crate::signature_scheme::parse_name(&name)
-            .map_err(|error| napi_error(crate::error::DhttpError::from_error(operation, error))),
     }
 }
 
@@ -272,30 +257,20 @@ impl LocalAuthority {
     }
 
     #[napi]
-    pub async fn sign(&self, scheme: Either<u16, String>, data: Buffer) -> NapiResult<Buffer> {
-        let scheme = parse_signature_scheme("local_authority.sign", scheme)?;
+    pub async fn sign(&self, data: Buffer) -> NapiResult<Buffer> {
         let data = data.as_ref().to_vec();
         self.inner
-            .sign(scheme, data)
+            .sign(data)
             .await
             .map(Buffer::from)
             .map_err(napi_error)
     }
 
     #[napi]
-    pub async fn verify(
-        &self,
-        scheme: Either<u16, String>,
-        data: Buffer,
-        signature: Buffer,
-    ) -> NapiResult<bool> {
-        let scheme = parse_signature_scheme("local_authority.verify", scheme)?;
+    pub async fn verify(&self, data: Buffer, signature: Buffer) -> NapiResult<bool> {
         let data = data.as_ref().to_vec();
         let signature = signature.as_ref().to_vec();
-        self.inner
-            .verify(scheme, data, signature)
-            .await
-            .map_err(napi_error)
+        self.inner.verify(data, signature).await.map_err(napi_error)
     }
 }
 
@@ -328,19 +303,10 @@ impl RemoteAuthority {
     }
 
     #[napi]
-    pub async fn verify(
-        &self,
-        scheme: Either<u16, String>,
-        data: Buffer,
-        signature: Buffer,
-    ) -> NapiResult<bool> {
-        let scheme = parse_signature_scheme("remote_authority.verify", scheme)?;
+    pub async fn verify(&self, data: Buffer, signature: Buffer) -> NapiResult<bool> {
         let data = data.as_ref().to_vec();
         let signature = signature.as_ref().to_vec();
-        self.inner
-            .verify(scheme, data, signature)
-            .await
-            .map_err(napi_error)
+        self.inner.verify(data, signature).await.map_err(napi_error)
     }
 }
 

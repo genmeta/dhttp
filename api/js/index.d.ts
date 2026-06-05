@@ -1,48 +1,34 @@
 export type FetchInput = string | URL | Request;
 export type FetchHandler = (request: Request) => Response | Promise<Response>;
 
-export type SchemeLike = SignatureScheme | number | string;
-
-export enum SignatureScheme {
-  RsaPkcs1Sha256 = 0x0401,
-  RsaPkcs1Sha384 = 0x0501,
-  RsaPkcs1Sha512 = 0x0601,
-  EcdsaNistp256Sha256 = 0x0403,
-  EcdsaNistp384Sha384 = 0x0503,
-  RsaPssSha256 = 0x0804,
-  RsaPssSha384 = 0x0805,
-  RsaPssSha512 = 0x0806,
-  Ed25519 = 0x0807,
-}
-
 export interface LocalAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
-  sign(scheme: SchemeLike, data: Uint8Array): Promise<Uint8Array>;
-  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  sign(data: Uint8Array): Promise<Uint8Array>;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
 export interface RemoteAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
-  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
 export class LocalAuthority implements LocalAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
-  sign(scheme: SchemeLike, data: Uint8Array): Promise<Uint8Array>;
-  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  sign(data: Uint8Array): Promise<Uint8Array>;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
 export class RemoteAuthority implements RemoteAuthorityLike {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
-  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
 export interface EndpointCreateOptions {
@@ -72,8 +58,8 @@ export class Identity {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
-  sign(scheme: SchemeLike, data: Uint8Array): Uint8Array;
-  verify(scheme: SchemeLike, data: Uint8Array, signature: Uint8Array): boolean;
+  sign(data: Uint8Array): Uint8Array;
+  verify(data: Uint8Array, signature: Uint8Array): boolean;
   asLocalAuthority(): LocalAuthority;
   asRemoteAuthority(): RemoteAuthority;
 }

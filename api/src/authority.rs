@@ -4,7 +4,6 @@ use dhttp::identity::{
     LocalAuthority as CoreLocalAuthority, RemoteAuthority as CoreRemoteAuthority,
     SignError as CoreSignError, VerifyError as CoreVerifyError,
 };
-use rustls::SignatureScheme;
 
 use crate::error::DhttpError;
 
@@ -36,18 +35,16 @@ impl LocalAuthority {
         self.inner.public_key().as_ref().to_vec()
     }
 
-    pub async fn sign(&self, scheme: u16, data: Vec<u8>) -> Result<Vec<u8>> {
-        let scheme = SignatureScheme::from(scheme);
+    pub async fn sign(&self, data: Vec<u8>) -> Result<Vec<u8>> {
         self.inner
-            .sign(scheme, &data)
+            .sign(&data)
             .await
             .map_err(|error: CoreSignError| DhttpError::from_error("local_authority.sign", error))
     }
 
-    pub async fn verify(&self, scheme: u16, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {
-        let scheme = SignatureScheme::from(scheme);
+    pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {
         self.inner
-            .verify(scheme, &data, &signature)
+            .verify(&data, &signature)
             .await
             .map_err(|error: CoreVerifyError| {
                 DhttpError::from_error("local_authority.verify", error)
@@ -81,10 +78,9 @@ impl RemoteAuthority {
         self.inner.public_key().as_ref().to_vec()
     }
 
-    pub async fn verify(&self, scheme: u16, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {
-        let scheme = SignatureScheme::from(scheme);
+    pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {
         self.inner
-            .verify(scheme, &data, &signature)
+            .verify(&data, &signature)
             .await
             .map_err(|error: CoreVerifyError| {
                 DhttpError::from_error("remote_authority.verify", error)

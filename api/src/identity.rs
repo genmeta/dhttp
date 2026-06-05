@@ -21,22 +21,15 @@ impl Identity {
         self.0.public_key().as_ref().to_vec()
     }
 
-    pub fn sign(&self, scheme: u16, data: &[u8]) -> Result<Vec<u8>, crate::error::DhttpError> {
-        let scheme = rustls::SignatureScheme::from(scheme);
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, crate::error::DhttpError> {
         self.0
-            .sign(scheme, data)
+            .sign(data)
             .map_err(|error| crate::error::DhttpError::from_error("identity.sign", error))
     }
 
-    pub fn verify(
-        &self,
-        scheme: u16,
-        data: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, crate::error::DhttpError> {
-        let scheme = rustls::SignatureScheme::from(scheme);
+    pub fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, crate::error::DhttpError> {
         self.0
-            .verify(scheme, data, signature)
+            .verify(data, signature)
             .map_err(|error| crate::error::DhttpError::from_error("identity.verify", error))
     }
 

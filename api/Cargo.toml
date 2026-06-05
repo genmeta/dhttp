@@ -22,7 +22,6 @@ dhttp = { workspace = true }
 ddns = { workspace = true }
 h3x = { workspace = true }
 futures = { workspace = true }
-rustls = { workspace = true }
 snafu = { workspace = true }
 napi = { version = "3.9.0", default-features = false, features = [
     "napi4",

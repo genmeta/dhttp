@@ -6,8 +6,6 @@ from .authority import (
     LocalAuthorityImpl,
     RemoteAuthority,
     RemoteAuthorityImpl,
-    SchemeLike,
-    SignatureScheme,
 )
 from .endpoint import Endpoint, ServerRequest
 from .response import ClientResponse, Headers, Response, StreamContent
@@ -31,9 +29,7 @@ __all__ = [
     "RemoteAuthority",
     "RemoteAuthorityImpl",
     "Response",
-    "SchemeLike",
     "ServeHandle",
     "ServerRequest",
-    "SignatureScheme",
     "StreamContent",
 ]

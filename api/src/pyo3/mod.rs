@@ -115,16 +115,12 @@ impl Identity {
         self.inner.public_key_der()
     }
 
-    pub fn sign(&self, scheme: Py<PyAny>, data: Vec<u8>) -> PyResult<Vec<u8>> {
-        let scheme = parse_signature_scheme("identity.sign", scheme)?;
-        self.inner.sign(scheme, &data).map_err(py_error)
+    pub fn sign(&self, data: Vec<u8>) -> PyResult<Vec<u8>> {
+        self.inner.sign(&data).map_err(py_error)
     }
 
-    pub fn verify(&self, scheme: Py<PyAny>, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
-        let scheme = parse_signature_scheme("identity.verify", scheme)?;
-        self.inner
-            .verify(scheme, &data, &signature)
-            .map_err(py_error)
+    pub fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
+        self.inner.verify(&data, &signature).map_err(py_error)
     }
 
     pub fn as_local_authority(&self) -> LocalAuthority {
@@ -134,23 +130,6 @@ impl Identity {
     pub fn as_remote_authority(&self) -> RemoteAuthority {
         RemoteAuthority::from(self.inner.as_remote_authority())
     }
-}
-
-fn parse_signature_scheme(operation: &'static str, value: Py<PyAny>) -> PyResult<u16> {
-    Python::attach(|py| {
-        let bound = value.bind(py);
-        if let Ok(code) = bound.extract::<u16>() {
-            return Ok(code);
-        }
-        if let Ok(name) = bound.extract::<String>() {
-            return crate::signature_scheme::parse_name(&name)
-                .map_err(|error| py_error(crate::error::DhttpError::from_error(operation, error)));
-        }
-        Err(state_error(
-            operation,
-            "signature scheme must be int or str",
-        ))
-    })
 }
 
 #[pyclass(name = "LocalAuthority")]
@@ -178,23 +157,16 @@ impl LocalAuthority {
         self.inner.public_key_der()
     }
 
-    pub async fn sign(&self, scheme: Py<PyAny>, data: Vec<u8>) -> PyResult<Vec<u8>> {
-        let scheme = parse_signature_scheme("local_authority.sign", scheme)?;
+    pub async fn sign(&self, data: Vec<u8>) -> PyResult<Vec<u8>> {
         let inner = self.inner.clone();
-        with_tokio(async move { inner.sign(scheme, data).await })
+        with_tokio(async move { inner.sign(data).await })
             .await
             .map_err(py_error)
     }
 
-    pub async fn verify(
-        &self,
-        scheme: Py<PyAny>,
-        data: Vec<u8>,
-        signature: Vec<u8>,
-    ) -> PyResult<bool> {
-        let scheme = parse_signature_scheme("local_authority.verify", scheme)?;
+    pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
         let inner = self.inner.clone();
-        with_tokio(async move { inner.verify(scheme, data, signature).await })
+        with_tokio(async move { inner.verify(data, signature).await })
             .await
             .map_err(py_error)
     }
@@ -225,15 +197,9 @@ impl RemoteAuthority {
         self.inner.public_key_der()
     }
 
-    pub async fn verify(
-        &self,
-        scheme: Py<PyAny>,
-        data: Vec<u8>,
-        signature: Vec<u8>,
-    ) -> PyResult<bool> {
-        let scheme = parse_signature_scheme("remote_authority.verify", scheme)?;
+    pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
         let inner = self.inner.clone();
-        with_tokio(async move { inner.verify(scheme, data, signature).await })
+        with_tokio(async move { inner.verify(data, signature).await })
             .await
             .map_err(py_error)
     }

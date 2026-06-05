@@ -4,7 +4,6 @@ pub mod error;
 pub mod home;
 pub mod http;
 pub mod identity;
-pub mod signature_scheme;
 pub mod stream;
 
 #[cfg(feature = "napi")]
