@@ -16,7 +16,7 @@ impl ReadStream {
             DhttpError::from_message("read_stream.read_data_frame_chunk", "read stream is closed")
         })?;
         stream
-            .try_stream_io(async |stream| stream.read_data_frame_chunk().await)
+            .try_stream_read(async |stream| stream.read_data_frame_chunk().await)
             .await
             .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
             .map_err(|error| DhttpError::from_error("read_stream.read_data_frame_chunk", error))
@@ -27,7 +27,7 @@ impl ReadStream {
             DhttpError::from_message("read_stream.read_header_frame", "read stream is closed")
         })?;
         stream
-            .try_stream_io(async |stream| stream.read_header_frame().await)
+            .try_stream_read(async |stream| stream.read_header_frame().await)
             .await
             .map(|headers| headers.map(field_section_to_frame))
             .map_err(|error| DhttpError::from_error("read_stream.read_header_frame", error))
