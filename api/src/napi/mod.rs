@@ -37,8 +37,8 @@ fn drop_with_napi_runtime<T>(value: T) {
     drop(value);
 }
 
-type StreamHandlerArgs = FnArgs<(IncomingStream,)>;
-type StreamHandlerResult = Either<Promise<()>, ()>;
+type RawHandlerArgs = FnArgs<(UnresolvedRequest,)>;
+type RawHandlerResult = Either<Promise<()>, ()>;
 
 #[napi(object)]
 pub struct HeaderField {
@@ -59,118 +59,87 @@ impl HeaderField {
     }
 }
 
-#[napi(js_name = "StreamPair")]
-pub struct StreamPair {
-    read_stream: Mutex<Option<ReadStream>>,
-    write_stream: Mutex<Option<WriteStream>>,
-}
-
-impl StreamPair {
-    fn new(
-        read_stream: crate::stream::ReadStream,
-        write_stream: crate::stream::WriteStream,
-    ) -> Self {
-        Self {
-            read_stream: Mutex::new(Some(ReadStream::from(read_stream))),
-            write_stream: Mutex::new(Some(WriteStream::from(write_stream))),
-        }
-    }
-
-    fn take_read_stream(&self) -> NapiResult<ReadStream> {
-        self.read_stream
-            .lock()
-            .map_err(|_| state_error("stream_pair.read_stream", "stream pair mutex is poisoned"))?
-            .take()
-            .ok_or_else(|| state_error("stream_pair.read_stream", "read stream is closed"))
-    }
-
-    fn take_write_stream(&self) -> NapiResult<WriteStream> {
-        self.write_stream
-            .lock()
-            .map_err(|_| state_error("stream_pair.write_stream", "stream pair mutex is poisoned"))?
-            .take()
-            .ok_or_else(|| state_error("stream_pair.write_stream", "write stream is closed"))
-    }
-}
-
-#[napi]
-impl StreamPair {
-    #[napi(getter)]
-    pub fn read_stream(&self) -> NapiResult<ReadStream> {
-        self.take_read_stream()
-    }
-
-    #[napi(getter)]
-    pub fn write_stream(&self) -> NapiResult<WriteStream> {
-        self.take_write_stream()
-    }
-}
-
-#[napi(js_name = "IncomingStream")]
-pub struct IncomingStream {
+#[napi(js_name = "UnresolvedRequest")]
+pub struct UnresolvedRequest {
     stream_id: i64,
-    read_stream: Mutex<Option<ReadStream>>,
-    write_stream: Mutex<Option<WriteStream>>,
+    reader: Mutex<Option<MessageReader>>,
+    writer: Mutex<Option<MessageWriter>>,
+    local_authority: Option<LocalAuthority>,
+    remote_authority: Option<RemoteAuthority>,
 }
 
-impl IncomingStream {
-    fn from_core(incoming: crate::endpoint::incoming::IncomingStream) -> NapiResult<Self> {
-        let stream_id = i64::try_from(incoming.stream_id()).map_err(|error| {
+impl UnresolvedRequest {
+    fn from_core(request: crate::endpoint::unresolved::UnresolvedRequest) -> NapiResult<Self> {
+        let stream_id = i64::try_from(request.stream_id()).map_err(|error| {
             napi_error(crate::error::DhttpError::from_error(
-                "incoming_stream.stream_id",
+                "unresolved_request.stream_id",
                 error,
             ))
         })?;
-        let (read_stream, write_stream) = incoming.into_parts();
+        let local_authority = request.local_authority().map(LocalAuthority::from);
+        let remote_authority = request.remote_authority().map(RemoteAuthority::from);
+        let (reader, writer) = request.into_parts();
         Ok(Self {
             stream_id,
-            read_stream: Mutex::new(Some(ReadStream::from(read_stream))),
-            write_stream: Mutex::new(Some(WriteStream::from(write_stream))),
+            reader: Mutex::new(Some(MessageReader::from(reader))),
+            writer: Mutex::new(Some(MessageWriter::from(writer))),
+            local_authority,
+            remote_authority,
         })
     }
 
-    fn take_read_stream(&self) -> NapiResult<ReadStream> {
-        self.read_stream
+    fn take_reader(&self) -> NapiResult<MessageReader> {
+        self.reader
             .lock()
             .map_err(|_| {
                 state_error(
-                    "incoming_stream.read_stream",
-                    "incoming stream mutex is poisoned",
+                    "unresolved_request.reader",
+                    "unresolved request mutex is poisoned",
                 )
             })?
             .take()
-            .ok_or_else(|| state_error("incoming_stream.read_stream", "read stream is closed"))
+            .ok_or_else(|| state_error("unresolved_request.reader", "message reader is closed"))
     }
 
-    fn take_write_stream(&self) -> NapiResult<WriteStream> {
-        self.write_stream
+    fn take_writer(&self) -> NapiResult<MessageWriter> {
+        self.writer
             .lock()
             .map_err(|_| {
                 state_error(
-                    "incoming_stream.write_stream",
-                    "incoming stream mutex is poisoned",
+                    "unresolved_request.writer",
+                    "unresolved request mutex is poisoned",
                 )
             })?
             .take()
-            .ok_or_else(|| state_error("incoming_stream.write_stream", "write stream is closed"))
+            .ok_or_else(|| state_error("unresolved_request.writer", "message writer is closed"))
     }
 }
 
 #[napi]
-impl IncomingStream {
+impl UnresolvedRequest {
     #[napi(getter)]
     pub fn stream_id(&self) -> i64 {
         self.stream_id
     }
 
     #[napi(getter)]
-    pub fn read_stream(&self) -> NapiResult<ReadStream> {
-        self.take_read_stream()
+    pub fn reader(&self) -> NapiResult<MessageReader> {
+        self.take_reader()
     }
 
     #[napi(getter)]
-    pub fn write_stream(&self) -> NapiResult<WriteStream> {
-        self.take_write_stream()
+    pub fn writer(&self) -> NapiResult<MessageWriter> {
+        self.take_writer()
+    }
+
+    #[napi]
+    pub fn local_authority(&self) -> Option<LocalAuthority> {
+        self.local_authority.clone()
+    }
+
+    #[napi]
+    pub fn remote_authority(&self) -> Option<RemoteAuthority> {
+        self.remote_authority.clone()
     }
 }
 
@@ -228,6 +197,7 @@ impl Identity {
     }
 }
 
+#[derive(Clone)]
 #[napi(js_name = "LocalAuthority")]
 pub struct LocalAuthority {
     inner: crate::authority::LocalAuthority,
@@ -274,6 +244,7 @@ impl LocalAuthority {
     }
 }
 
+#[derive(Clone)]
 #[napi(js_name = "RemoteAuthority")]
 pub struct RemoteAuthority {
     inner: crate::authority::RemoteAuthority,
@@ -470,9 +441,9 @@ impl Default for EndpointOptions {
     }
 }
 
-#[napi(js_name = "ReadStream")]
-pub struct ReadStream {
-    state: Mutex<ReadStreamState>,
+#[napi(js_name = "MessageReader")]
+pub struct MessageReader {
+    state: Mutex<MessageReaderState>,
 }
 
 struct ActiveRead {
@@ -489,7 +460,7 @@ type StopDoneReceiver =
     tokio::sync::oneshot::Receiver<std::result::Result<(), crate::error::DhttpError>>;
 type StartedRead = (crate::stream::ReadStream, StopCodeReceiver, StopDoneSender);
 
-struct ReadStreamState {
+struct MessageReaderState {
     inner: Option<crate::stream::ReadStream>,
     active: Option<ActiveRead>,
     closed: bool,
@@ -501,14 +472,14 @@ enum FinishRead {
 }
 
 struct ActiveReadCleanup<'a> {
-    stream: &'a ReadStream,
+    stream: &'a MessageReader,
     operation: &'static str,
     done: Option<StopDoneSender>,
     armed: bool,
 }
 
 impl<'a> ActiveReadCleanup<'a> {
-    fn new(stream: &'a ReadStream, operation: &'static str, done: StopDoneSender) -> Self {
+    fn new(stream: &'a MessageReader, operation: &'static str, done: StopDoneSender) -> Self {
         Self {
             stream,
             operation,
@@ -555,10 +526,10 @@ impl Drop for ActiveReadCleanup<'_> {
     }
 }
 
-impl From<crate::stream::ReadStream> for ReadStream {
+impl From<crate::stream::ReadStream> for MessageReader {
     fn from(inner: crate::stream::ReadStream) -> Self {
         Self {
-            state: Mutex::new(ReadStreamState {
+            state: Mutex::new(MessageReaderState {
                 inner: Some(inner),
                 active: None,
                 closed: false,
@@ -567,7 +538,7 @@ impl From<crate::stream::ReadStream> for ReadStream {
     }
 }
 
-impl Drop for ReadStream {
+impl Drop for MessageReader {
     fn drop(&mut self) {
         let inner = match self.state.get_mut() {
             Ok(state) => state.inner.take(),
@@ -579,7 +550,7 @@ impl Drop for ReadStream {
     }
 }
 
-impl ReadStream {
+impl MessageReader {
     fn start_read(&self, operation: &'static str) -> NapiResult<StartedRead> {
         let mut state = self.state.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => state_error(operation, "read stream is busy"),
@@ -706,11 +677,9 @@ impl ReadStream {
     }
 }
 
-#[napi]
-impl ReadStream {
-    #[napi]
-    pub async fn read_data_frame_chunk(&self) -> NapiResult<Option<Vec<u8>>> {
-        let operation = "read_stream.read_data_frame_chunk";
+impl MessageReader {
+    async fn read_data_frame_chunk(&self) -> NapiResult<Option<Vec<u8>>> {
+        let operation = "message_reader.read_data";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
         let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         tokio::select! {
@@ -739,9 +708,8 @@ impl ReadStream {
         }
     }
 
-    #[napi]
-    pub async fn read_header_frame(&self) -> NapiResult<Option<Vec<HeaderField>>> {
-        let operation = "read_stream.read_header_frame";
+    async fn read_header_frame(&self) -> NapiResult<Option<Vec<HeaderField>>> {
+        let operation = "message_reader.read_header";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
         let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         tokio::select! {
@@ -773,21 +741,34 @@ impl ReadStream {
             }
         }
     }
+}
+
+#[napi]
+impl MessageReader {
+    #[napi]
+    pub async fn read_data(&self) -> NapiResult<Option<Vec<u8>>> {
+        self.read_data_frame_chunk().await
+    }
+
+    #[napi]
+    pub async fn read_header(&self) -> NapiResult<Option<Vec<HeaderField>>> {
+        self.read_header_frame().await
+    }
 
     #[napi]
     pub async fn stop(&self, code: u32) -> NapiResult<()> {
-        self.interrupt_active_or_stop_inner("read_stream.stop", u64::from(code))
+        self.interrupt_active_or_stop_inner("message_reader.stop", u64::from(code))
             .await
     }
 }
 
-#[napi(js_name = "WriteStream")]
-pub struct WriteStream {
+#[napi(js_name = "MessageWriter")]
+pub struct MessageWriter {
     inner: Mutex<Option<crate::stream::WriteStream>>,
     closed: AtomicBool,
 }
 
-impl From<crate::stream::WriteStream> for WriteStream {
+impl From<crate::stream::WriteStream> for MessageWriter {
     fn from(inner: crate::stream::WriteStream) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
@@ -796,7 +777,7 @@ impl From<crate::stream::WriteStream> for WriteStream {
     }
 }
 
-impl Drop for WriteStream {
+impl Drop for MessageWriter {
     fn drop(&mut self) {
         let inner = match self.inner.get_mut() {
             Ok(inner) => inner.take(),
@@ -808,7 +789,7 @@ impl Drop for WriteStream {
     }
 }
 
-impl WriteStream {
+impl MessageWriter {
     fn take_inner(&self, operation: &'static str) -> NapiResult<crate::stream::WriteStream> {
         let mut guard = self.inner.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => state_error(operation, "write stream is busy"),
@@ -835,10 +816,10 @@ impl WriteStream {
 }
 
 #[napi]
-impl WriteStream {
+impl MessageWriter {
     #[napi]
-    pub async fn send_header(&self, headers: Vec<HeaderField>) -> NapiResult<()> {
-        let operation = "write_stream.send_header";
+    pub async fn write_header(&self, headers: Vec<HeaderField>) -> NapiResult<()> {
+        let operation = "message_writer.write_header";
         let headers = headers.into_iter().map(HeaderField::into_pair).collect();
         let mut inner = self.take_inner(operation)?;
         let result = inner.send_header(headers).await;
@@ -847,8 +828,8 @@ impl WriteStream {
     }
 
     #[napi]
-    pub async fn send_data(&self, data: Buffer) -> NapiResult<()> {
-        let operation = "write_stream.send_data";
+    pub async fn write_data(&self, data: Buffer) -> NapiResult<()> {
+        let operation = "message_writer.write_data";
         let mut inner = self.take_inner(operation)?;
         let result = inner.send_data(data.to_vec()).await;
         self.restore_inner(inner);
@@ -857,7 +838,7 @@ impl WriteStream {
 
     #[napi]
     pub async fn flush(&self) -> NapiResult<()> {
-        let operation = "write_stream.flush";
+        let operation = "message_writer.flush";
         let mut inner = self.take_inner(operation)?;
         let result = inner.flush().await;
         self.restore_inner(inner);
@@ -866,7 +847,7 @@ impl WriteStream {
 
     #[napi]
     pub async fn close(&self) -> NapiResult<()> {
-        let operation = "write_stream.close";
+        let operation = "message_writer.close";
         let mut inner = self.take_inner(operation)?;
         match inner.close().await {
             Ok(()) => {
@@ -882,7 +863,7 @@ impl WriteStream {
 
     #[napi]
     pub async fn reset(&self, code: u32) -> NapiResult<()> {
-        let operation = "write_stream.reset";
+        let operation = "message_writer.reset";
         let mut inner = self.take_inner(operation)?;
         match inner.reset(u64::from(code)).await {
             Ok(()) => {
@@ -911,12 +892,9 @@ impl From<crate::endpoint::connection::Connection> for Connection {
 #[napi]
 impl Connection {
     #[napi]
-    pub async fn open_request_stream(&self) -> NapiResult<StreamPair> {
-        self.inner
-            .open_request_stream()
-            .await
-            .map(|(read_stream, write_stream)| StreamPair::new(read_stream, write_stream))
-            .map_err(napi_error)
+    pub async fn open_request(&self) -> NapiResult<UnresolvedRequest> {
+        let request = self.inner.open_request().await.map_err(napi_error)?;
+        UnresolvedRequest::from_core(request)
     }
 
     #[napi]
@@ -1064,24 +1042,24 @@ impl Endpoint {
     }
 
     #[napi]
-    pub fn listen_streams(
+    pub fn listen_raw(
         &self,
-        handler: Function<StreamHandlerArgs, StreamHandlerResult>,
+        handler: Function<RawHandlerArgs, RawHandlerResult>,
     ) -> NapiResult<ServeHandle> {
         let handler = handler
-            .build_threadsafe_function::<StreamHandlerArgs>()
+            .build_threadsafe_function::<RawHandlerArgs>()
             .callee_handled::<false>()
             .build()?;
         let handler = Arc::new(handler);
-        let endpoint = self.inner("endpoint.listen_streams")?;
+        let endpoint = self.inner("endpoint.listen_raw")?;
         let inner = within_runtime_if_available(|| {
-            endpoint.listen_streams(move |incoming| {
+            endpoint.listen_raw(move |request| {
                 let handler = handler.clone();
                 Box::pin(async move {
-                    let incoming = IncomingStream::from_core(incoming)
-                        .map_err(|error| dhttp_napi_error("napi.incoming_stream", error))?;
+                    let request = UnresolvedRequest::from_core(request)
+                        .map_err(|error| dhttp_napi_error("napi.unresolved_request", error))?;
                     let result = handler
-                        .call_async_catch((incoming,).into())
+                        .call_async_catch((request,).into())
                         .await
                         .map_err(|error| dhttp_napi_error("napi.handler", error))?;
                     if let Either::A(promise) = result {

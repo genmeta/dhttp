@@ -2,8 +2,8 @@
 
 use napi::bindgen_prelude::{Buffer, Either, FnArgs, Function, Promise};
 
-type StreamHandlerArgs = FnArgs<(dhttp_api::napi::IncomingStream,)>;
-type StreamHandlerResult = Either<Promise<()>, ()>;
+type RawHandlerArgs = FnArgs<(dhttp_api::napi::UnresolvedRequest,)>;
+type RawHandlerResult = Either<Promise<()>, ()>;
 
 #[tokio::test]
 async fn napi_minimal_endpoint_api_is_constructible() {
@@ -46,54 +46,55 @@ fn napi_stream_wrapper_types_are_send() {
     fn assert_send<T: Send>() {}
 
     assert_send::<dhttp_api::napi::Connection>();
-    assert_send::<dhttp_api::napi::ReadStream>();
-    assert_send::<dhttp_api::napi::WriteStream>();
+    assert_send::<dhttp_api::napi::UnresolvedRequest>();
+    assert_send::<dhttp_api::napi::MessageReader>();
+    assert_send::<dhttp_api::napi::MessageWriter>();
 }
 
 #[allow(dead_code)]
-async fn napi_stream_primitive_api_is_exposed(
+async fn napi_raw_primitive_api_is_exposed(
     endpoint: &dhttp_api::napi::Endpoint,
     connection: &dhttp_api::napi::Connection,
-    read_stream: &dhttp_api::napi::ReadStream,
-    write_stream: &dhttp_api::napi::WriteStream,
+    request: dhttp_api::napi::UnresolvedRequest,
+    reader: &dhttp_api::napi::MessageReader,
+    writer: &dhttp_api::napi::MessageWriter,
 ) {
     let _connection = endpoint.connect("example.com".to_string()).await.unwrap();
-    let streams = connection.open_request_stream().await.unwrap();
-    let _read_stream = streams.read_stream().unwrap();
-    let _write_stream = streams.write_stream().unwrap();
+    let _request = connection.open_request().await.unwrap();
 
-    let _headers: Option<Vec<dhttp_api::napi::HeaderField>> =
-        read_stream.read_header_frame().await.unwrap();
-    let _chunk: Option<Vec<u8>> = read_stream.read_data_frame_chunk().await.unwrap();
-    read_stream.stop(0).await.unwrap();
+    let _stream_id = request.stream_id();
+    let _reader = request.reader().unwrap();
+    let _writer = request.writer().unwrap();
+    let _local = request.local_authority();
+    let _remote = request.remote_authority();
 
-    write_stream
-        .send_header(vec![dhttp_api::napi::HeaderField {
+    let _headers: Option<Vec<dhttp_api::napi::HeaderField>> = reader.read_header().await.unwrap();
+    let _chunk: Option<Vec<u8>> = reader.read_data().await.unwrap();
+    reader.stop(0).await.unwrap();
+
+    writer
+        .write_header(vec![dhttp_api::napi::HeaderField {
             name: Buffer::from(b":method".to_vec()),
             value: Buffer::from(b"GET".to_vec()),
         }])
         .await
         .unwrap();
-    write_stream
-        .send_data(Buffer::from(b"hello".to_vec()))
+    writer
+        .write_data(Buffer::from(b"hello".to_vec()))
         .await
         .unwrap();
-    write_stream.flush().await.unwrap();
-    write_stream.close().await.unwrap();
-    write_stream.reset(0).await.unwrap();
+    writer.flush().await.unwrap();
+    writer.close().await.unwrap();
+    writer.reset(0).await.unwrap();
 }
 
 #[allow(dead_code)]
-async fn napi_stream_server_api_is_exposed<'env>(
+async fn napi_raw_server_api_is_exposed<'env>(
     endpoint: &dhttp_api::napi::Endpoint,
-    handler: Function<'env, StreamHandlerArgs, StreamHandlerResult>,
-    incoming: dhttp_api::napi::IncomingStream,
+    handler: Function<'env, RawHandlerArgs, RawHandlerResult>,
     handle: &dhttp_api::napi::ServeHandle,
 ) {
-    let _handle = endpoint.listen_streams(handler).unwrap();
-    let _stream_id = incoming.stream_id();
-    let _read_stream = incoming.read_stream().unwrap();
-    let _write_stream = incoming.write_stream().unwrap();
+    let _handle = endpoint.listen_raw(handler).unwrap();
 
     handle.shutdown().await.unwrap();
     handle.abort().unwrap();
@@ -176,12 +177,10 @@ fn node_wrapper_exports_match_type_declarations_and_hide_native_entry() {
     assert!(js.contains("Identity: native.Identity"));
     assert!(js.contains("ServeHandle: native.ServeHandle"));
     assert!(js.contains("function endpointOptionsFrom"));
-    assert!(dts.contains("interface EndpointCreateOptions"));
-    assert!(dts.contains("dnsSchemes?: Iterable<string>"));
+    assert!(dts.contains("interface EndpointOptions"));
+    assert!(dts.contains("dnsSchemes?: Iterable<DnsScheme>"));
     assert!(dts.contains("bindPatterns?: Iterable<string>"));
-    assert!(
-        dts.contains("static create(options?: EndpointOptions | EndpointCreateOptions | null)")
-    );
+    assert!(dts.contains("static create(options?: EndpointOptions | null)"));
     assert!(package_json.contains("\"exports\""));
     assert!(package_json.contains("\"./js/index.js\""));
     assert!(!package_json.contains("\"./index.js\""));
@@ -198,7 +197,7 @@ fn node_wrapper_cleans_up_raw_streams_on_server_errors_and_reset() {
     assert!(source.contains("requestStop"));
     assert!(source.contains("return { stream, stop: requestStop }"));
     assert!(source.contains("await requestState.stopBody()"));
-    assert!(source.contains("await writeStream.reset(0)"));
+    assert!(source.contains("await writer.reset(0)"));
 }
 
 #[test]
@@ -213,4 +212,28 @@ fn napi_read_stream_stop_can_interrupt_in_flight_read() {
     assert!(napi_source.contains("struct ActiveReadCleanup"));
     assert!(napi_source.contains("tokio::select!"));
     assert!(!js_source.contains("if (activePull != null) {\n      return;\n    }"));
+}
+
+#[test]
+fn napi_node_raw_surface_uses_message_and_unresolved_names() {
+    let source = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/napi/mod.rs"),
+    )
+    .unwrap();
+
+    assert!(source.contains("js_name = \"MessageReader\""));
+    assert!(source.contains("js_name = \"MessageWriter\""));
+    assert!(source.contains("js_name = \"UnresolvedRequest\""));
+    assert!(source.contains("pub async fn open_request"));
+    assert!(source.contains("pub fn listen_raw"));
+    assert!(source.contains("pub async fn read_header"));
+    assert!(source.contains("pub async fn read_data"));
+    assert!(source.contains("pub async fn write_header"));
+    assert!(source.contains("pub async fn write_data"));
+    assert!(!source.contains("js_name = \"StreamPair\""));
+    assert!(!source.contains("js_name = \"IncomingStream\""));
+    assert!(!source.contains("js_name = \"ReadStream\""));
+    assert!(!source.contains("js_name = \"WriteStream\""));
+    assert!(!source.contains("pub async fn send_header"));
+    assert!(!source.contains("pub async fn send_data"));
 }
