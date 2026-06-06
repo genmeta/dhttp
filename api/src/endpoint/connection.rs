@@ -28,6 +28,16 @@ impl Connection {
             .map_err(|error| DhttpError::from_error("connection.open_request_stream", error))
     }
 
+    pub async fn open_request(&self) -> Result<crate::endpoint::unresolved::UnresolvedRequest> {
+        let (read_stream, write_stream) = self.open_request_stream().await?;
+        crate::endpoint::unresolved::UnresolvedRequest::from_client_connection(
+            self,
+            read_stream,
+            write_stream,
+        )
+        .await
+    }
+
     pub async fn local_authority(&self) -> Result<Option<LocalAuthority>> {
         self.inner
             .local_authority()

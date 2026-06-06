@@ -27,6 +27,7 @@ use connection::Connection;
 
 pub mod connection;
 pub mod incoming;
+pub mod unresolved;
 
 pub type Result<T> = std::result::Result<T, DhttpError>;
 
@@ -169,6 +170,21 @@ impl Endpoint {
         let task = tokio::spawn(async move { endpoint.listen(service).await }.in_current_span());
         ServeHandle::new(self.inner.clone(), task)
     }
+
+    #[doc(alias = "serve_raw")]
+    pub fn listen_raw<H>(&self, handler: H) -> ServeHandle
+    where
+        H: Fn(unresolved::UnresolvedRequest) -> BoxFuture<'static, Result<()>>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        let endpoint = self.inner.clone();
+        let service = UnresolvedRequestService { handler };
+        let task = tokio::spawn(async move { endpoint.listen(service).await }.in_current_span());
+        ServeHandle::new(self.inner.clone(), task)
+    }
 }
 
 impl AsRef<dhttp::endpoint::Endpoint> for Endpoint {
@@ -290,6 +306,36 @@ where
     fn call(&mut self, req: dhttp::endpoint::server::UnresolvedRequest) -> Self::Future {
         let handler = self.handler.clone();
         Box::pin(async move { handler(incoming::IncomingStream::new(req)).await })
+    }
+}
+
+#[derive(Clone)]
+struct UnresolvedRequestService<H> {
+    handler: H,
+}
+
+impl<H> Service<dhttp::endpoint::server::UnresolvedRequest> for UnresolvedRequestService<H>
+where
+    H: Fn(unresolved::UnresolvedRequest) -> BoxFuture<'static, Result<()>>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    type Response = ();
+    type Error = DhttpError;
+    type Future = BoxFuture<'static, Result<()>>;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: dhttp::endpoint::server::UnresolvedRequest) -> Self::Future {
+        let handler = self.handler.clone();
+        Box::pin(async move {
+            let request = unresolved::UnresolvedRequest::new(req).await?;
+            handler(request).await
+        })
     }
 }
 
