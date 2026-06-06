@@ -2,7 +2,7 @@ use std::future::Future;
 
 use dhttp::{
     endpoint::server::{self, Request, ResolveError, Response},
-    h3x::endpoint::server::UnresolvedRequest,
+    h3x::endpoint::UnresolvedRequest,
 };
 
 fn assert_resolve<F, Fut>(_f: F)

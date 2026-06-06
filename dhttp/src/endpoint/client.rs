@@ -34,10 +34,10 @@ use crate::{
     endpoint::client::request_error::StreamInitSnafu,
     h3x::{
         buflist::BuflistCursor,
-        error::Code,
-        message::stream::{
+        dhttp::message::{
             InitialMessageStreamError, MessageReader, MessageStreamError, MessageWriter,
         },
+        error::Code,
         pool::ConnectError,
         qpack::field::{FieldSection, MalformedHeaderSection, PseudoHeaders},
         quic,

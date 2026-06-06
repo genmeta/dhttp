@@ -35,9 +35,9 @@ use tracing::Instrument;
 
 use crate::{
     h3x::{
-        endpoint::server::UnresolvedRequest,
+        dhttp::message::{MessageReader, MessageStreamError, MessageWriter},
+        endpoint::UnresolvedRequest,
         error::Code,
-        message::stream::{MessageReader, MessageStreamError, MessageWriter},
         protocol::Protocols,
         qpack::field::Protocol,
         stream_id::StreamId,

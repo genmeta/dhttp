@@ -1,5 +1,5 @@
 pub use crate::{
-    h3x::{endpoint::server::UnresolvedRequest, message::stream::MessageStreamError},
+    h3x::{dhttp::message::MessageStreamError, endpoint::UnresolvedRequest},
     message::ReadToStringError,
 };
 

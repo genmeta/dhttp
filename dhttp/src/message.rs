@@ -11,8 +11,8 @@ use snafu::{ResultExt, Snafu};
 use crate::h3x::{
     buflist::{BufList, BuflistCursor},
     connection,
+    dhttp::message::{MessageReader, MessageStreamError, MessageWriter},
     error::{Code, H3FrameUnexpected, H3MessageError},
-    message::stream::{MessageReader, MessageStreamError, MessageWriter},
     qpack::field::{
         FieldLine, FieldSection, MalformedHeaderSection, Protocol, malformed_header_section,
     },
@@ -1719,7 +1719,7 @@ mod tests {
 
     use bytes::{Buf, Bytes, BytesMut};
 
-    use crate::h3x::message::stream::{MessageReader, MessageWriter};
+    use crate::h3x::dhttp::message::{MessageReader, MessageWriter};
 
     use super::{
         Body, BodyState, IntoAuthority, IntoAuthorityError, IntoBody, IntoUri, IntoUriError,
