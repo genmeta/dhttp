@@ -8,6 +8,8 @@ const CACHE_MODES = new Set(['default', 'no-store', 'reload', 'no-cache', 'force
 const CREDENTIALS_MODES = new Set(['omit', 'same-origin', 'include']);
 const REQUEST_MODES = new Set(['cors', 'no-cors', 'same-origin']);
 const REDIRECT_MODES = new Set(['follow', 'manual', 'error']);
+const MAX_REDIRECTS = 20;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const REFERRER_POLICIES = new Set([
   '',
   'no-referrer',
@@ -64,6 +66,20 @@ function validateRequestInit(init) {
   }
   if (init.window !== undefined && init.window !== null) {
     throw new TypeError('window must be null');
+  }
+}
+
+function abortError(reason) {
+  if (reason instanceof Error) {
+    return reason;
+  }
+  const message = reason == null ? 'operation aborted' : String(reason);
+  return new DOMException(message, 'AbortError');
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw abortError(signal.reason);
   }
 }
 
@@ -181,7 +197,7 @@ function parseRequestHeader(fields) {
   return { method, url: `${scheme}://${authority}${path}`, headers };
 }
 
-function streamFromRead(reader) {
+function streamFromRead(reader, signal = null, uploadPromise = null) {
   let cancelled = false;
   let closed = false;
   let activePull = null;
@@ -215,6 +231,19 @@ function streamFromRead(reader) {
       if (cancelled || closed) {
         controller.close();
         return;
+      }
+      if (signal?.aborted) {
+        await requestStop();
+        throw abortError(signal.reason ?? 'response body aborted');
+      }
+      if (uploadPromise != null) {
+        const uploadState = await Promise.race([
+          uploadPromise.then(() => null, (error) => error),
+          Promise.resolve(null),
+        ]);
+        if (uploadState != null) {
+          throw uploadState;
+        }
       }
       activePull = reader.readData();
       let chunk;
@@ -282,7 +311,41 @@ async function writeBody(writer, body) {
   await writer.close();
 }
 
-function hasBody(method, status) {
+async function raceHeaderAndUpload({ request, reader, writer, signal }) {
+  let abortListener = null;
+  try {
+    await writer.writeHeader(requestHeaderFields(request));
+    const uploadPromise = writeBody(writer, request.body);
+    uploadPromise.catch(() => {});
+    const headerPromise = reader.readHeader();
+
+    const abortPromise = signal == null ? null : new Promise((_, reject) => {
+      abortListener = () => reject(abortError(signal.reason));
+      signal.addEventListener('abort', abortListener, { once: true });
+      if (signal.aborted) {
+        abortListener();
+      }
+    });
+
+    const fields = abortPromise == null
+      ? await headerPromise
+      : await Promise.race([headerPromise, abortPromise]);
+    return { fields, uploadPromise };
+  } catch (error) {
+    try {
+      await writer.reset(0);
+    } catch (_) {
+      // Preserve the original header/upload/abort error.
+    }
+    throw error;
+  } finally {
+    if (signal != null && abortListener != null) {
+      signal.removeEventListener('abort', abortListener);
+    }
+  }
+}
+
+function shouldHaveBody(method, status) {
   return method !== 'HEAD' && !EMPTY_BODY_STATUSES.has(status);
 }
 
@@ -311,7 +374,88 @@ async function requestFromUnresolved(unresolved) {
 async function writeResponse(writer, method, value) {
   const response = value instanceof Response ? value : new Response(value);
   await writer.writeHeader(responseHeaderFields(response));
-  await writeBody(writer, hasBody(method, response.status) ? response.body : null);
+  await writeBody(writer, shouldHaveBody(method, response.status) ? response.body : null);
+}
+
+function redirectLocation(response) {
+  return response.headers.get('location');
+}
+
+function redirectRequest(request, response) {
+  const location = redirectLocation(response);
+  if (location == null || !REDIRECT_STATUSES.has(response.status)) {
+    return null;
+  }
+  const nextUrl = new URL(location, request.url);
+  const init = {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body: request.body,
+    duplex: request.body == null ? undefined : 'half',
+    redirect: request.redirect,
+    signal: request.signal,
+  };
+  if (response.status === 303 || ((response.status === 301 || response.status === 302) && request.method === 'POST')) {
+    init.method = 'GET';
+    delete init.body;
+    delete init.duplex;
+    init.headers.delete('content-length');
+  } else if (request.body != null) {
+    throw new TypeError('cannot replay streaming request body after redirect');
+  }
+  return new Request(nextUrl, init);
+}
+
+async function fetchOnce(endpoint, input, init) {
+  const request = input instanceof Request && init === undefined ? input : toRequest(input, init);
+  rejectPseudoHeaders(request.headers, 'request');
+  throwIfAborted(request.signal);
+  const url = new URL(request.url);
+  const connection = await endpoint.connect(url.host);
+  const unresolved = await connection.openRequest();
+  const reader = unresolved.reader;
+  const writer = unresolved.writer;
+
+  const { fields, uploadPromise } = await raceHeaderAndUpload({
+    request,
+    reader,
+    writer,
+    signal: request.signal,
+  });
+  const { status, headers } = parseResponseHeader(fields);
+  const body = shouldHaveBody(request.method, status)
+    ? streamFromRead(reader, request.signal, uploadPromise).stream
+    : null;
+  if (body == null) {
+    await stopReadStream(reader);
+  }
+  return new Response(body, { status, headers });
+}
+
+async function fetchWithRedirects(endpoint, input, init, count) {
+  const request = toRequest(input, init);
+  const redirect = request.redirect || 'follow';
+  const response = await fetchOnce(endpoint, request, undefined);
+  if (!REDIRECT_STATUSES.has(response.status) || redirectLocation(response) == null) {
+    return response;
+  }
+  if (redirect === 'manual') {
+    return response;
+  }
+  if (redirect === 'error') {
+    await response.body?.cancel();
+    throw new TypeError('redirect encountered with redirect: "error"');
+  }
+  if (count >= MAX_REDIRECTS) {
+    await response.body?.cancel();
+    throw new TypeError('maximum redirect count exceeded');
+  }
+  const next = redirectRequest(request, response);
+  if (next == null) {
+    return response;
+  }
+  await response.body?.cancel();
+  return fetchWithRedirects(endpoint, next, undefined, count + 1);
 }
 
 function normalizeMethod(method) {
@@ -587,20 +731,11 @@ class Endpoint {
   }
 
   async fetch(input, init) {
-    const request = toRequest(input, init);
-    rejectPseudoHeaders(request.headers, 'request');
-    const url = new URL(request.url);
-    const connection = await this.#inner.connect(url.host);
-    const unresolved = await connection.openRequest();
-    const reader = unresolved.reader;
-    const writer = unresolved.writer;
+    return fetchWithRedirects(this, input, init, 0);
+  }
 
-    await writer.writeHeader(requestHeaderFields(request));
-    await writeBody(writer, request.body);
-
-    const { status, headers } = parseResponseHeader(await reader.readHeader());
-    const body = hasBody(request.method, status) ? streamFromRead(reader).stream : null;
-    return new Response(body, { status, headers });
+  async connect(authority) {
+    return this.#inner.connect(authority);
   }
 
   listen(handler) {

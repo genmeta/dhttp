@@ -140,3 +140,23 @@ fn js_fetch_validates_request_init_policy_fields() {
     assert!(js.contains("rejectPseudoHeaders(request.headers, 'request')"));
     assert!(js.contains("rejectPseudoHeaders(response.headers, 'response')"));
 }
+
+#[test]
+fn js_fetch_implements_concurrent_upload_abort_and_redirect_helpers() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+
+    assert!(js.contains("function abortError"));
+    assert!(js.contains("function raceHeaderAndUpload"));
+    assert!(js.contains("const uploadPromise"));
+    assert!(js.contains("await writer.writeHeader(requestHeaderFields(request))"));
+    assert!(js.contains("reader.readHeader()"));
+    assert!(js.contains("signal.addEventListener('abort'"));
+    assert!(js.contains("response body aborted"));
+    assert!(js.contains("function shouldHaveBody"));
+    assert!(js.contains("await stopReadStream(reader)"));
+    assert!(js.contains("MAX_REDIRECTS"));
+    assert!(js.contains("function redirectRequest"));
+    assert!(js.contains("redirect === 'manual'"));
+    assert!(js.contains("redirect === 'error'"));
+}
