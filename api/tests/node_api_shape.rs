@@ -123,3 +123,20 @@ fn raw_entrypoint_exports_only_raw_primitives() {
     assert!(!raw_js.contains("Identity"));
     assert!(!raw_js.contains("DhttpHome"));
 }
+
+#[test]
+fn js_fetch_validates_request_init_policy_fields() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+
+    assert!(js.contains("const CACHE_MODES"));
+    assert!(js.contains("const CREDENTIALS_MODES"));
+    assert!(js.contains("const REQUEST_MODES"));
+    assert!(js.contains("const REDIRECT_MODES"));
+    assert!(js.contains("validateRequestInit"));
+    assert!(js.contains("unsupported integrity"));
+    assert!(js.contains("window must be null"));
+    assert!(js.contains("duplex must be \"half\""));
+    assert!(js.contains("rejectPseudoHeaders(request.headers, 'request')"));
+    assert!(js.contains("rejectPseudoHeaders(response.headers, 'response')"));
+}

@@ -4,6 +4,21 @@ const native = require('../index.js');
 
 const HEADER_ENCODING = 'latin1';
 const EMPTY_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+const CACHE_MODES = new Set(['default', 'no-store', 'reload', 'no-cache', 'force-cache', 'only-if-cached']);
+const CREDENTIALS_MODES = new Set(['omit', 'same-origin', 'include']);
+const REQUEST_MODES = new Set(['cors', 'no-cors', 'same-origin']);
+const REDIRECT_MODES = new Set(['follow', 'manual', 'error']);
+const REFERRER_POLICIES = new Set([
+  '',
+  'no-referrer',
+  'no-referrer-when-downgrade',
+  'origin',
+  'origin-when-cross-origin',
+  'same-origin',
+  'strict-origin',
+  'strict-origin-when-cross-origin',
+  'unsafe-url',
+]);
 const SERVICE = Symbol('dhttp.Service');
 const identityInners = new WeakMap();
 
@@ -26,6 +41,32 @@ function rejectPseudoHeaders(headers, kind) {
   }
 }
 
+function validateEnum(name, value, allowed) {
+  if (value != null && !allowed.has(value)) {
+    throw new TypeError(`${name} has unsupported value ${value}`);
+  }
+}
+
+function validateRequestInit(init) {
+  if (init == null) {
+    return;
+  }
+  if (init.duplex != null && init.duplex !== 'half') {
+    throw new TypeError('duplex must be "half" when provided');
+  }
+  validateEnum('cache', init.cache, CACHE_MODES);
+  validateEnum('credentials', init.credentials, CREDENTIALS_MODES);
+  validateEnum('mode', init.mode, REQUEST_MODES);
+  validateEnum('redirect', init.redirect, REDIRECT_MODES);
+  validateEnum('referrerPolicy', init.referrerPolicy, REFERRER_POLICIES);
+  if (init.integrity != null && init.integrity !== '') {
+    throw new TypeError('unsupported integrity; only empty string is currently supported');
+  }
+  if (init.window !== undefined && init.window !== null) {
+    throw new TypeError('window must be null');
+  }
+}
+
 function field(name, value) {
   return {
     name: Buffer.from(String(name), HEADER_ENCODING),
@@ -42,6 +83,7 @@ function fieldValue(headerField) {
 }
 
 function toRequest(input, init) {
+  validateRequestInit(init);
   if (init && init.body != null && init.duplex == null) {
     return new Request(input, { ...init, duplex: 'half' });
   }
@@ -546,6 +588,7 @@ class Endpoint {
 
   async fetch(input, init) {
     const request = toRequest(input, init);
+    rejectPseudoHeaders(request.headers, 'request');
     const url = new URL(request.url);
     const connection = await this.#inner.connect(url.host);
     const unresolved = await connection.openRequest();
