@@ -3,16 +3,30 @@
   "version": "0.1.0",
   "main": "js/index.js",
   "types": "js/index.d.ts",
+  "engines": {
+    "node": ">=22.17.0"
+  },
   "exports": {
     ".": {
       "types": "./js/index.d.ts",
+      "import": "./js/index.mjs",
       "require": "./js/index.js",
       "default": "./js/index.js"
+    },
+    "./raw": {
+      "types": "./js/raw.d.ts",
+      "import": "./js/raw.mjs",
+      "require": "./js/raw.js",
+      "default": "./js/raw.js"
     }
   },
   "files": [
     "js/index.js",
     "js/index.d.ts",
+    "js/index.mjs",
+    "js/raw.js",
+    "js/raw.d.ts",
+    "js/raw.mjs",
     "*.node",
     "index.js",
     "index.d.ts"
@@ -21,7 +35,7 @@
     "build": "napi build --platform -- --features napi",
     "build:release": "napi build --platform --release -- --features napi",
     "prepare": "npm run build",
-    "smoke": "node -e \"const os = require('node:os'); const path = require('node:path'); const dhttp = require('./js/index.js'); if (typeof dhttp.Endpoint.create !== 'function') throw new Error('missing Endpoint.create'); if (typeof dhttp.DhttpHome !== 'function') throw new Error('missing DhttpHome'); if (typeof dhttp.IdentityProfile !== 'function') throw new Error('missing IdentityProfile'); const smokePath = path.join(os.tmpdir(), 'dhttp-smoke'); const h = new dhttp.DhttpHome(smokePath); if (h.path() !== smokePath) throw new Error('path mismatch'); const p = h.identityProfile('reimu.pilot'); if (p.name() !== 'reimu.pilot') throw new Error('name mismatch')\""
+    "smoke": "node -e \"const os = require('node:os'); const path = require('node:path'); const dhttp = require('./js/index.js'); const raw = require('./js/raw.js'); if (typeof dhttp.Endpoint.create !== 'function') throw new Error('missing Endpoint.create'); if (typeof dhttp.Service !== 'function') throw new Error('missing Service'); if (typeof raw.Connection !== 'function') throw new Error('missing raw.Connection'); if (typeof dhttp.DhttpHome !== 'function') throw new Error('missing DhttpHome'); if (typeof dhttp.IdentityProfile !== 'function') throw new Error('missing IdentityProfile'); const smokePath = path.join(os.tmpdir(), 'dhttp-smoke'); const h = new dhttp.DhttpHome(smokePath); if (h.path() !== smokePath) throw new Error('path mismatch'); const p = h.identityProfile('reimu.pilot'); if (p.name() !== 'reimu.pilot') throw new Error('name mismatch')\""
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.3.5"

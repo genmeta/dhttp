@@ -1,41 +1,50 @@
+export type DnsScheme = "mdns" | "http" | "h3" | "system";
 export type FetchInput = string | URL | Request;
 export type FetchHandler = (request: Request) => Response | Promise<Response>;
+export type RawHandler = (
+  request: import("@genmeta/dhttp/raw").UnresolvedRequest,
+) => void | Promise<void>;
 
-export interface LocalAuthorityLike {
-  name(): string;
-  certChainDer(): Uint8Array[];
-  publicKeyDer(): Uint8Array;
-  sign(data: Uint8Array): Promise<Uint8Array>;
-  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
-}
-
-export interface RemoteAuthorityLike {
-  name(): string;
-  certChainDer(): Uint8Array[];
-  publicKeyDer(): Uint8Array;
-  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
-}
-
-export class LocalAuthority implements LocalAuthorityLike {
-  name(): string;
-  certChainDer(): Uint8Array[];
-  publicKeyDer(): Uint8Array;
-  sign(data: Uint8Array): Promise<Uint8Array>;
-  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
-}
-
-export class RemoteAuthority implements RemoteAuthorityLike {
-  name(): string;
-  certChainDer(): Uint8Array[];
-  publicKeyDer(): Uint8Array;
-  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
-}
-
-export interface EndpointCreateOptions {
+export interface EndpointOptions {
   identity?: Identity | null;
-  dnsSchemes?: Iterable<string>;
+  dnsSchemes?: Iterable<DnsScheme>;
   bindPatterns?: Iterable<string>;
 }
+
+export interface LocalAuthority {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  sign(data: Uint8Array): Promise<Uint8Array>;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+export interface RemoteAuthority {
+  name(): string;
+  certChainDer(): Uint8Array[];
+  publicKeyDer(): Uint8Array;
+  verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+export interface Service extends RawHandler {
+  route(path: string, handler: FetchHandler | Service): Service;
+  on(method: string, path: string, handler: FetchHandler | Service): Service;
+  options(path: string, handler: FetchHandler | Service): Service;
+  get(path: string, handler: FetchHandler | Service): Service;
+  post(path: string, handler: FetchHandler | Service): Service;
+  put(path: string, handler: FetchHandler | Service): Service;
+  delete(path: string, handler: FetchHandler | Service): Service;
+  head(path: string, handler: FetchHandler | Service): Service;
+  trace(path: string, handler: FetchHandler | Service): Service;
+  connect(path: string, handler: FetchHandler | Service): Service;
+  patch(path: string, handler: FetchHandler | Service): Service;
+  fallback(handler: FetchHandler | Service): Service;
+}
+
+export const Service: {
+  new (): Service;
+  from(handler: FetchHandler): Service;
+};
 
 export class DhttpHome {
   constructor(path: string);
@@ -64,19 +73,6 @@ export class Identity {
   asRemoteAuthority(): RemoteAuthority;
 }
 
-export class EndpointOptions {
-  constructor();
-  identity(): Identity | null;
-  setIdentity(identity: Identity): void;
-  clearIdentity(): void;
-  addDnsScheme(scheme: string): void;
-  dnsSchemes(): string[];
-  clearDnsSchemes(): void;
-  addBindPattern(pattern: string): void;
-  bindPatterns(): string[];
-  clearBindPatterns(): void;
-}
-
 export class ServeHandle {
   shutdown(): Promise<void>;
   abort(): void;
@@ -85,11 +81,13 @@ export class ServeHandle {
 }
 
 export class Endpoint {
-  static create(options?: EndpointOptions | EndpointCreateOptions | null): Promise<Endpoint>;
+  static create(options?: EndpointOptions | null): Promise<Endpoint>;
   static load(name: string): Promise<Endpoint>;
   static loadFrom(path: string): Promise<Endpoint>;
   identity(): Identity | null;
   bindPatterns(): string[];
   fetch(input: FetchInput, init?: RequestInit): Promise<Response>;
-  listen(handler: FetchHandler): ServeHandle;
+  listen(handler: RawHandler): ServeHandle;
+  listen(service: Service): ServeHandle;
+  connect(authority: string): Promise<import("@genmeta/dhttp/raw").Connection>;
 }
