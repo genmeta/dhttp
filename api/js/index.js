@@ -4,6 +4,26 @@ const native = require('../index.js');
 
 const HEADER_ENCODING = 'latin1';
 const EMPTY_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+const SERVICE = Symbol('dhttp.Service');
+
+function bytes(value) {
+  if (value == null) {
+    return value;
+  }
+  return value instanceof Uint8Array ? value : new Uint8Array(value);
+}
+
+function byteArrays(values) {
+  return values.map((value) => bytes(value));
+}
+
+function rejectPseudoHeaders(headers, kind) {
+  for (const [name] of headers) {
+    if (String(name).startsWith(':')) {
+      throw new TypeError(`${kind} headers must not contain pseudo-header ${name}`);
+    }
+  }
+}
 
 function field(name, value) {
   return {
@@ -50,6 +70,7 @@ function endpointOptionsFrom(options) {
 
 function requestHeaderFields(request) {
   const url = new URL(request.url);
+  rejectPseudoHeaders(request.headers, 'request');
   const path = `${url.pathname}${url.search}` || '/';
   const fields = [
     field(':method', request.method),
@@ -64,6 +85,7 @@ function requestHeaderFields(request) {
 }
 
 function responseHeaderFields(response) {
+  rejectPseudoHeaders(response.headers, 'response');
   const fields = [field(':status', response.status)];
   for (const [name, value] of response.headers) {
     fields.push(field(name, value));
@@ -119,7 +141,7 @@ function parseRequestHeader(fields) {
   return { method, url: `${scheme}://${authority}${path}`, headers };
 }
 
-function streamFromRead(readStream) {
+function streamFromRead(reader) {
   let cancelled = false;
   let closed = false;
   let activePull = null;
@@ -135,7 +157,7 @@ function streamFromRead(readStream) {
     }
     stopping = (async () => {
       try {
-        await readStream.stop(0);
+        await reader.stop(0);
       } finally {
         closed = true;
       }
@@ -154,7 +176,7 @@ function streamFromRead(readStream) {
         controller.close();
         return;
       }
-      activePull = readStream.readDataFrameChunk();
+      activePull = reader.readData();
       let chunk;
       try {
         chunk = await activePull;
@@ -192,15 +214,15 @@ async function cancelRequestBody(requestState) {
   }
 }
 
-async function stopReadStream(readStream) {
+async function stopReadStream(reader) {
   try {
-    await readStream.stop(0);
+    await reader.stop(0);
   } catch (_) {
     // Preserve the original header/parsing error; the native stream may already be closed.
   }
 }
 
-async function writeBody(writeStream, body) {
+async function writeBody(writer, body) {
   if (body != null) {
     const reader = body.getReader();
     try {
@@ -210,47 +232,140 @@ async function writeBody(writeStream, body) {
           break;
         }
         if (value != null && value.byteLength !== 0) {
-          await writeStream.sendData(Buffer.from(value));
+          await writer.writeData(Buffer.from(value));
         }
       }
     } finally {
       reader.releaseLock();
     }
   }
-  await writeStream.close();
+  await writer.close();
 }
 
 function hasBody(method, status) {
   return method !== 'HEAD' && !EMPTY_BODY_STATUSES.has(status);
 }
 
-async function requestFromIncoming(incoming) {
-  const readStream = incoming.readStream;
+async function requestFromUnresolved(unresolved) {
+  const reader = unresolved.reader;
   try {
-    const fields = await readStream.readHeaderFrame();
+    const fields = await reader.readHeader();
     const { method, url, headers } = parseRequestHeader(fields);
     const init = { method, headers };
     let stopBody = async () => {
-      await stopReadStream(readStream);
+      await stopReadStream(reader);
     };
     if (method !== 'GET' && method !== 'HEAD') {
-      const body = streamFromRead(readStream);
+      const body = streamFromRead(reader);
       init.body = body.stream;
       init.duplex = 'half';
       stopBody = body.stop;
     }
     return { request: new Request(url, init), stopBody };
   } catch (error) {
-    await stopReadStream(readStream);
+    await stopReadStream(reader);
     throw error;
   }
 }
 
-async function writeResponse(writeStream, method, value) {
+async function writeResponse(writer, method, value) {
   const response = value instanceof Response ? value : new Response(value);
-  await writeStream.sendHeader(responseHeaderFields(response));
-  await writeBody(writeStream, hasBody(method, response.status) ? response.body : null);
+  await writer.writeHeader(responseHeaderFields(response));
+  await writeBody(writer, hasBody(method, response.status) ? response.body : null);
 }
+
+function normalizeMethod(method) {
+  return String(method).toUpperCase();
+}
+
+function requestPath(request) {
+  return new URL(request.url).pathname;
+}
+
+function asService(handler) {
+  return isService(handler) ? handler : Service.from(handler);
+}
+
+function isService(value) {
+  return typeof value === 'function' && value[SERVICE] === true;
+}
+
+function createService(fetchHandler = null) {
+  const routes = [];
+  let fallback = async () => new Response(null, { status: 404 });
+
+  async function responseForRequest(request) {
+    const handler = fetchHandler ?? matchRoute(routes, request) ?? fallback;
+    return await handler(request);
+  }
+
+  async function service(unresolved) {
+    if (unresolved instanceof Request) {
+      return await responseForRequest(unresolved);
+    }
+
+    const requestState = await requestFromUnresolved(unresolved);
+    const writer = unresolved.writer;
+    try {
+      const request = requestState.request;
+      const response = await responseForRequest(request);
+      await writeResponse(writer, request.method, response);
+    } catch (error) {
+      try {
+        await writer.reset(0);
+      } catch (_) {
+        // Preserve the original handler/write error; the stream may already be closed.
+      }
+      throw error;
+    } finally {
+      await cancelRequestBody(requestState);
+    }
+  }
+
+  Object.defineProperty(service, SERVICE, { value: true });
+
+  service.route = (path, handler) => {
+    routes.push({ method: null, path, service: asService(handler) });
+    return service;
+  };
+  service.on = (method, path, handler) => {
+    routes.push({ method: normalizeMethod(method), path, service: asService(handler) });
+    return service;
+  };
+  service.fallback = (handler) => {
+    fallback = asService(handler);
+    return service;
+  };
+  for (const method of ['options', 'get', 'post', 'put', 'delete', 'head', 'trace', 'connect', 'patch']) {
+    service[method] = (path, handler) => service.on(method, path, handler);
+  }
+  return service;
+}
+
+function matchRoute(routes, request) {
+  const method = normalizeMethod(request.method);
+  const path = requestPath(request);
+  for (const route of routes) {
+    if ((route.method == null || route.method === method) && route.path === path) {
+      return route.service;
+    }
+  }
+  return null;
+}
+
+function Service() {
+  if (!new.target) {
+    throw new TypeError('Service must be constructed with new Service()');
+  }
+  return createService();
+}
+
+Service.from = function from(handler) {
+  if (typeof handler !== 'function') {
+    throw new TypeError('Service.from(handler) requires a function');
+  }
+  return createService(handler);
+};
 
 class Endpoint {
   #inner;
@@ -283,34 +398,29 @@ class Endpoint {
     const request = toRequest(input, init);
     const url = new URL(request.url);
     const connection = await this.#inner.connect(url.host);
-    const { readStream, writeStream } = await connection.openRequestStream();
+    const unresolved = await connection.openRequest();
+    const reader = unresolved.reader;
+    const writer = unresolved.writer;
 
-    await writeStream.sendHeader(requestHeaderFields(request));
-    await writeBody(writeStream, request.body);
+    await writer.writeHeader(requestHeaderFields(request));
+    await writeBody(writer, request.body);
 
-    const { status, headers } = parseResponseHeader(await readStream.readHeaderFrame());
-    const body = hasBody(request.method, status) ? streamFromRead(readStream).stream : null;
+    const { status, headers } = parseResponseHeader(await reader.readHeader());
+    const body = hasBody(request.method, status) ? streamFromRead(reader).stream : null;
     return new Response(body, { status, headers });
   }
 
   listen(handler) {
-    return this.#inner.listenStreams(async (incoming) => {
-      const writeStream = incoming.writeStream;
-      let requestState = null;
-      try {
-        requestState = await requestFromIncoming(incoming);
-        const request = requestState.request;
-        const response = await handler(request);
-        await writeResponse(writeStream, request.method, response);
-      } catch (error) {
-        try {
-          await writeStream.reset(0);
-        } catch (_) {
-          // Preserve the original handler/write error; the stream may already be closed.
+    if (typeof handler !== 'function') {
+      throw new TypeError('Endpoint.listen(handler) requires a raw handler or Service');
+    }
+    return this.#inner.listenRaw(async (unresolved) => {
+      const result = await handler(unresolved);
+      if (result !== undefined) {
+        if (result instanceof Response) {
+          throw new TypeError('raw listen handler returned a Response; Endpoint.listen(function) receives raw UnresolvedRequest; use Service.from(handler) for Request -> Response');
         }
-        throw error;
-      } finally {
-        await cancelRequestBody(requestState);
+        throw new TypeError('raw listen handler must return undefined');
       }
     });
   }
@@ -318,11 +428,9 @@ class Endpoint {
 
 module.exports = {
   Endpoint,
+  Service,
   DhttpHome: native.DhttpHome,
   IdentityProfile: native.IdentityProfile,
   Identity: native.Identity,
-  EndpointOptions: native.EndpointOptions,
-  LocalAuthority: native.LocalAuthority,
-  RemoteAuthority: native.RemoteAuthority,
   ServeHandle: native.ServeHandle,
 };
