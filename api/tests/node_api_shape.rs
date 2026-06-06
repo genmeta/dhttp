@@ -160,3 +160,14 @@ fn js_fetch_implements_concurrent_upload_abort_and_redirect_helpers() {
     assert!(js.contains("redirect === 'manual'"));
     assert!(js.contains("redirect === 'error'"));
 }
+
+#[test]
+fn js_fetch_body_stream_tracks_upload_errors_without_poll_race() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+
+    assert!(js.contains("let uploadError = null"));
+    assert!(js.contains("uploadPromise.then("));
+    assert!(js.contains("uploadError = error"));
+    assert!(!js.contains("Promise.resolve(null)"));
+}

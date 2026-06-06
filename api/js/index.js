@@ -202,6 +202,18 @@ function streamFromRead(reader, signal = null, uploadPromise = null) {
   let closed = false;
   let activePull = null;
   let stopping = null;
+  let uploadFailed = false;
+  let uploadError = null;
+
+  if (uploadPromise != null) {
+    uploadPromise.then(
+      () => {},
+      (error) => {
+        uploadFailed = true;
+        uploadError = error;
+      },
+    );
+  }
 
   async function stopNow() {
     if (closed) {
@@ -236,14 +248,8 @@ function streamFromRead(reader, signal = null, uploadPromise = null) {
         await requestStop();
         throw abortError(signal.reason ?? 'response body aborted');
       }
-      if (uploadPromise != null) {
-        const uploadState = await Promise.race([
-          uploadPromise.then(() => null, (error) => error),
-          Promise.resolve(null),
-        ]);
-        if (uploadState != null) {
-          throw uploadState;
-        }
+      if (uploadFailed) {
+        throw uploadError;
       }
       activePull = reader.readData();
       let chunk;
