@@ -5,6 +5,7 @@ const native = require('../index.js');
 const HEADER_ENCODING = 'latin1';
 const EMPTY_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 const SERVICE = Symbol('dhttp.Service');
+const identityInners = new WeakMap();
 
 function bytes(value) {
   if (value == null) {
@@ -51,13 +52,10 @@ function endpointOptionsFrom(options) {
   if (options == null) {
     return null;
   }
-  if (options instanceof native.EndpointOptions) {
-    return options;
-  }
 
   const endpointOptions = new native.EndpointOptions();
   if (options.identity != null) {
-    endpointOptions.setIdentity(options.identity);
+    endpointOptions.setIdentity(identityInners.get(options.identity) ?? options.identity);
   }
   for (const scheme of options.dnsSchemes ?? []) {
     endpointOptions.addDnsScheme(scheme);
@@ -342,6 +340,157 @@ function createService(fetchHandler = null) {
   return service;
 }
 
+class Identity {
+  #inner;
+
+  constructor(inner) {
+    this.#inner = inner;
+    identityInners.set(this, inner);
+  }
+
+  name() {
+    return this.#inner.name();
+  }
+
+  certChainDer() {
+    return byteArrays(this.#inner.certChainDer());
+  }
+
+  publicKeyDer() {
+    return bytes(this.#inner.publicKeyDer());
+  }
+
+  sign(data) {
+    return bytes(this.#inner.sign(Buffer.from(data)));
+  }
+
+  verify(data, signature) {
+    return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
+  }
+
+  asLocalAuthority() {
+    return new LocalAuthorityCapability(this.#inner.asLocalAuthority());
+  }
+
+  asRemoteAuthority() {
+    return new RemoteAuthorityCapability(this.#inner.asRemoteAuthority());
+  }
+}
+
+class LocalAuthorityCapability {
+  #inner;
+
+  constructor(inner) {
+    this.#inner = inner;
+  }
+
+  name() {
+    return this.#inner.name();
+  }
+
+  certChainDer() {
+    return byteArrays(this.#inner.certChainDer());
+  }
+
+  publicKeyDer() {
+    return bytes(this.#inner.publicKeyDer());
+  }
+
+  async sign(data) {
+    return bytes(await this.#inner.sign(Buffer.from(data)));
+  }
+
+  async verify(data, signature) {
+    return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
+  }
+}
+
+class RemoteAuthorityCapability {
+  #inner;
+
+  constructor(inner) {
+    this.#inner = inner;
+  }
+
+  name() {
+    return this.#inner.name();
+  }
+
+  certChainDer() {
+    return byteArrays(this.#inner.certChainDer());
+  }
+
+  publicKeyDer() {
+    return bytes(this.#inner.publicKeyDer());
+  }
+
+  async verify(data, signature) {
+    return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
+  }
+}
+
+class IdentityProfile {
+  #inner;
+
+  constructor(inner) {
+    this.#inner = inner;
+  }
+
+  static fromPath(path) {
+    return new IdentityProfile(native.IdentityProfile.fromPath(path));
+  }
+
+  name() {
+    return this.#inner.name();
+  }
+
+  path() {
+    return this.#inner.path();
+  }
+
+  async loadIdentity() {
+    return new Identity(await this.#inner.loadIdentity());
+  }
+}
+
+class DhttpHome {
+  #inner;
+
+  constructor(path) {
+    this.#inner = new native.DhttpHome(path);
+  }
+
+  static #from(inner) {
+    const home = Object.create(DhttpHome.prototype);
+    home.#inner = inner;
+    return home;
+  }
+
+  static load() {
+    return DhttpHome.#from(native.DhttpHome.load());
+  }
+
+  path() {
+    return this.#inner.path();
+  }
+
+  identityProfile(name) {
+    return new IdentityProfile(this.#inner.identityProfile(name));
+  }
+
+  async resolveIdentityProfile(name) {
+    return new IdentityProfile(await this.#inner.resolveIdentityProfile(name));
+  }
+
+  async identityProfileExists(name) {
+    return this.#inner.identityProfileExists(name);
+  }
+
+  async identityProfileNames() {
+    return this.#inner.identityProfileNames();
+  }
+}
+
 function matchRoute(routes, request) {
   const method = normalizeMethod(request.method);
   const path = requestPath(request);
@@ -387,7 +536,8 @@ class Endpoint {
   }
 
   identity() {
-    return this.#inner.identity();
+    const identity = this.#inner.identity();
+    return identity == null ? null : new Identity(identity);
   }
 
   bindPatterns() {
@@ -429,8 +579,8 @@ class Endpoint {
 module.exports = {
   Endpoint,
   Service,
-  DhttpHome: native.DhttpHome,
-  IdentityProfile: native.IdentityProfile,
-  Identity: native.Identity,
+  DhttpHome,
+  IdentityProfile,
+  Identity,
   ServeHandle: native.ServeHandle,
 };

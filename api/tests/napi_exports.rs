@@ -174,7 +174,8 @@ fn node_wrapper_exports_match_type_declarations_and_hide_native_entry() {
     let dts = std::fs::read_to_string(manifest_dir.join("js/index.d.ts")).unwrap();
     let package_json = std::fs::read_to_string(manifest_dir.join("package.json")).unwrap();
 
-    assert!(js.contains("Identity: native.Identity"));
+    assert!(js.contains("Identity,"));
+    assert!(!js.contains("Identity: native.Identity"));
     assert!(js.contains("ServeHandle: native.ServeHandle"));
     assert!(js.contains("function endpointOptionsFrom"));
     assert!(dts.contains("interface EndpointOptions"));

@@ -93,3 +93,33 @@ fn root_js_uses_raw_message_method_names() {
     assert!(!js.contains("sendHeader"));
     assert!(!js.contains("sendData"));
 }
+
+#[test]
+fn js_facade_uses_plain_options_and_uint8array_normalization() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
+    let dts = std::fs::read_to_string(manifest_dir.join("js/index.d.ts")).unwrap();
+
+    assert!(js.contains("function endpointOptionsFrom(options)"));
+    assert!(!js.contains("options instanceof native.EndpointOptions"));
+    assert!(js.contains("function bytes(value)"));
+    assert!(js.contains("new Uint8Array(value)"));
+    assert!(dts.contains("certChainDer(): Uint8Array[]"));
+    assert!(dts.contains("publicKeyDer(): Uint8Array"));
+    assert!(dts.contains("sign(data: Uint8Array): Uint8Array"));
+    assert!(dts.contains("verify(data: Uint8Array, signature: Uint8Array): boolean"));
+}
+
+#[test]
+fn raw_entrypoint_exports_only_raw_primitives() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let raw_js = std::fs::read_to_string(manifest_dir.join("js/raw.js")).unwrap();
+
+    assert!(raw_js.contains("Connection: native.Connection"));
+    assert!(raw_js.contains("UnresolvedRequest: native.UnresolvedRequest"));
+    assert!(raw_js.contains("MessageReader: native.MessageReader"));
+    assert!(raw_js.contains("MessageWriter: native.MessageWriter"));
+    assert!(!raw_js.contains("EndpointOptions"));
+    assert!(!raw_js.contains("Identity"));
+    assert!(!raw_js.contains("DhttpHome"));
+}
