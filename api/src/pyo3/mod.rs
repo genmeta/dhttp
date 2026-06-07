@@ -132,7 +132,8 @@ impl Identity {
     }
 }
 
-#[pyclass(name = "LocalAuthority")]
+#[pyclass(name = "LocalAuthority", skip_from_py_object)]
+#[derive(Clone)]
 pub struct LocalAuthority {
     inner: crate::authority::LocalAuthority,
 }
@@ -172,7 +173,8 @@ impl LocalAuthority {
     }
 }
 
-#[pyclass(name = "RemoteAuthority")]
+#[pyclass(name = "RemoteAuthority", skip_from_py_object)]
+#[derive(Clone)]
 pub struct RemoteAuthority {
     inner: crate::authority::RemoteAuthority,
 }
@@ -344,9 +346,9 @@ impl Default for EndpointOptions {
     }
 }
 
-#[pyclass(name = "ReadStream")]
-pub struct ReadStream {
-    state: Mutex<ReadStreamState>,
+#[pyclass(name = "MessageReader")]
+pub struct MessageReader {
+    state: Mutex<MessageReaderState>,
 }
 
 struct ActiveRead {
@@ -363,7 +365,7 @@ type StopDoneReceiver =
     tokio::sync::oneshot::Receiver<std::result::Result<(), crate::error::DhttpError>>;
 type StartedRead = (crate::stream::ReadStream, StopCodeReceiver, StopDoneSender);
 
-struct ReadStreamState {
+struct MessageReaderState {
     inner: Option<crate::stream::ReadStream>,
     active: Option<ActiveRead>,
     closed: bool,
@@ -375,14 +377,14 @@ enum FinishRead {
 }
 
 struct ActiveReadCleanup<'a> {
-    stream: &'a ReadStream,
+    stream: &'a MessageReader,
     operation: &'static str,
     done: Option<StopDoneSender>,
     armed: bool,
 }
 
 impl<'a> ActiveReadCleanup<'a> {
-    fn new(stream: &'a ReadStream, operation: &'static str, done: StopDoneSender) -> Self {
+    fn new(stream: &'a MessageReader, operation: &'static str, done: StopDoneSender) -> Self {
         Self {
             stream,
             operation,
@@ -399,7 +401,7 @@ impl<'a> ActiveReadCleanup<'a> {
     fn take_done(&mut self) -> PyResult<StopDoneSender> {
         self.done
             .take()
-            .ok_or_else(|| state_error(self.operation, "read stream stop completion is missing"))
+            .ok_or_else(|| state_error(self.operation, "message reader stop completion is missing"))
     }
 }
 
@@ -423,16 +425,16 @@ impl Drop for ActiveReadCleanup<'_> {
         if let Some(done) = self.done.take() {
             _ = done.send(Err(crate::error::DhttpError::from_message(
                 self.operation,
-                "read stream read was cancelled",
+                "message reader read was cancelled",
             )));
         }
     }
 }
 
-impl From<crate::stream::ReadStream> for ReadStream {
+impl From<crate::stream::ReadStream> for MessageReader {
     fn from(inner: crate::stream::ReadStream) -> Self {
         Self {
-            state: Mutex::new(ReadStreamState {
+            state: Mutex::new(MessageReaderState {
                 inner: Some(inner),
                 active: None,
                 closed: false,
@@ -441,7 +443,7 @@ impl From<crate::stream::ReadStream> for ReadStream {
     }
 }
 
-impl Drop for ReadStream {
+impl Drop for MessageReader {
     fn drop(&mut self) {
         let inner = match self.state.get_mut() {
             Ok(state) => state.inner.take(),
@@ -453,19 +455,19 @@ impl Drop for ReadStream {
     }
 }
 
-impl ReadStream {
+impl MessageReader {
     fn start_read(&self, operation: &'static str) -> PyResult<StartedRead> {
         let mut state = self.state.try_lock().map_err(|error| match error {
-            std::sync::TryLockError::WouldBlock => state_error(operation, "read stream is busy"),
+            std::sync::TryLockError::WouldBlock => state_error(operation, "message reader is busy"),
             std::sync::TryLockError::Poisoned(_) => {
-                state_error(operation, "read stream mutex is poisoned")
+                state_error(operation, "message reader mutex is poisoned")
             }
         })?;
         let inner = state.inner.take().ok_or_else(|| {
             if state.closed {
-                state_error(operation, "read stream is closed")
+                state_error(operation, "message reader is closed")
             } else {
-                state_error(operation, "read stream is busy")
+                state_error(operation, "message reader is busy")
             }
         })?;
         let (stop, stop_requested) = tokio::sync::oneshot::channel();
@@ -523,7 +525,7 @@ impl ReadStream {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| state_error(operation, "read stream mutex is poisoned"))?;
+                .map_err(|_| state_error(operation, "message reader mutex is poisoned"))?;
 
             if let Some(inner) = state.inner.take() {
                 StopTarget::Inner(inner)
@@ -531,20 +533,19 @@ impl ReadStream {
                 if active.stop_requested.is_some() {
                     return Err(state_error(
                         operation,
-                        "read stream stop is already pending",
+                        "message reader stop is already pending",
                     ));
                 }
                 active.stop_requested = Some(code);
                 let stop = active.stop.take();
-                let done = active
-                    .done
-                    .take()
-                    .ok_or_else(|| state_error(operation, "read stream stop is already pending"))?;
+                let done = active.done.take().ok_or_else(|| {
+                    state_error(operation, "message reader stop is already pending")
+                })?;
                 StopTarget::Active { stop, done }
             } else if state.closed {
-                return Err(state_error(operation, "read stream is closed"));
+                return Err(state_error(operation, "message reader is closed"));
             } else {
-                return Err(state_error(operation, "read stream is busy"));
+                return Err(state_error(operation, "message reader is busy"));
             }
         };
 
@@ -560,7 +561,10 @@ impl ReadStream {
                 }
                 match done.await {
                     Ok(result) => result.map_err(py_error),
-                    Err(_) => Err(state_error(operation, "read stream stop was interrupted")),
+                    Err(_) => Err(state_error(
+                        operation,
+                        "message reader stop was interrupted",
+                    )),
                 }
             }
         }
@@ -581,9 +585,9 @@ impl ReadStream {
 }
 
 #[pymethods]
-impl ReadStream {
-    pub async fn read_data_frame_chunk(&self) -> PyResult<Option<Vec<u8>>> {
-        let operation = "read_stream.read_data_frame_chunk";
+impl MessageReader {
+    pub async fn read_data(&self) -> PyResult<Option<Vec<u8>>> {
+        let operation = "message_reader.read_data";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
         let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         with_tokio(async move {
@@ -596,7 +600,7 @@ impl ReadStream {
                     cleanup.disarm();
                     Ok(None)
                 }
-                result = inner.read_data_frame_chunk() => {
+                result = inner.read_data() => {
                     match self.finish_read(inner) {
                         FinishRead::Restored => {
                             cleanup.disarm();
@@ -615,8 +619,8 @@ impl ReadStream {
         .await
     }
 
-    pub async fn read_header_frame(&self) -> PyResult<Option<Vec<(Vec<u8>, Vec<u8>)>>> {
-        let operation = "read_stream.read_header_frame";
+    pub async fn read_header(&self) -> PyResult<Option<Vec<(Vec<u8>, Vec<u8>)>>> {
+        let operation = "message_reader.read_header";
         let (mut inner, stop_requested, done) = self.start_read(operation)?;
         let mut cleanup = ActiveReadCleanup::new(self, operation, done);
         with_tokio(async move {
@@ -629,7 +633,7 @@ impl ReadStream {
                     cleanup.disarm();
                     Ok(None)
                 }
-                result = inner.read_header_frame() => {
+                result = inner.read_header() => {
                     match self.finish_read(inner) {
                         FinishRead::Restored => {
                             cleanup.disarm();
@@ -649,18 +653,18 @@ impl ReadStream {
     }
 
     pub async fn stop(&self, code: u64) -> PyResult<()> {
-        self.interrupt_active_or_stop_inner("read_stream.stop", code)
+        self.interrupt_active_or_stop_inner("message_reader.stop", code)
             .await
     }
 }
 
-#[pyclass(name = "WriteStream")]
-pub struct WriteStream {
+#[pyclass(name = "MessageWriter")]
+pub struct MessageWriter {
     inner: Mutex<Option<crate::stream::WriteStream>>,
     closed: AtomicBool,
 }
 
-impl From<crate::stream::WriteStream> for WriteStream {
+impl From<crate::stream::WriteStream> for MessageWriter {
     fn from(inner: crate::stream::WriteStream) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
@@ -669,7 +673,7 @@ impl From<crate::stream::WriteStream> for WriteStream {
     }
 }
 
-impl Drop for WriteStream {
+impl Drop for MessageWriter {
     fn drop(&mut self) {
         let inner = match self.inner.get_mut() {
             Ok(inner) => inner.take(),
@@ -681,19 +685,19 @@ impl Drop for WriteStream {
     }
 }
 
-impl WriteStream {
+impl MessageWriter {
     fn take_inner(&self, operation: &'static str) -> PyResult<crate::stream::WriteStream> {
         let mut guard = self.inner.try_lock().map_err(|error| match error {
-            std::sync::TryLockError::WouldBlock => state_error(operation, "write stream is busy"),
+            std::sync::TryLockError::WouldBlock => state_error(operation, "message writer is busy"),
             std::sync::TryLockError::Poisoned(_) => {
-                state_error(operation, "write stream mutex is poisoned")
+                state_error(operation, "message writer mutex is poisoned")
             }
         })?;
         guard.take().ok_or_else(|| {
             if self.closed.load(Ordering::SeqCst) {
-                state_error(operation, "write stream is closed")
+                state_error(operation, "message writer is closed")
             } else {
-                state_error(operation, "write stream is busy")
+                state_error(operation, "message writer is busy")
             }
         })
     }
@@ -708,25 +712,25 @@ impl WriteStream {
 }
 
 #[pymethods]
-impl WriteStream {
-    pub async fn send_header(&self, headers: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<()> {
-        let operation = "write_stream.send_header";
+impl MessageWriter {
+    pub async fn write_header(&self, headers: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<()> {
+        let operation = "message_writer.write_header";
         let mut inner = self.take_inner(operation)?;
-        let result = with_tokio(inner.send_header(headers)).await;
+        let result = with_tokio(inner.write_header(headers)).await;
         self.restore_inner(inner);
         result.map_err(py_error)
     }
 
-    pub async fn send_data(&self, data: Vec<u8>) -> PyResult<()> {
-        let operation = "write_stream.send_data";
+    pub async fn write_data(&self, data: Vec<u8>) -> PyResult<()> {
+        let operation = "message_writer.write_data";
         let mut inner = self.take_inner(operation)?;
-        let result = with_tokio(inner.send_data(data)).await;
+        let result = with_tokio(inner.write_data(data)).await;
         self.restore_inner(inner);
         result.map_err(py_error)
     }
 
     pub async fn flush(&self) -> PyResult<()> {
-        let operation = "write_stream.flush";
+        let operation = "message_writer.flush";
         let mut inner = self.take_inner(operation)?;
         let result = with_tokio(inner.flush()).await;
         self.restore_inner(inner);
@@ -734,7 +738,7 @@ impl WriteStream {
     }
 
     pub async fn close(&self) -> PyResult<()> {
-        let operation = "write_stream.close";
+        let operation = "message_writer.close";
         let mut inner = self.take_inner(operation)?;
         match with_tokio(inner.close()).await {
             Ok(()) => {
@@ -749,7 +753,7 @@ impl WriteStream {
     }
 
     pub async fn reset(&self, code: u64) -> PyResult<()> {
-        let operation = "write_stream.reset";
+        let operation = "message_writer.reset";
         let mut inner = self.take_inner(operation)?;
         match with_tokio(inner.reset(code)).await {
             Ok(()) => {
@@ -764,115 +768,80 @@ impl WriteStream {
     }
 }
 
-#[pyclass(name = "StreamPair")]
-pub struct StreamPair {
-    read_stream: Mutex<Option<ReadStream>>,
-    write_stream: Mutex<Option<WriteStream>>,
-}
-
-impl StreamPair {
-    fn new(
-        read_stream: crate::stream::ReadStream,
-        write_stream: crate::stream::WriteStream,
-    ) -> Self {
-        Self {
-            read_stream: Mutex::new(Some(ReadStream::from(read_stream))),
-            write_stream: Mutex::new(Some(WriteStream::from(write_stream))),
-        }
-    }
-
-    fn take_read_stream(&self) -> PyResult<ReadStream> {
-        self.read_stream
-            .lock()
-            .map_err(|_| state_error("stream_pair.read_stream", "stream pair mutex is poisoned"))?
-            .take()
-            .ok_or_else(|| state_error("stream_pair.read_stream", "read stream is closed"))
-    }
-
-    fn take_write_stream(&self) -> PyResult<WriteStream> {
-        self.write_stream
-            .lock()
-            .map_err(|_| state_error("stream_pair.write_stream", "stream pair mutex is poisoned"))?
-            .take()
-            .ok_or_else(|| state_error("stream_pair.write_stream", "write stream is closed"))
-    }
-}
-
-#[pymethods]
-impl StreamPair {
-    #[getter]
-    pub fn read_stream(&self) -> PyResult<ReadStream> {
-        self.take_read_stream()
-    }
-
-    #[getter]
-    pub fn write_stream(&self) -> PyResult<WriteStream> {
-        self.take_write_stream()
-    }
-}
-
-#[pyclass(name = "IncomingStream")]
-pub struct IncomingStream {
+#[pyclass(name = "UnresolvedRequest")]
+pub struct UnresolvedRequest {
     stream_id: u64,
-    read_stream: Mutex<Option<ReadStream>>,
-    write_stream: Mutex<Option<WriteStream>>,
+    reader: Mutex<Option<MessageReader>>,
+    writer: Mutex<Option<MessageWriter>>,
+    local_authority: Option<LocalAuthority>,
+    remote_authority: Option<RemoteAuthority>,
 }
 
-impl From<crate::endpoint::incoming::IncomingStream> for IncomingStream {
-    fn from(incoming: crate::endpoint::incoming::IncomingStream) -> Self {
-        let stream_id = incoming.stream_id();
-        let (read_stream, write_stream) = incoming.into_parts();
-        Self {
+impl UnresolvedRequest {
+    fn from_core(request: crate::endpoint::unresolved::UnresolvedRequest) -> PyResult<Self> {
+        let stream_id = request.stream_id();
+        let local_authority = request.local_authority().map(LocalAuthority::from);
+        let remote_authority = request.remote_authority().map(RemoteAuthority::from);
+        let (reader, writer) = request.into_parts();
+        Ok(Self {
             stream_id,
-            read_stream: Mutex::new(Some(ReadStream::from(read_stream))),
-            write_stream: Mutex::new(Some(WriteStream::from(write_stream))),
-        }
+            reader: Mutex::new(Some(MessageReader::from(reader))),
+            writer: Mutex::new(Some(MessageWriter::from(writer))),
+            local_authority,
+            remote_authority,
+        })
     }
-}
 
-impl IncomingStream {
-    fn take_read_stream(&self) -> PyResult<ReadStream> {
-        self.read_stream
+    fn take_reader(&self) -> PyResult<MessageReader> {
+        self.reader
             .lock()
             .map_err(|_| {
                 state_error(
-                    "incoming_stream.read_stream",
-                    "incoming stream mutex is poisoned",
+                    "unresolved_request.reader",
+                    "unresolved request mutex is poisoned",
                 )
             })?
             .take()
-            .ok_or_else(|| state_error("incoming_stream.read_stream", "read stream is closed"))
+            .ok_or_else(|| state_error("unresolved_request.reader", "message reader is closed"))
     }
 
-    fn take_write_stream(&self) -> PyResult<WriteStream> {
-        self.write_stream
+    fn take_writer(&self) -> PyResult<MessageWriter> {
+        self.writer
             .lock()
             .map_err(|_| {
                 state_error(
-                    "incoming_stream.write_stream",
-                    "incoming stream mutex is poisoned",
+                    "unresolved_request.writer",
+                    "unresolved request mutex is poisoned",
                 )
             })?
             .take()
-            .ok_or_else(|| state_error("incoming_stream.write_stream", "write stream is closed"))
+            .ok_or_else(|| state_error("unresolved_request.writer", "message writer is closed"))
     }
 }
 
 #[pymethods]
-impl IncomingStream {
+impl UnresolvedRequest {
     #[getter]
     pub fn stream_id(&self) -> u64 {
         self.stream_id
     }
 
     #[getter]
-    pub fn read_stream(&self) -> PyResult<ReadStream> {
-        self.take_read_stream()
+    pub fn reader(&self) -> PyResult<MessageReader> {
+        self.take_reader()
     }
 
     #[getter]
-    pub fn write_stream(&self) -> PyResult<WriteStream> {
-        self.take_write_stream()
+    pub fn writer(&self) -> PyResult<MessageWriter> {
+        self.take_writer()
+    }
+
+    pub fn local_authority(&self) -> Option<LocalAuthority> {
+        self.local_authority.clone()
+    }
+
+    pub fn remote_authority(&self) -> Option<RemoteAuthority> {
+        self.remote_authority.clone()
     }
 }
 
@@ -889,12 +858,12 @@ impl From<crate::endpoint::connection::Connection> for Connection {
 
 #[pymethods]
 impl Connection {
-    pub async fn open_request_stream(&self) -> PyResult<StreamPair> {
+    pub async fn open_request(&self) -> PyResult<UnresolvedRequest> {
         let inner = self.inner.clone();
-        with_tokio(async move { inner.open_request_stream().await })
+        let request = with_tokio(async move { inner.open_request().await })
             .await
-            .map(|(read_stream, write_stream)| StreamPair::new(read_stream, write_stream))
-            .map_err(py_error)
+            .map_err(py_error)?;
+        UnresolvedRequest::from_core(request)
     }
 
     pub async fn local_authority(&self) -> PyResult<Option<LocalAuthority>> {
@@ -1030,19 +999,20 @@ impl Endpoint {
             .map_err(py_error)
     }
 
-    pub fn listen_streams(&self, handler: Py<PyAny>) -> PyResult<ServeHandle> {
+    pub fn listen_raw(&self, handler: Py<PyAny>) -> PyResult<ServeHandle> {
         let locals = Python::attach(|py| pyo3_async_runtimes::tokio::get_current_locals(py).ok());
         let handler = Arc::new(handler);
-        let endpoint = self.inner("endpoint.listen_streams")?;
+        let endpoint = self.inner("endpoint.listen_raw")?;
         let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-        let inner = endpoint.listen_streams(move |incoming| {
+        let inner = endpoint.listen_raw(move |request| {
             let handler = handler.clone();
             let locals = locals.clone();
             Box::pin(async move {
-                let incoming = IncomingStream::from(incoming);
+                let request = UnresolvedRequest::from_core(request)
+                    .map_err(|error| dhttp_py_error("pyo3.unresolved_request", error))?;
                 let result = Python::attach(|py| -> PyResult<Py<PyAny>> {
-                    let incoming = Py::new(py, incoming)?;
-                    handler.as_ref().call1(py, (incoming,))
+                    let request = Py::new(py, request)?;
+                    handler.as_ref().call1(py, (request,))
                 })
                 .map_err(|error| dhttp_py_error("pyo3.handler", error))?;
                 wait_python_result(result, locals)
@@ -1063,10 +1033,9 @@ pub fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DhttpHome>()?;
     module.add_class::<IdentityProfile>()?;
     module.add_class::<EndpointOptions>()?;
-    module.add_class::<ReadStream>()?;
-    module.add_class::<WriteStream>()?;
-    module.add_class::<StreamPair>()?;
-    module.add_class::<IncomingStream>()?;
+    module.add_class::<MessageReader>()?;
+    module.add_class::<MessageWriter>()?;
+    module.add_class::<UnresolvedRequest>()?;
     module.add_class::<Connection>()?;
     module.add_class::<ServeHandle>()?;
     module.add_class::<Endpoint>()?;

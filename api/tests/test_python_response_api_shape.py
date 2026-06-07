@@ -19,7 +19,7 @@ class FakeReadStream:
         self._chunks = list(chunks)
         self.stopped = []
 
-    async def read_data_frame_chunk(self):
+    async def read_data(self):
         if self._chunks:
             return self._chunks.pop(0)
         return None
@@ -90,6 +90,26 @@ def test_has_body_rejects_all_informational_statuses():
     assert response.has_body("GET", 304) is False
     assert response.has_body("HEAD", 200) is False
     assert response.has_body("GET", 200) is True
+
+def test_stream_content_propagates_completed_upload_error_before_reading_body():
+    class UploadError(Exception):
+        pass
+
+    async def failing_upload():
+        raise UploadError("upload failed")
+
+    async def run():
+        task = asyncio.create_task(failing_upload())
+        await asyncio.sleep(0)
+        content = response.StreamContent(FakeReadStream([b"body"]), upload_task=task)
+        try:
+            await content.read()
+        except UploadError as error:
+            assert str(error) == "upload failed"
+        else:
+            raise AssertionError("upload failure must be visible during response body read")
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from inspect import isawaitable
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-from . import _native
+from . import _native, raw
 from .response import (
     ClientResponse,
     HeaderInput,
@@ -16,7 +17,6 @@ from .response import (
     Response,
     StreamContent,
     has_body,
-    header_field,
     header_fields,
     header_text,
     normalize_headers,
@@ -42,17 +42,17 @@ def _authority(url: str) -> str:
     return parts.netloc
 
 
-def _request_header_fields(method: str, url: str, headers: HeaderInput) -> list[tuple[bytes, bytes]]:
+def _request_header_fields(method: str, url: str, headers: HeaderInput) -> list[raw.HeaderField]:
     parts = urlsplit(url)
     if not parts.scheme or not parts.netloc:
         raise ValueError("url must include scheme and authority")
     fields = [
-        header_field(":method", method.upper()),
-        header_field(":scheme", parts.scheme),
-        header_field(":authority", parts.netloc),
-        header_field(":path", _path_with_query(url)),
+        raw.HeaderField(b":method", method.upper().encode("latin-1")),
+        raw.HeaderField(b":scheme", parts.scheme.encode("latin-1")),
+        raw.HeaderField(b":authority", parts.netloc.encode("latin-1")),
+        raw.HeaderField(b":path", _path_with_query(url).encode("latin-1")),
     ]
-    fields.extend(header_fields(headers))
+    fields.extend(raw.HeaderField(name, value) for name, value in header_fields(headers))
     return fields
 
 
@@ -99,10 +99,18 @@ def _endpoint_options(
     return options
 
 
-def _response_header_fields(response: Response) -> list[tuple[bytes, bytes]]:
-    fields = [header_field(":status", response.status)]
-    fields.extend(header_fields(response.headers.items()))
+def _response_header_fields(response: Response) -> list[raw.HeaderField]:
+    fields = [raw.HeaderField(b":status", str(response.status).encode("latin-1"))]
+    fields.extend(
+        raw.HeaderField(name, value) for name, value in header_fields(response.headers.items())
+    )
     return fields
+
+
+def _field_parts(field: raw.HeaderField | tuple[bytes, bytes]) -> tuple[bytes, bytes]:
+    if isinstance(field, raw.HeaderField):
+        return field.name, field.value
+    return field
 
 
 def _parse_response_header(fields: list[tuple[bytes, bytes]] | None) -> tuple[int, Headers]:
@@ -110,7 +118,8 @@ def _parse_response_header(fields: list[tuple[bytes, bytes]] | None) -> tuple[in
         raise RuntimeError("response header frame is missing")
     status: int | None = None
     headers: list[tuple[str, str]] = []
-    for name_bytes, value_bytes in fields:
+    for field in fields:
+        name_bytes, value_bytes = _field_parts(field)
         name = header_text(name_bytes).lower()
         value = header_text(value_bytes)
         if name == ":status":
@@ -127,7 +136,8 @@ def _parse_request_header(fields: list[tuple[bytes, bytes]] | None) -> tuple[str
         raise RuntimeError("request header frame is missing")
     pseudo: dict[str, str] = {}
     headers: list[tuple[str, str]] = []
-    for name_bytes, value_bytes in fields:
+    for field in fields:
+        name_bytes, value_bytes = _field_parts(field)
         name = header_text(name_bytes).lower()
         value = header_text(value_bytes)
         if name.startswith(":"):
@@ -164,7 +174,7 @@ async def _body_chunks(body: BodyInput):
 
 async def _write_body(write_stream: Any, body: BodyInput) -> None:
     async for chunk in _body_chunks(body):
-        await write_stream.send_data(chunk)
+        await write_stream.write_data(chunk)
     await write_stream.close()
 
 
@@ -343,6 +353,9 @@ class Endpoint:
     def trace(self, url: str, **kwargs: Any) -> _RequestContextManager:
         return self.request("TRACE", url, **kwargs)
 
+    async def connect(self, authority: str) -> raw.Connection:
+        return raw.Connection(await self._inner.connect(authority))
+
     async def _request(
         self,
         method: str,
@@ -353,22 +366,27 @@ class Endpoint:
         json: Any,
     ) -> ClientResponse:
         headers, body = _request_body_and_headers(headers, data, json)
-        connection = await self._inner.connect(_authority(url))
-        pair = await connection.open_request_stream()
-        read_stream = pair.read_stream
-        write_stream = pair.write_stream
+        connection = await self.connect(_authority(url))
+        request = await connection.open_request()
+        read_stream = request.reader
+        write_stream = request.writer
+        upload_task: asyncio.Task[None] | None = None
         try:
-            await write_stream.send_header(_request_header_fields(method, url, headers))
-            await _write_body(write_stream, body)
-            status, response_headers = _parse_response_header(await read_stream.read_header_frame())
+            await write_stream.write_header(_request_header_fields(method, url, headers))
+            upload_task = asyncio.create_task(_write_body(write_stream, body))
+            await asyncio.sleep(0)
+            status, response_headers = _parse_response_header(await read_stream.read_header())
             return ClientResponse(
                 read_stream,
                 status,
                 response_headers.items(),
                 method=method.upper(),
                 url=url,
+                upload_task=upload_task,
             )
         except Exception:
+            if upload_task is not None:
+                upload_task.cancel()
             try:
                 await read_stream.stop(0)
             except Exception:
@@ -379,36 +397,104 @@ class Endpoint:
                 pass
             raise
 
-    def listen(self, handler: Handler):
-        async def stream_handler(incoming: Any) -> None:
-            read_stream = incoming.read_stream
-            write_stream = incoming.write_stream
-            request: ServerRequest | None = None
+    def listen(self, handler: Callable[[raw.UnresolvedRequest], Any]):
+        async def raw_handler(native_request: Any) -> None:
+            result = handler(raw.UnresolvedRequest(native_request))
+            if isawaitable(result):
+                result = await result
+            if result is not None:
+                raise TypeError(
+                    "Endpoint.listen(function) receives raw UnresolvedRequest; "
+                    "use dhttp.Service for ServerRequest -> Response handlers"
+                )
+
+        return self._inner.listen_raw(raw_handler)
+
+
+class Service:
+    def __init__(self):
+        self._routes: list[tuple[str | None, str, Handler]] = []
+        self._fallback: Handler = lambda _request: Response(status=404)
+
+    async def __call__(self, raw_request: raw.UnresolvedRequest) -> None:
+        reader = raw_request.reader
+        writer = raw_request.writer
+        request: ServerRequest | None = None
+        try:
+            method, url, headers = _parse_request_header(await reader.read_header())
+            request = ServerRequest(reader, method, url, headers)
+            handler = self._match(method, request.path)
+            result = handler(request)
+            if isawaitable(result):
+                result = await result
+            response = self._response_from_result(result)
+            await writer.write_header(_response_header_fields(response))
+            body = response.body if has_body(method, response.status) else None
+            await _write_body(writer, body)
+        except Exception:
             try:
-                method, url, headers = _parse_request_header(await read_stream.read_header_frame())
-                request = ServerRequest(read_stream, method, url, headers)
-                result = handler(request)
-                if isawaitable(result):
-                    result = await result
-                response = result if isinstance(
-                    result, Response) else Response(result)
-                await write_stream.send_header(_response_header_fields(response))
-                body = response.body if has_body(
-                    method, response.status) else None
-                await _write_body(write_stream, body)
+                await writer.reset(0)
             except Exception:
+                pass
+            raise
+        finally:
+            if request is not None:
+                await request.release()
+            else:
                 try:
-                    await write_stream.reset(0)
+                    await reader.stop(0)
                 except Exception:
                     pass
-                raise
-            finally:
-                if request is not None:
-                    await request.release()
-                else:
-                    try:
-                        await read_stream.stop(0)
-                    except Exception:
-                        pass
 
-        return self._inner.listen_streams(stream_handler)
+    def _match(self, method: str, path: str) -> Handler:
+        method = method.upper()
+        for route_method, route_path, handler in self._routes:
+            if route_path == path and (route_method is None or route_method == method):
+                return handler
+        return self._fallback
+
+    def _response_from_result(self, result: Response | bytes | str | None) -> Response:
+        if isinstance(result, Response):
+            return result
+        if result is None or isinstance(result, bytes | str):
+            return Response(result)
+        raise TypeError(f"handler returned unsupported response type {type(result).__name__}")
+
+    def route(self, path: str, handler: Handler) -> "Service":
+        self._routes.append((None, path, handler))
+        return self
+
+    def on(self, method: str, path: str, handler: Handler) -> "Service":
+        self._routes.append((method.upper(), path, handler))
+        return self
+
+    def fallback(self, handler: Handler) -> "Service":
+        self._fallback = handler
+        return self
+
+    def options(self, path: str, handler: Handler) -> "Service":
+        return self.on("OPTIONS", path, handler)
+
+    def get(self, path: str, handler: Handler) -> "Service":
+        return self.on("GET", path, handler)
+
+    def post(self, path: str, handler: Handler) -> "Service":
+        return self.on("POST", path, handler)
+
+    def put(self, path: str, handler: Handler) -> "Service":
+        return self.on("PUT", path, handler)
+
+    def delete(self, path: str, handler: Handler) -> "Service":
+        return self.on("DELETE", path, handler)
+
+    def head(self, path: str, handler: Handler) -> "Service":
+        return self.on("HEAD", path, handler)
+
+    def trace(self, path: str, handler: Handler) -> "Service":
+        return self.on("TRACE", path, handler)
+
+    def connect(self, path: str, handler: Handler) -> "Service":
+        return self.on("CONNECT", path, handler)
+
+    def patch(self, path: str, handler: Handler) -> "Service":
+        return self.on("PATCH", path, handler)

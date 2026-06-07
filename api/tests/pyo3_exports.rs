@@ -52,11 +52,11 @@ async def main():
     assert await home.identity_profile_exists('missing.pilot') is False
     endpoint = await dhttp_native.Endpoint.create(None)
 
-    async def handler(incoming):
-        await incoming.write_stream.reset(0)
-        await incoming.read_stream.stop(0)
+    async def handler(request):
+        await request.writer.reset(0)
+        await request.reader.stop(0)
 
-    handle = endpoint.listen_streams(handler)
+    handle = endpoint.listen_raw(handler)
     handle.abort()
     await handle.closed()
 
@@ -73,35 +73,35 @@ asyncio.run(main())
 async fn pyo3_native_stream_primitive_api_is_exposed(
     endpoint: &dhttp_api::pyo3::Endpoint,
     connection: &dhttp_api::pyo3::Connection,
-    read_stream: &dhttp_api::pyo3::ReadStream,
-    write_stream: &dhttp_api::pyo3::WriteStream,
-    incoming: &dhttp_api::pyo3::IncomingStream,
+    request: dhttp_api::pyo3::UnresolvedRequest,
+    reader: &dhttp_api::pyo3::MessageReader,
+    writer: &dhttp_api::pyo3::MessageWriter,
     handle: &dhttp_api::pyo3::ServeHandle,
     handler: Py<PyAny>,
 ) {
     let _connection = endpoint.connect("example.com".to_string()).await.unwrap();
-    let pair = connection.open_request_stream().await.unwrap();
-    let _read_stream = pair.read_stream().unwrap();
-    let _write_stream = pair.write_stream().unwrap();
+    let request_from_connection = connection.open_request().await.unwrap();
+    let _reader = request_from_connection.reader().unwrap();
+    let _writer = request_from_connection.writer().unwrap();
 
-    let _chunk = read_stream.read_data_frame_chunk().await.unwrap();
-    let _headers: Option<Vec<(Vec<u8>, Vec<u8>)>> = read_stream.read_header_frame().await.unwrap();
-    read_stream.stop(0).await.unwrap();
+    let _stream_id = request.stream_id();
+    let _local = request.local_authority();
+    let _remote = request.remote_authority();
 
-    write_stream
-        .send_header(vec![(b":method".to_vec(), b"GET".to_vec())])
+    let _headers: Option<Vec<(Vec<u8>, Vec<u8>)>> = reader.read_header().await.unwrap();
+    let _chunk: Option<Vec<u8>> = reader.read_data().await.unwrap();
+    reader.stop(0).await.unwrap();
+
+    writer
+        .write_header(vec![(b":method".to_vec(), b"GET".to_vec())])
         .await
         .unwrap();
-    write_stream.send_data(b"hello".to_vec()).await.unwrap();
-    write_stream.flush().await.unwrap();
-    write_stream.close().await.unwrap();
-    write_stream.reset(0).await.unwrap();
+    writer.write_data(b"hello".to_vec()).await.unwrap();
+    writer.flush().await.unwrap();
+    writer.close().await.unwrap();
+    writer.reset(0).await.unwrap();
 
-    let _stream_id = incoming.stream_id();
-    let _read_stream = incoming.read_stream().unwrap();
-    let _write_stream = incoming.write_stream().unwrap();
-
-    let _handle = endpoint.listen_streams(handler).unwrap();
+    let _handle = endpoint.listen_raw(handler).unwrap();
     handle.shutdown().await.unwrap();
     handle.abort();
     let _is_finished = handle.is_finished();
@@ -185,4 +185,45 @@ fn python_wrapper_uses_aiohttp_like_request_and_body_helpers() {
     assert!(response.contains("self.ok = 200 <= self.status < 400"));
     assert!(response.contains("method: str"));
     assert!(response.contains("url: str"));
+}
+
+#[test]
+fn pyo3_native_surface_uses_raw_message_names_and_hides_stream_pair_model() {
+    let source = std::fs::read_to_string(format!("{}/src/pyo3/mod.rs", env!("CARGO_MANIFEST_DIR")))
+        .expect("pyo3 module source should be readable");
+
+    for required in [
+        "pyclass(name = \"UnresolvedRequest\")",
+        "pyclass(name = \"MessageReader\")",
+        "pyclass(name = \"MessageWriter\")",
+        "pub async fn open_request",
+        "pub fn listen_raw",
+        "pub async fn read_header",
+        "pub async fn read_data",
+        "pub async fn write_header",
+        "pub async fn write_data",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing pyo3 raw symbol {required}"
+        );
+    }
+
+    for removed in [
+        "pyclass(name = \"ReadStream\")",
+        "pyclass(name = \"WriteStream\")",
+        "pyclass(name = \"IncomingStream\")",
+        "pyclass(name = \"StreamPair\")",
+        "open_request_stream",
+        "listen_streams",
+        "send_header",
+        "send_data",
+        "read_header_frame",
+        "read_data_frame_chunk",
+    ] {
+        assert!(
+            !source.contains(removed),
+            "removed pyo3 symbol should not appear: {removed}"
+        );
+    }
 }

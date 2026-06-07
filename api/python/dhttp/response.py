@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import Any
@@ -153,10 +154,18 @@ def json_response(
 class StreamContent:
     """aiohttp-like response/request body stream helper."""
 
-    def __init__(self, read_stream: Any):
+    def __init__(self, read_stream: Any, upload_task: asyncio.Task[Any] | None = None):
         self._read_stream = read_stream
+        self._upload_task = upload_task
         self._buffer = bytearray()
         self._eof = False
+
+    def _raise_upload_error_if_ready(self) -> None:
+        if self._upload_task is None or not self._upload_task.done():
+            return
+        error = self._upload_task.exception()
+        if error is not None:
+            raise error
 
     async def iter_chunked(self, size: int):
         if size <= 0:
@@ -173,7 +182,8 @@ class StreamContent:
                 self._buffer.clear()
                 continue
 
-            chunk = await self._read_stream.read_data_frame_chunk()
+            self._raise_upload_error_if_ready()
+            chunk = await self._read_stream.read_data()
             if chunk is None:
                 self._eof = True
             else:
@@ -197,11 +207,12 @@ class ClientResponse:
         *,
         method: str,
         url: str,
+        upload_task: asyncio.Task[Any] | None = None,
     ):
         self._read_stream = read_stream
         self._body: bytes | None = None
         self._released = False
-        self.content = StreamContent(read_stream)
+        self.content = StreamContent(read_stream, upload_task=upload_task)
         self.status = int(status)
         self.headers = Headers(headers)
         self.method = method.upper()

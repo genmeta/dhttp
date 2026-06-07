@@ -238,3 +238,16 @@ fn napi_node_raw_surface_uses_message_and_unresolved_names() {
     assert!(!source.contains("pub async fn send_header"));
     assert!(!source.contains("pub async fn send_data"));
 }
+
+#[test]
+fn napi_internal_stream_calls_use_read_write_vocabulary() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(manifest_dir.join("src/napi/mod.rs")).unwrap();
+
+    assert!(source.contains("inner.read_header"));
+    assert!(source.contains("inner.read_data"));
+    assert!(source.contains("inner.write_header"));
+    assert!(source.contains("inner.write_data"));
+    assert!(!source.contains("inner.send_header"));
+    assert!(!source.contains("inner.send_data"));
+}

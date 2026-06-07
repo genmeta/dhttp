@@ -966,7 +966,7 @@ pub enum ReadToStringError {
     Utf8 { source: std::string::FromUtf8Error },
 }
 
-async fn send_data_to(
+async fn write_data_to(
     stream: &mut MessageWriter,
     data: impl Buf + Send,
 ) -> Result<(), MessageStreamError> {
@@ -1321,11 +1321,11 @@ where
     }
 }
 
-async fn send_trailer_header(
+async fn write_trailer_header(
     stream: &mut MessageWriter,
     field_lines: impl IntoIterator<Item = FieldLine> + Send,
 ) -> Result<(), MessageStreamError> {
-    match stream.send_header(field_lines).await {
+    match stream.write_header(field_lines).await {
         Ok(()) => Ok(()),
         Err(MessageStreamError::HeaderTooLarge) => Err(MessageStreamError::TrailerTooLarge),
         Err(error) => Err(error),
@@ -1480,15 +1480,15 @@ pub(crate) async fn execute_prepared_message_write(
     let flow = match action {
         MessageWriteStepAction::BreakOk => MessageWriteStepFlow::BreakOk,
         MessageWriteStepAction::Header { fields, flow } => {
-            stream.send_header(fields).await?;
+            stream.write_header(fields).await?;
             flow
         }
         MessageWriteStepAction::Data { data, flow } => {
-            send_data_to(stream, data).await?;
+            write_data_to(stream, data).await?;
             flow
         }
         MessageWriteStepAction::Trailer(fields) => {
-            send_trailer_header(stream, fields).await?;
+            write_trailer_header(stream, fields).await?;
             MessageWriteStepFlow::BreakOk
         }
     };
@@ -1705,7 +1705,7 @@ pub(crate) async fn execute_prepared_streaming_body_write(
             unreachable!("header goal cannot require another write step")
         }
     }
-    send_data_to(stream, content).await?;
+    write_data_to(stream, content).await?;
     Ok(PreparedStreamingBodyCommit {
         header: header.commit,
         body_len,

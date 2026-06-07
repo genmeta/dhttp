@@ -691,7 +691,7 @@ impl MessageReader {
                 cleanup.disarm();
                 Ok(None)
             }
-            result = inner.read_data_frame_chunk() => {
+            result = inner.read_data() => {
                 match self.finish_read(inner) {
                     FinishRead::Restored => {
                         cleanup.disarm();
@@ -721,7 +721,7 @@ impl MessageReader {
                 cleanup.disarm();
                 Ok(None)
             }
-            result = inner.read_header_frame() => {
+            result = inner.read_header() => {
                 match self.finish_read(inner) {
                     FinishRead::Restored => {
                         cleanup.disarm();
@@ -822,7 +822,7 @@ impl MessageWriter {
         let operation = "message_writer.write_header";
         let headers = headers.into_iter().map(HeaderField::into_pair).collect();
         let mut inner = self.take_inner(operation)?;
-        let result = inner.send_header(headers).await;
+        let result = inner.write_header(headers).await;
         self.restore_inner(inner);
         result.map_err(napi_error)
     }
@@ -831,7 +831,7 @@ impl MessageWriter {
     pub async fn write_data(&self, data: Buffer) -> NapiResult<()> {
         let operation = "message_writer.write_data";
         let mut inner = self.take_inner(operation)?;
-        let result = inner.send_data(data.to_vec()).await;
+        let result = inner.write_data(data.to_vec()).await;
         self.restore_inner(inner);
         result.map_err(napi_error)
     }

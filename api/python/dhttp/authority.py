@@ -1,7 +1,5 @@
 from typing import Protocol, runtime_checkable
 
-from . import _native
-
 
 @runtime_checkable
 class LocalAuthority(Protocol):
@@ -20,12 +18,4 @@ class RemoteAuthority(Protocol):
     async def verify(self, data: bytes, signature: bytes) -> bool: ...
 
 
-LocalAuthorityImpl = _native.LocalAuthority
-RemoteAuthorityImpl = _native.RemoteAuthority
-
-__all__ = [
-    "LocalAuthority",
-    "LocalAuthorityImpl",
-    "RemoteAuthority",
-    "RemoteAuthorityImpl",
-]
+__all__ = ["LocalAuthority", "RemoteAuthority"]
