@@ -11,6 +11,13 @@ use rustls::{
     server::{WebPkiClientVerifier, danger::ClientCertVerifier},
 };
 
+/// PEM-encoded DHTTP ecosystem root CA certificate embedded at build time.
+///
+/// Build scripts set this from `DHTTP_ROOT_CA` when that environment variable
+/// is present. Otherwise, docs-only builds use the generated docs-only
+/// certificate from `dhttp/build.rs`.
+pub const DHTTP_ROOT_CA: &[u8] = crate::bootstrap::DHTTP_ROOT_CA;
+
 /// Client certificate policy for DHTTP peer authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientIdentityPolicy {
@@ -28,7 +35,7 @@ pub enum ClientIdentityPolicy {
 pub fn dhttp_root_cert_store() -> &'static Arc<RootCertStore> {
     static STORE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
         let mut store = RootCertStore::empty();
-        store.add_parsable_certificates(crate::bootstrap::DHTTP_ROOT_CA.to_certificate());
+        store.add_parsable_certificates(DHTTP_ROOT_CA.to_certificate());
         Arc::new(store)
     });
     &STORE
@@ -88,6 +95,15 @@ pub fn default_server_quic_config() -> ServerQuicConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_root_ca_constant_is_valid_certificate_material() {
+        let mut store = RootCertStore::empty();
+        let (added, ignored) = store.add_parsable_certificates(DHTTP_ROOT_CA.to_certificate());
+
+        assert_eq!(added, 1);
+        assert_eq!(ignored, 0);
+    }
 
     #[test]
     fn dhttp_root_store_contains_embedded_root() {
