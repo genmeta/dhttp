@@ -128,10 +128,10 @@ impl Endpoint {
         };
         let raw_network = network.network().clone();
 
-        let bootstrap_resolvers = resolver_plan
+        let resolvers_without_h3 = resolver_plan
             .build_resolvers(None, raw_network.clone(), bind.clone())
             .await;
-        let bootstrap_resolver = resolver_plan.bootstrap_resolver(bootstrap_resolvers);
+        let resolver_without_h3 = resolver_plan.resolver_without_h3(resolvers_without_h3);
 
         let endpoint_h3_deferred = resolver_plan.uses_h3().then(deferred_h3_resolver);
         let endpoint_h3_resolver = endpoint_h3_deferred
@@ -140,7 +140,7 @@ impl Endpoint {
         let endpoint_resolvers = resolver_plan
             .build_resolvers(endpoint_h3_resolver, raw_network.clone(), bind.clone())
             .await;
-        let quic_resolver = resolver_plan.select_resolver(endpoint_resolvers);
+        let quic_resolver = resolver_plan.final_resolver(endpoint_resolvers);
 
         let quic = QuicEndpoint::builder()
             .network(raw_network.clone())
@@ -154,7 +154,7 @@ impl Endpoint {
 
         if let Some(endpoint_h3_deferred) = endpoint_h3_deferred {
             let mut dns_quic = quic.clone();
-            dns_quic.set_resolver(bootstrap_resolver.clone());
+            dns_quic.set_resolver(resolver_without_h3.clone());
             endpoint_h3_deferred
                 .set(h3_resolver_from_quic(dns_quic))
                 .expect("BUG: endpoint H3 resolver is set exactly once");
@@ -164,7 +164,7 @@ impl Endpoint {
             let stun_h3_resolver = if resolver_plan.uses_h3() {
                 let stun_quic = QuicEndpoint::builder()
                     .network(raw_network)
-                    .resolver(bootstrap_resolver)
+                    .resolver(resolver_without_h3)
                     .client(client)
                     .bind(bind.clone())
                     .build()
@@ -663,13 +663,13 @@ mod tests {
     }
 
     #[test]
-    fn h3_only_bootstrap_resolver_falls_back_to_system() {
+    fn h3_only_resolver_without_h3_uses_system_for_h3_underlay() {
         let resolver_plan = ResolverPlan::new(vec![DnsScheme::H3], None);
-        let resolver = resolver_plan.bootstrap_resolver(Resolvers::new());
+        let resolver = resolver_plan.resolver_without_h3(Resolvers::new());
         let any: &dyn Any = resolver.as_ref();
         let resolvers = any
             .downcast_ref::<Resolvers>()
-            .expect("bootstrap fallback is a resolver chain");
+            .expect("resolver_without_h3 is a resolver chain");
         let resolver_names = resolvers
             .iter()
             .map(|resolver| resolver.to_string())
@@ -750,6 +750,41 @@ mod tests {
             let resolver_any: &dyn Any = resolver.as_ref();
             resolver_any.is::<H3Resolver<QuicEndpoint>>()
         }));
+    }
+
+    #[tokio::test]
+    async fn h3_only_endpoint_stun_resolver_uses_h3_final_resolver_not_system_final_resolver() {
+        let endpoint = Endpoint::builder()
+            .dns(DnsScheme::H3)
+            .build()
+            .await
+            .unwrap();
+        let stun_resolver = endpoint.network().network().quic().stun_resolver();
+        let deferred_any: &dyn Any = stun_resolver.as_ref();
+        let deferred = deferred_any
+            .downcast_ref::<DeferredStunResolver>()
+            .expect("h3-only endpoint-owned network uses deferred STUN resolver");
+        let weak_resolver = deferred
+            .get()
+            .expect("deferred STUN resolver is initialized");
+        let actual = weak_resolver
+            .upgrade()
+            .expect("DhttpNetwork keeps the STUN resolver target alive");
+        let resolver_names = actual
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(
+            resolver_names
+                .iter()
+                .any(|name| name.starts_with("H3 DNS Resolver("))
+        );
+        assert!(
+            !resolver_names
+                .iter()
+                .any(|name| name == "System DNS Resolver")
+        );
     }
 
     #[tokio::test]

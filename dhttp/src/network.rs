@@ -87,12 +87,15 @@ impl ResolverPlan {
         }
     }
 
-    pub(crate) fn bootstrap_resolver(&self, resolvers: Resolvers) -> ArcResolver {
-        if self.uses_h3() && self.custom.is_none() && resolvers.iter().next().is_none() {
-            Arc::new(Resolvers::builder().system().build())
-        } else {
-            self.select_resolver(resolvers)
+    pub(crate) fn final_resolver(&self, resolvers: Resolvers) -> ArcResolver {
+        self.select_resolver(resolvers)
+    }
+
+    pub(crate) fn resolver_without_h3(&self, mut resolvers: Resolvers) -> ArcResolver {
+        if self.uses_h3() && self.custom.is_none() && !self.schemes.contains(&DnsScheme::System) {
+            resolvers.push(Arc::new(SystemResolver));
         }
+        self.select_resolver(resolvers)
     }
 }
 
@@ -206,7 +209,7 @@ impl DhttpNetwork {
                     (stun_resolver.clone(), None, None, Some(stun_resolver))
                 }
                 (None, Some(plan)) if plan.schemes.is_empty() => {
-                    let stun_resolver = plan.select_resolver(Resolvers::new());
+                    let stun_resolver = plan.final_resolver(Resolvers::new());
                     (stun_resolver.clone(), None, None, Some(stun_resolver))
                 }
                 (None, Some(plan)) => {
@@ -352,5 +355,146 @@ mod tests {
 
         assert!(records.next().await.is_none());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn h3_only_network_stun_resolver_starts_deferred_without_system_final_resolver() {
+        let dhttp_network = DhttpNetwork::builder()
+            .dns_schemes(vec![DnsScheme::H3])
+            .build();
+
+        let stun_resolver = dhttp_network.network().quic().stun_resolver();
+        let any: &dyn std::any::Any = stun_resolver.as_ref();
+
+        assert!(any.downcast_ref::<DeferredStunResolver>().is_some());
+    }
+
+    #[tokio::test]
+    async fn explicit_custom_network_stun_resolver_is_not_augmented_with_system() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: calls.clone(),
+        });
+
+        let dhttp_network = DhttpNetwork::builder().resolver(custom).build();
+        let resolver = dhttp_network.network().quic().stun_resolver();
+
+        assert_eq!(resolver.to_string(), "counting resolver");
+    }
+
+    #[test]
+    fn resolver_without_h3_keeps_non_h3_schemes_and_custom_resolver() {
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = ResolverPlan::new(
+            vec![
+                DnsScheme::H3,
+                DnsScheme::Mdns,
+                DnsScheme::Http,
+                DnsScheme::System,
+            ],
+            Some(custom.clone()),
+        );
+
+        let resolver = plan.resolver_without_h3(Resolvers::builder().system().build().with(custom));
+        let any: &dyn std::any::Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("resolver_without_h3 returns a resolver chain");
+        let names = resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "System DNS Resolver"));
+        assert!(names.iter().any(|name| name == "counting resolver"));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.starts_with("H3 DNS Resolver("))
+        );
+    }
+
+    #[test]
+    fn resolver_without_h3_adds_system_when_h3_only_without_custom() {
+        let plan = ResolverPlan::new(vec![DnsScheme::H3], None);
+
+        let resolver = plan.resolver_without_h3(Resolvers::new());
+        let any: &dyn std::any::Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("h3-only resolver_without_h3 returns a concrete resolver chain");
+        let names = resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["System DNS Resolver"]);
+    }
+
+    #[test]
+    fn resolver_without_h3_adds_system_to_h3_mdns_without_custom() {
+        let plan = ResolverPlan::new(vec![DnsScheme::H3, DnsScheme::Mdns], None);
+        let mdns_marker: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let resolver = plan.resolver_without_h3(Resolvers::new().with(mdns_marker));
+        let any: &dyn std::any::Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("h3+mdns resolver_without_h3 returns a resolver chain");
+        let names = resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "counting resolver"));
+        assert!(names.iter().any(|name| name == "System DNS Resolver"));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.starts_with("H3 DNS Resolver("))
+        );
+    }
+
+    #[test]
+    fn resolver_without_h3_does_not_auto_add_system_when_custom_is_present() {
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mdns_marker: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = ResolverPlan::new(vec![DnsScheme::H3, DnsScheme::Mdns], Some(custom.clone()));
+
+        let resolver = plan.resolver_without_h3(Resolvers::new().with(mdns_marker).with(custom));
+        let any: &dyn std::any::Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("h3+mdns+custom resolver_without_h3 returns a resolver chain");
+        let names = resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["counting resolver", "counting resolver"],
+            "custom suppresses automatic System insertion; duplicate marker names represent mdns-marker plus custom"
+        );
+    }
+
+    #[test]
+    fn resolver_without_h3_does_not_override_custom_only_plan() {
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = ResolverPlan::new(Vec::new(), Some(custom));
+
+        let resolver = plan.resolver_without_h3(Resolvers::new());
+
+        assert_eq!(resolver.to_string(), "counting resolver");
     }
 }
