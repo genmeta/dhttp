@@ -551,10 +551,10 @@ pub enum ExpandUriError {
 }
 
 // ============================================================================
-// DhttpName<'a> — Name with mandatory `.genmeta.net` suffix
+// DhttpName<'a> — Name with mandatory `.dhttp.net` suffix
 // ============================================================================
 
-/// A [`Name`] guaranteed to end with `.genmeta.net`.
+/// A [`Name`] guaranteed to end with `.dhttp.net`.
 ///
 /// Created via [`FromStr`] or [`TryFrom`], which handle `~` shorthand expansion
 /// and append the suffix when missing.
@@ -562,7 +562,7 @@ pub enum ExpandUriError {
 pub struct DhttpName<'a>(Name<'a>);
 
 impl DhttpName<'_> {
-    pub const SUFFIX: &'static str = ".genmeta.net";
+    pub const SUFFIX: &'static str = ".dhttp.net";
 
     /// Validate DHttp name rules, including the mandatory suffix.
     #[inline]
@@ -590,7 +590,7 @@ impl DhttpName<'_> {
         self.0.into_owned()
     }
 
-    /// Return the name without the `.genmeta.net` suffix.
+    /// Return the name without the `.dhttp.net` suffix.
     ///
     /// # Panics
     ///
@@ -602,7 +602,7 @@ impl DhttpName<'_> {
         &self.0.as_str()[..self.0.as_str().len() - Self::SUFFIX.len()]
     }
 
-    /// Return the full name including the `.genmeta.net` suffix.
+    /// Return the full name including the `.dhttp.net` suffix.
     #[inline]
     pub fn as_full(&self) -> &str {
         self.0.as_str()
@@ -726,7 +726,7 @@ impl<'a> Deref for DhttpName<'a> {
     }
 }
 
-/// Formats the name without the `.genmeta.net` suffix.
+/// Formats the name without the `.dhttp.net` suffix.
 ///
 /// `Display` and [`Serialize`] both output the partial name (e.g. `reimu.pilot`),
 /// while [`Deserialize`] and [`FromStr`] accept both partial and full forms.
@@ -1241,16 +1241,21 @@ mod tests {
     // --- DhttpName tests ---
 
     #[test]
+    fn dhttp_name_suffix_is_dhttp_net() {
+        assert_eq!(DhttpName::SUFFIX, ".dhttp.net");
+    }
+
+    #[test]
     fn dhttp_name_parse_full() {
-        let dn = "hello.genmeta.net".parse::<DhttpName>().unwrap();
-        assert_eq!(dn.as_full(), "hello.genmeta.net");
+        let dn = "hello.dhttp.net".parse::<DhttpName>().unwrap();
+        assert_eq!(dn.as_full(), "hello.dhttp.net");
         assert_eq!(dn.as_partial(), "hello");
     }
 
     #[test]
     fn dhttp_name_parse_partial_multi_label() {
         let dn = "reimu.pilot".parse::<DhttpName>().unwrap();
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(dn.as_full(), "reimu.pilot.dhttp.net");
         assert_eq!(dn.as_partial(), "reimu.pilot");
     }
 
@@ -1258,12 +1263,12 @@ mod tests {
     fn dhttp_name_parse_partial_single_label_rejected() {
         let name = "hello".parse::<DhttpName>().unwrap();
 
-        assert_eq!(name.as_full(), "hello.genmeta.net");
+        assert_eq!(name.as_full(), "hello.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_serialize() {
-        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let dn = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
         let json = serde_json::to_string(&dn).unwrap();
         assert_eq!(json, "\"reimu.pilot\"");
     }
@@ -1271,13 +1276,13 @@ mod tests {
     #[test]
     fn dhttp_name_deserialize_from_partial() {
         let dn: DhttpName<'static> = serde_json::from_str("\"reimu.pilot\"").unwrap();
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(dn.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_deserialize_from_full() {
-        let dn: DhttpName<'static> = serde_json::from_str("\"reimu.pilot.genmeta.net\"").unwrap();
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+        let dn: DhttpName<'static> = serde_json::from_str("\"reimu.pilot.dhttp.net\"").unwrap();
+        assert_eq!(dn.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
@@ -1289,8 +1294,8 @@ mod tests {
     #[test]
     fn dhttp_name_hash_consistent_with_name() {
         use std::hash::{DefaultHasher, Hasher};
-        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
-        let n = Name::try_from_static(b"reimu.pilot.genmeta.net").unwrap();
+        let dn = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
+        let n = Name::try_from_static(b"reimu.pilot.dhttp.net").unwrap();
         let hash_dn = {
             let mut h = DefaultHasher::new();
             dn.hash(&mut h);
@@ -1306,42 +1311,42 @@ mod tests {
 
     #[test]
     fn dhttp_name_eq() {
-        let a = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
-        let b = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
-        let c = "other.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let a = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
+        let b = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
+        let c = "other.pilot.dhttp.net".parse::<DhttpName>().unwrap();
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
     fn dhttp_name_to_owned_and_clone() {
-        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let dn = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
         let owned = dn.to_owned();
-        assert_eq!(owned.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(owned.as_full(), "reimu.pilot.dhttp.net");
         let cloned = owned.clone();
-        assert_eq!(cloned.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(cloned.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_into_owned() {
-        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let dn = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
         let owned = dn.into_owned();
-        assert_eq!(owned.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(owned.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_to_wildcard_replaces_first_label() {
-        let dn = "reimu.pilot.genmeta.net".parse::<DhttpName>().unwrap();
+        let dn = "reimu.pilot.dhttp.net".parse::<DhttpName>().unwrap();
 
         let wildcard = dn.to_wildcard();
 
-        assert_eq!(wildcard.as_full(), "*.pilot.genmeta.net");
+        assert_eq!(wildcard.as_full(), "*.pilot.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_from_str_trait() {
-        let dn: DhttpName = "reimu.pilot.genmeta.net".parse().unwrap();
-        assert_eq!(dn.as_full(), "reimu.pilot.genmeta.net");
+        let dn: DhttpName = "reimu.pilot.dhttp.net".parse().unwrap();
+        assert_eq!(dn.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
@@ -1359,20 +1364,20 @@ mod tests {
 
     #[test]
     fn dhttp_name_legacy_validate() {
-        DhttpName::validate(b"reimu.pilot.genmeta.net").unwrap();
+        DhttpName::validate(b"reimu.pilot.dhttp.net").unwrap();
         assert!(DhttpName::validate(b"reimu.pilot").is_err());
     }
 
     #[test]
     fn dhttp_name_try_from_str_expands_partial_name() {
         let name = DhttpName::try_from("reimu.pilot").unwrap();
-        assert_eq!(name.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(name.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_try_from_string_expands_tilde_name() {
         let name = DhttpName::try_from(String::from("reimu.pilot~")).unwrap();
-        assert_eq!(name.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(name.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
@@ -1381,24 +1386,24 @@ mod tests {
         let from_cow: DhttpName<'_> =
             DhttpName::try_from(Cow::<[u8]>::Borrowed(b"Device")).unwrap();
 
-        assert_eq!(from_bytes.as_full(), "reimu.pilot.genmeta.net");
-        assert_eq!(from_cow.as_full(), "device.genmeta.net");
+        assert_eq!(from_bytes.as_full(), "reimu.pilot.dhttp.net");
+        assert_eq!(from_cow.as_full(), "device.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_try_from_static_bytes_appends_suffix() {
         let name = DhttpName::try_from_static(b"Device").unwrap();
 
-        assert_eq!(name.as_full(), "device.genmeta.net");
+        assert_eq!(name.as_full(), "device.dhttp.net");
     }
 
     #[test]
     fn dhttp_name_try_from_name_accepts_full_name_without_reparsing_string() {
-        let name = Name::try_from("reimu.pilot.genmeta.net").unwrap();
+        let name = Name::try_from("reimu.pilot.dhttp.net").unwrap();
 
         let dhttp_name = DhttpName::try_from(name).unwrap();
 
-        assert_eq!(dhttp_name.as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(dhttp_name.as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
@@ -1424,7 +1429,7 @@ mod tests {
 
         assert_eq!(
             expanded.to_string(),
-            "https://reimu.pilot.genmeta.net/api?q=1"
+            "https://reimu.pilot.dhttp.net/api?q=1"
         );
     }
 
@@ -1437,7 +1442,7 @@ mod tests {
 
         assert_eq!(
             expanded.to_string(),
-            "https://alice@reimu.pilot.genmeta.net:443/api"
+            "https://alice@reimu.pilot.dhttp.net:443/api"
         );
     }
 
@@ -1448,25 +1453,25 @@ mod tests {
 
         let expanded = DhttpName::expand_authority_with_base(Some(&name), authority).unwrap();
 
-        assert_eq!(expanded.as_str(), "alice@reimu.pilot.genmeta.net:443");
+        assert_eq!(expanded.as_str(), "alice@reimu.pilot.dhttp.net:443");
     }
 
     #[test]
     fn expand_authority_canonicalizes_mixed_case_host_only_dhttp_name() {
-        let authority = "Reimu.Pilot.Genmeta.Net".parse().unwrap();
+        let authority = "Reimu.Pilot.Dhttp.Net".parse().unwrap();
 
         let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
 
-        assert_eq!(expanded.as_str(), "reimu.pilot.genmeta.net");
+        assert_eq!(expanded.as_str(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
     fn expand_authority_canonicalizes_mixed_case_decorated_dhttp_name() {
-        let authority = "alice@Reimu.Pilot.Genmeta.Net:443".parse().unwrap();
+        let authority = "alice@Reimu.Pilot.Dhttp.Net:443".parse().unwrap();
 
         let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
 
-        assert_eq!(expanded.as_str(), "alice@reimu.pilot.genmeta.net:443");
+        assert_eq!(expanded.as_str(), "alice@reimu.pilot.dhttp.net:443");
     }
 
     #[test]
@@ -1475,7 +1480,7 @@ mod tests {
 
         let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
 
-        assert_eq!(expanded.as_str(), "reimu.pilot.genmeta.net");
+        assert_eq!(expanded.as_str(), "reimu.pilot.dhttp.net");
     }
 
     #[test]
@@ -1518,7 +1523,7 @@ mod tests {
 
         let expanded = DhttpName::expand_uri_with_base(None, uri).unwrap();
 
-        assert_eq!(expanded.to_string(), "https://reimu.pilot.genmeta.net/api");
+        assert_eq!(expanded.to_string(), "https://reimu.pilot.dhttp.net/api");
     }
 
     #[test]

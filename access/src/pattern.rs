@@ -1,6 +1,7 @@
 use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use derive_more::{AsRef, From, Into};
+use dhttp_identity::name::DhttpName;
 use regex::{Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
@@ -354,8 +355,6 @@ impl Pattern<LocationPatternKind> {
     }
 }
 
-pub const SUFFIX: &str = ".genmeta.net";
-
 pub fn trim_suffix_once<'s>(s: &'s str, suffix: &str) -> Option<&'s str> {
     if let Some(pos) = s.rfind(suffix)
         && pos + suffix.len() == s.len()
@@ -369,13 +368,14 @@ impl Pattern<ClientNamePatternKind> {
     /// 测试字符串是否匹配模式
     #[inline]
     pub fn is_match(&self, s: &str) -> bool {
-        trim_suffix_once(s, SUFFIX).is_some_and(|s| self.regex.is_match(s))
+        trim_suffix_once(s, DhttpName::SUFFIX).is_some_and(|s| self.regex.is_match(s))
     }
 
     /// 获取匹配的子字符串
     #[inline]
     pub fn r#match<'s>(&self, s: &'s str) -> Option<&'s str> {
-        trim_suffix_once(s, SUFFIX).and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
+        trim_suffix_once(s, DhttpName::SUFFIX)
+            .and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
     }
 }
 
@@ -383,13 +383,14 @@ impl Pattern<DomainPatternKind> {
     /// 测试字符串是否匹配模式
     #[inline]
     pub fn is_match(&self, s: &str) -> bool {
-        trim_suffix_once(s, SUFFIX).is_some_and(|s| self.regex.is_match(s))
+        trim_suffix_once(s, DhttpName::SUFFIX).is_some_and(|s| self.regex.is_match(s))
     }
 
     /// 获取匹配的子字符串
     #[inline]
     pub fn r#match<'s>(&self, s: &'s str) -> Option<&'s str> {
-        trim_suffix_once(s, SUFFIX).and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
+        trim_suffix_once(s, DhttpName::SUFFIX)
+            .and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
     }
 }
 
@@ -789,5 +790,19 @@ impl<Kind: Ord> Ord for Pattern<Kind> {
         self.kind
             .cmp(&other.kind)
             .then_with(|| self.pattern.cmp(&other.pattern))
+    }
+}
+
+#[cfg(test)]
+mod dhttp_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn client_name_pattern_uses_dhttp_name_suffix() {
+        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^reimu\\.pilot$".to_owned())
+            .expect("valid client name pattern");
+
+        assert!(pattern.is_match("reimu.pilot.dhttp.net"));
+        assert!(!pattern.is_match("reimu.pilot.genmeta.net"));
     }
 }

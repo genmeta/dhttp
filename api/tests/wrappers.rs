@@ -66,13 +66,13 @@ async fn identity_profile_exists_reports_home_operation() {
 #[test]
 fn identity_der_getters_are_available() {
     let core = dhttp::identity::Identity::new(
-        "reimu.pilot.genmeta.net".parse().unwrap(),
+        "reimu.pilot.dhttp.net".parse().unwrap(),
         vec![CertificateDer::from(vec![1, 2, 3])],
         PrivateKeyDer::Pkcs8(vec![4, 5, 6].into()),
     );
     let identity = Identity::from(core);
 
-    assert_eq!(identity.name(), "reimu.pilot.genmeta.net");
+    assert_eq!(identity.name(), "reimu.pilot.dhttp.net");
     assert_eq!(identity.cert_chain_der(), vec![vec![1, 2, 3]]);
     assert_eq!(identity.public_key_der(), vec![1, 2, 3]);
 }
@@ -87,7 +87,7 @@ fn identity_preserves_core_conversions_and_access() {
     );
     let wrapper = Identity::from(core.clone());
 
-    assert_eq!(wrapper.as_ref().name().as_str(), "reimu.pilot.genmeta.net");
+    assert_eq!(wrapper.as_ref().name().as_str(), "reimu.pilot.dhttp.net");
     let roundtrip: dhttp::identity::Identity = wrapper.into();
     assert_eq!(roundtrip.name().as_str(), core.name().as_str());
 }

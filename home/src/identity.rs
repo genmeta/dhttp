@@ -125,7 +125,7 @@ mod tests {
         let profile = IdentityProfile::try_from(PathBuf::from("/tmp/reimu.pilot")).unwrap();
 
         assert_eq!(profile.path(), Path::new("/tmp/reimu.pilot"));
-        assert_eq!(profile.name().as_full(), "reimu.pilot.genmeta.net");
+        assert_eq!(profile.name().as_full(), "reimu.pilot.dhttp.net");
     }
 
     #[test]

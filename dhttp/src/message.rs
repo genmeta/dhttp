@@ -2057,7 +2057,7 @@ mod tests {
             .into_authority(Some(&self_name))
             .unwrap();
 
-        assert_eq!(authority.as_str(), "alice@reimu.pilot.genmeta.net:443");
+        assert_eq!(authority.as_str(), "alice@reimu.pilot.dhttp.net:443");
     }
 
     #[test]
@@ -2082,7 +2082,7 @@ mod tests {
 
         assert_eq!(
             uri.to_string(),
-            "https://alice@reimu.pilot.genmeta.net:443/api?q=1"
+            "https://alice@reimu.pilot.dhttp.net:443/api?q=1"
         );
     }
 

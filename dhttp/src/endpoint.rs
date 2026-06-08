@@ -792,7 +792,7 @@ mod tests {
         use rustls::pki_types::PrivateKeyDer;
 
         let identity = Identity::new(
-            "publisher.example.com.genmeta.net".parse().unwrap(),
+            "publisher.example.com.dhttp.net".parse().unwrap(),
             Vec::new(),
             PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
         );
@@ -814,7 +814,7 @@ mod tests {
         use rustls::pki_types::PrivateKeyDer;
 
         let identity = Identity::new(
-            "client.example.com.genmeta.net".parse().unwrap(),
+            "client.example.com.dhttp.net".parse().unwrap(),
             Vec::new(),
             PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
         );
@@ -826,7 +826,7 @@ mod tests {
 
         let name = endpoint.name().expect("named endpoint has a dhttp name");
 
-        assert_eq!(name.as_full(), "client.example.com.genmeta.net");
+        assert_eq!(name.as_full(), "client.example.com.dhttp.net");
     }
 
     #[tokio::test]
@@ -876,7 +876,7 @@ mod tests {
     #[tokio::test]
     async fn authority_only_get_is_rejected_before_connect() {
         let endpoint = Endpoint::builder().build().await.unwrap();
-        let uri: http::Uri = "reimu.pilot.genmeta.net".parse().unwrap();
+        let uri: http::Uri = "reimu.pilot.dhttp.net".parse().unwrap();
 
         let error = match endpoint.get(uri).into_response().await {
             Ok(_) => panic!("authority-only GET should fail before opening a stream"),

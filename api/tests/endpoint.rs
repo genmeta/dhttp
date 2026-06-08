@@ -39,10 +39,7 @@ async fn endpoint_create_uses_options_and_exposes_identity_and_binds() {
 
     let endpoint = Endpoint::create(Some(options)).await.unwrap();
 
-    assert_eq!(
-        endpoint.identity().unwrap().name(),
-        "reimu.pilot.genmeta.net"
-    );
+    assert_eq!(endpoint.identity().unwrap().name(), "reimu.pilot.dhttp.net");
     assert_eq!(endpoint.bind_patterns(), vec!["iface://*"]);
 }
 
@@ -63,7 +60,7 @@ async fn endpoint_low_level_client_stream_api_is_exposed(endpoint: &Endpoint) {
 
 fn test_identity() -> Identity {
     dhttp::identity::Identity::new(
-        "reimu.pilot.genmeta.net".parse().unwrap(),
+        "reimu.pilot.dhttp.net".parse().unwrap(),
         vec![CertificateDer::from(vec![1, 2, 3])],
         PrivateKeyDer::Pkcs8(vec![4, 5, 6].into()),
     )
