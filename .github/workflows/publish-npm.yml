@@ -1,4 +1,4 @@
-name: Release npm
+name: Publish npm
 
 on:
   pull_request:
