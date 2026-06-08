@@ -799,7 +799,7 @@ mod dhttp_suffix_tests {
 
     #[test]
     fn client_name_pattern_uses_dhttp_name_suffix() {
-        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^reimu\\.pilot$".to_owned())
+        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^reimu\\.pilot$")
             .expect("valid client name pattern");
 
         assert!(pattern.is_match("reimu.pilot.dhttp.net"));
