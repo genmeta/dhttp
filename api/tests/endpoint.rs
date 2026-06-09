@@ -61,7 +61,9 @@ async fn endpoint_low_level_client_stream_api_is_exposed(endpoint: &Endpoint) {
 fn test_identity() -> Identity {
     dhttp::identity::Identity::new(
         "reimu.pilot.dhttp.net".parse().unwrap(),
-        vec![CertificateDer::from(vec![1, 2, 3])],
+        vec![CertificateDer::from(
+            include_bytes!("../../identity/tests/fixtures/valid.der").to_vec(),
+        )],
         PrivateKeyDer::Pkcs8(vec![4, 5, 6].into()),
     )
     .into()

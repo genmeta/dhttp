@@ -29,11 +29,15 @@ fn root_and_raw_type_declarations_are_separated() {
     assert!(root_dts.contains("export const Service"));
     assert!(root_dts.contains("new (): Service"));
     assert!(root_dts.contains("from(handler: FetchHandler): Service"));
-    assert!(root_dts.contains("export interface LocalAuthority"));
-    assert!(root_dts.contains("export interface RemoteAuthority"));
+    assert!(root_dts.contains("export class LocalAuthority"));
+    assert!(root_dts.contains("export class RemoteAuthority"));
+    assert!(root_dts.contains("private readonly __dhttpAuthorityBrand: never"));
+    assert!(root_dts.contains("subjectKeyIdentifier(): Uint8Array | null"));
+    assert!(root_dts.contains("dhttpSubjectKeyIdentifier(): DhttpSubjectKeyIdentifier"));
+    assert!(root_dts.contains("parseDhttpSubjectKeyIdentifier("));
     assert!(!root_dts.contains("export class EndpointOptions"));
-    assert!(!root_dts.contains("export class LocalAuthority"));
-    assert!(!root_dts.contains("export class RemoteAuthority"));
+    assert!(!root_dts.contains("export interface LocalAuthority"));
+    assert!(!root_dts.contains("export interface RemoteAuthority"));
     assert!(!root_dts.contains("export class UnresolvedRequest"));
     assert!(!root_dts.contains("export class MessageReader"));
     assert!(!root_dts.contains("export class MessageWriter"));
@@ -74,8 +78,9 @@ fn root_js_facade_exposes_service_and_hides_raw_classes() {
     assert!(js.contains("return this.#inner.listenRaw"));
     assert!(js.contains("Service,"));
     assert!(!js.contains("EndpointOptions: native.EndpointOptions"));
-    assert!(!js.contains("LocalAuthority: native.LocalAuthority"));
-    assert!(!js.contains("RemoteAuthority: native.RemoteAuthority"));
+    assert!(js.contains("LocalAuthority: native.LocalAuthority"));
+    assert!(js.contains("RemoteAuthority: native.RemoteAuthority"));
+    assert!(js.contains("parseDhttpSubjectKeyIdentifier"));
     assert!(!js.contains("listenStreams"));
 }
 

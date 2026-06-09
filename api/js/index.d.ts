@@ -4,6 +4,22 @@ export type FetchHandler = (request: Request) => Response | Promise<Response>;
 export type RawHandler = (
   request: import("@genmeta/dhttp/raw").UnresolvedRequest,
 ) => void | Promise<void>;
+export type CertificateChainKind = "primary" | "secondary";
+
+export interface CertificateChainKey {
+  sequence: number;
+  kind: CertificateChainKind;
+}
+
+export interface DhttpSubjectKeyIdentifier {
+  value: string;
+  chain: CertificateChainKey;
+  ownerHash: string;
+}
+
+export function parseDhttpSubjectKeyIdentifier(
+  value: Uint8Array | string,
+): DhttpSubjectKeyIdentifier;
 
 export interface EndpointOptions {
   identity?: Identity | null;
@@ -11,18 +27,26 @@ export interface EndpointOptions {
   bindPatterns?: Iterable<string>;
 }
 
-export interface LocalAuthority {
+export class LocalAuthority {
+  private constructor();
+  private readonly __dhttpAuthorityBrand: never;
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
+  subjectKeyIdentifier(): Uint8Array | null;
+  dhttpSubjectKeyIdentifier(): DhttpSubjectKeyIdentifier;
   sign(data: Uint8Array): Promise<Uint8Array>;
   verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
-export interface RemoteAuthority {
+export class RemoteAuthority {
+  private constructor();
+  private readonly __dhttpAuthorityBrand: never;
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
+  subjectKeyIdentifier(): Uint8Array | null;
+  dhttpSubjectKeyIdentifier(): DhttpSubjectKeyIdentifier;
   verify(data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
@@ -67,6 +91,8 @@ export class Identity {
   name(): string;
   certChainDer(): Uint8Array[];
   publicKeyDer(): Uint8Array;
+  subjectKeyIdentifier(): Uint8Array | null;
+  dhttpSubjectKeyIdentifier(): DhttpSubjectKeyIdentifier;
   sign(data: Uint8Array): Uint8Array;
   verify(data: Uint8Array, signature: Uint8Array): boolean;
   asLocalAuthority(): LocalAuthority;

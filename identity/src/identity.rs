@@ -5,9 +5,10 @@ use rustls::{
     SignatureScheme,
     pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer},
 };
-use snafu::{ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 use x509_parser::prelude::FromDer;
 use x509_parser::{
+    extensions::ParsedExtension,
     oid_registry::{
         OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY, OID_NIST_EC_P384, OID_PKCS1_RSAENCRYPTION,
         OID_SIG_ED25519,
@@ -15,7 +16,7 @@ use x509_parser::{
     x509::SubjectPublicKeyInfo,
 };
 
-use crate::name::Name;
+use crate::{certificate::DhttpSubjectKeyIdentifier, name::Name};
 
 const RSA_CANONICAL_SCHEME: SignatureScheme = SignatureScheme::RSA_PSS_SHA512;
 const ECDSA_CANONICAL_SCHEMES: &[SignatureScheme] = &[
@@ -31,6 +32,34 @@ pub struct Identity {
     pub certs: Arc<Vec<CertificateDer<'static>>>,
     pub key: Arc<PrivateKeyDer<'static>>,
     pub ocsp: Arc<Option<Vec<u8>>>,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ExtractSubjectKeyIdentifierError {
+    #[snafu(display("certificate chain is empty"))]
+    EmptyCertificateChain,
+    #[snafu(display("failed to parse leaf certificate"))]
+    ParseCertificate {
+        source: x509_parser::nom::Err<x509_parser::error::X509Error>,
+    },
+    #[snafu(display("failed to parse subject key identifier extension"))]
+    ParseExtension,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum ExtractDhttpSubjectKeyIdentifierError {
+    #[snafu(transparent)]
+    ExtractSubjectKeyIdentifier {
+        source: ExtractSubjectKeyIdentifierError,
+    },
+    #[snafu(display("leaf certificate is missing subject key identifier"))]
+    MissingSubjectKeyIdentifier,
+    #[snafu(display("subject key identifier is not a dhttp subject key identifier"))]
+    InvalidDhttpSubjectKeyIdentifier {
+        source: crate::certificate::InvalidDhttpSubjectKeyIdentifier,
+    },
 }
 
 #[derive(Debug, Snafu)]
@@ -99,6 +128,18 @@ impl Identity {
     pub fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, VerifyError> {
         verify_signature(self.public_key(), data, signature)
     }
+
+    pub fn subject_key_identifier(
+        &self,
+    ) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError> {
+        extract_subject_key_identifier(self.cert_chain())
+    }
+
+    pub fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+        extract_dhttp_subject_key_identifier(self.cert_chain())
+    }
 }
 
 /// Local authority for DHTTP identity material.
@@ -157,6 +198,82 @@ pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
     fn verify(&self, data: &[u8], signature: &[u8]) -> BoxFuture<'_, Result<bool, VerifyError>> {
         let result = verify_signature(self.public_key(), data, signature);
         Box::pin(std::future::ready(result))
+    }
+}
+
+pub fn extract_subject_key_identifier<'a>(
+    cert_chain: &'a [CertificateDer<'a>],
+) -> Result<Option<&'a [u8]>, ExtractSubjectKeyIdentifierError> {
+    let leaf = cert_chain
+        .first()
+        .context(extract_subject_key_identifier_error::EmptyCertificateChainSnafu)?;
+    let (_remain, certificate) = x509_parser::certificate::X509Certificate::from_der(leaf)
+        .context(extract_subject_key_identifier_error::ParseCertificateSnafu)?;
+
+    for extension in certificate.extensions() {
+        if let ParsedExtension::SubjectKeyIdentifier(identifier) = extension.parsed_extension() {
+            return Ok(Some(identifier.0));
+        }
+        if extension.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER {
+            return extract_subject_key_identifier_error::ParseExtensionSnafu.fail();
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn extract_dhttp_subject_key_identifier(
+    cert_chain: &[CertificateDer<'_>],
+) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+    let ski = extract_subject_key_identifier(cert_chain)?
+        .context(extract_dhttp_subject_key_identifier_error::MissingSubjectKeyIdentifierSnafu)?;
+    DhttpSubjectKeyIdentifier::try_from_subject_key_identifier_bytes(ski)
+        .context(extract_dhttp_subject_key_identifier_error::InvalidDhttpSubjectKeyIdentifierSnafu)
+}
+
+mod private {
+    pub trait Sealed {}
+
+    impl<T: ?Sized> Sealed for T {}
+}
+
+pub trait LocalAuthorityCertificateExt: private::Sealed {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError>;
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError>;
+}
+
+impl<T: ?Sized + LocalAuthority> LocalAuthorityCertificateExt for T {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError> {
+        extract_subject_key_identifier(self.cert_chain())
+    }
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+        extract_dhttp_subject_key_identifier(self.cert_chain())
+    }
+}
+
+pub trait RemoteAuthorityCertificateExt: private::Sealed {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError>;
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError>;
+}
+
+impl<T: ?Sized + RemoteAuthority> RemoteAuthorityCertificateExt for T {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError> {
+        extract_subject_key_identifier(self.cert_chain())
+    }
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+        extract_dhttp_subject_key_identifier(self.cert_chain())
     }
 }
 
@@ -288,7 +405,8 @@ mod tests {
     use rustls::sign::{Signer, SigningKey};
     use rustls::{SignatureAlgorithm, SignatureScheme};
 
-    use crate::identity::Identity;
+    use crate::certificate::CertificateChainKind;
+    use crate::identity::{Identity, LocalAuthorityCertificateExt, RemoteAuthorityCertificateExt};
     use crate::name::Name;
 
     fn dummy_name() -> Name<'static> {
@@ -301,6 +419,21 @@ mod tests {
 
     fn dummy_key() -> PrivateKeyDer<'static> {
         PrivateKeyDer::Pkcs8(b"dummy".to_vec().into())
+    }
+
+    fn fixture_identity(name: &str, der: &'static [u8]) -> Identity {
+        Identity::new(
+            name.parse().unwrap(),
+            vec![CertificateDer::from(der.to_vec())],
+            dummy_key(),
+        )
+    }
+
+    fn valid_dhttp_ski_identity() -> Identity {
+        fixture_identity(
+            "client.example.com.dhttp.net",
+            include_bytes!("../tests/fixtures/valid.der"),
+        )
     }
 
     fn ed25519_identity() -> Identity {
@@ -421,6 +554,65 @@ mod tests {
                 .verify(b"wrong payload", &signature)
                 .expect("canonical verification")
         );
+    }
+
+    #[test]
+    fn identity_extracts_dhttp_subject_key_identifier() {
+        let identity = valid_dhttp_ski_identity();
+        let raw = identity
+            .subject_key_identifier()
+            .expect("extract raw ski")
+            .expect("fixture has ski");
+
+        assert_eq!(
+            raw,
+            b"0:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+
+        let dhttp = identity
+            .dhttp_subject_key_identifier()
+            .expect("extract dhttp ski");
+        assert_eq!(dhttp.chain().kind(), CertificateChainKind::Primary);
+        assert_eq!(dhttp.chain().sequence().get(), 0);
+    }
+
+    #[test]
+    fn identity_reports_missing_subject_key_identifier() {
+        let identity = fixture_identity(
+            "missing.example.com.dhttp.net",
+            include_bytes!("../tests/fixtures/missing.der"),
+        );
+
+        assert!(identity.subject_key_identifier().unwrap().is_none());
+        assert!(matches!(
+            identity.dhttp_subject_key_identifier().unwrap_err(),
+            super::ExtractDhttpSubjectKeyIdentifierError::MissingSubjectKeyIdentifier
+        ));
+    }
+
+    #[test]
+    fn identity_reports_malformed_dhttp_subject_key_identifier() {
+        let identity = fixture_identity(
+            "malformed.example.com.dhttp.net",
+            include_bytes!("../tests/fixtures/malformed.der"),
+        );
+
+        assert!(matches!(
+            identity.dhttp_subject_key_identifier().unwrap_err(),
+            super::ExtractDhttpSubjectKeyIdentifierError::InvalidDhttpSubjectKeyIdentifier { .. }
+        ));
+    }
+
+    #[test]
+    fn authority_extension_traits_extract_dhttp_subject_key_identifier() {
+        let identity = valid_dhttp_ski_identity();
+
+        let local = LocalAuthorityCertificateExt::dhttp_subject_key_identifier(&identity)
+            .expect("local authority dhttp ski");
+        let remote = RemoteAuthorityCertificateExt::dhttp_subject_key_identifier(&identity)
+            .expect("remote authority dhttp ski");
+
+        assert_eq!(local, remote);
     }
 
     #[test]

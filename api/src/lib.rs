@@ -1,4 +1,5 @@
 pub mod authority;
+pub mod certificate;
 pub mod endpoint;
 pub mod error;
 pub mod home;

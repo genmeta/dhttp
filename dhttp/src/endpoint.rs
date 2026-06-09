@@ -55,6 +55,10 @@ pub enum InvalidEndpointIdentityError {
     InvalidName {
         source: dhttp_identity::name::InvalidDhttpName,
     },
+    #[snafu(display("endpoint identity certificate metadata is invalid"))]
+    InvalidCertificateMetadata {
+        source: dhttp_identity::identity::ExtractDhttpSubjectKeyIdentifierError,
+    },
 }
 
 /// Default STUN server for NAT traversal.
@@ -252,6 +256,9 @@ impl Endpoint {
     fn validate_identity(identity: Option<&Identity>) -> Result<(), InvalidEndpointIdentityError> {
         if let Some(identity) = identity {
             Self::name_from_identity(identity)?;
+            identity
+                .dhttp_subject_key_identifier()
+                .context(invalid_endpoint_identity_error::InvalidCertificateMetadataSnafu)?;
         }
         Ok(())
     }
@@ -531,6 +538,23 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    fn test_identity(name: &str, der: &'static [u8]) -> Identity {
+        Identity::new(
+            name.parse().unwrap(),
+            vec![CertificateDer::from(der.to_vec())],
+            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
+        )
+    }
+
+    fn valid_dhttp_identity(name: &str) -> Identity {
+        test_identity(
+            name,
+            include_bytes!("../../identity/tests/fixtures/valid.der"),
+        )
+    }
+
     #[test]
     fn stun_server_comes_from_compile_time_environment() {
         if let Some(expected) = option_env!("DHTTP_STUN_SERVER") {
@@ -553,13 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn builder_rejects_non_dhttp_identity() {
-        use rustls::pki_types::PrivateKeyDer;
-
-        let identity = Identity::new(
-            "example.com".parse().unwrap(),
-            Vec::new(),
-            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
-        );
+        let identity = valid_dhttp_identity("example.com");
 
         let Err(error) = Endpoint::builder()
             .identity(Arc::new(identity))
@@ -572,6 +590,48 @@ mod tests {
         assert!(matches!(
             error,
             InvalidEndpointIdentityError::InvalidName { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_dhttp_identity_without_subject_key_identifier() {
+        let identity = test_identity(
+            "missing.example.com.dhttp.net",
+            include_bytes!("../../identity/tests/fixtures/missing.der"),
+        );
+
+        let Err(error) = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .build()
+            .await
+        else {
+            panic!("dhttp endpoint identity without ski must be rejected by build");
+        };
+
+        assert!(matches!(
+            error,
+            InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_dhttp_identity_with_malformed_subject_key_identifier() {
+        let identity = test_identity(
+            "malformed.example.com.dhttp.net",
+            include_bytes!("../../identity/tests/fixtures/malformed.der"),
+        );
+
+        let Err(error) = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .build()
+            .await
+        else {
+            panic!("dhttp endpoint identity with malformed ski must be rejected by build");
+        };
+
+        assert!(matches!(
+            error,
+            InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
         ));
     }
 
@@ -797,13 +857,7 @@ mod tests {
 
     #[tokio::test]
     async fn publisher_loop_can_apply_publish_options() {
-        use rustls::pki_types::PrivateKeyDer;
-
-        let identity = Identity::new(
-            "publisher.example.com.dhttp.net".parse().unwrap(),
-            Vec::new(),
-            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
-        );
+        let identity = valid_dhttp_identity("publisher.example.com.dhttp.net");
         let endpoint = Endpoint::builder()
             .identity(Arc::new(identity))
             .build()
@@ -825,13 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn endpoint_name_returns_dhttp_identity_name() {
-        use rustls::pki_types::PrivateKeyDer;
-
-        let identity = Identity::new(
-            "client.example.com.dhttp.net".parse().unwrap(),
-            Vec::new(),
-            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
-        );
+        let identity = valid_dhttp_identity("client.example.com.dhttp.net");
         let endpoint = Endpoint::builder()
             .identity(Arc::new(identity))
             .build()

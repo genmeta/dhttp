@@ -4,6 +4,9 @@ pub mod ddns;
 pub mod endpoint;
 pub mod message;
 pub mod network;
+pub mod certificate {
+    pub use dhttp_identity::certificate::*;
+}
 pub mod identity {
     pub use dhttp_identity::identity::*;
 }

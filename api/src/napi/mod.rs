@@ -41,6 +41,53 @@ type RawHandlerArgs = FnArgs<(UnresolvedRequest,)>;
 type RawHandlerResult = Either<Promise<()>, ()>;
 
 #[napi(object)]
+pub struct CertificateChainKey {
+    pub sequence: u32,
+    pub kind: String,
+}
+
+#[napi(object)]
+pub struct DhttpSubjectKeyIdentifier {
+    pub value: String,
+    pub chain: CertificateChainKey,
+    #[napi(js_name = "ownerHash")]
+    pub owner_hash: String,
+}
+
+impl From<crate::certificate::DhttpSubjectKeyIdentifier> for DhttpSubjectKeyIdentifier {
+    fn from(value: crate::certificate::DhttpSubjectKeyIdentifier) -> Self {
+        Self {
+            value: value.value,
+            chain: CertificateChainKey {
+                sequence: value.chain.sequence,
+                kind: value.chain.kind,
+            },
+            owner_hash: value.owner_hash,
+        }
+    }
+}
+
+fn dhttp_subject_key_identifier(
+    value: crate::certificate::DhttpSubjectKeyIdentifier,
+) -> DhttpSubjectKeyIdentifier {
+    DhttpSubjectKeyIdentifier::from(value)
+}
+
+#[napi]
+pub fn parse_dhttp_subject_key_identifier(
+    value: Either<Buffer, String>,
+) -> NapiResult<DhttpSubjectKeyIdentifier> {
+    match value {
+        Either::A(bytes) => {
+            crate::certificate::parse_dhttp_subject_key_identifier_bytes(bytes.as_ref())
+        }
+        Either::B(text) => crate::certificate::parse_dhttp_subject_key_identifier_str(&text),
+    }
+    .map(dhttp_subject_key_identifier)
+    .map_err(napi_error)
+}
+
+#[napi(object)]
 pub struct HeaderField {
     pub name: Buffer,
     pub value: Buffer,
@@ -172,6 +219,22 @@ impl Identity {
     }
 
     #[napi]
+    pub fn subject_key_identifier(&self) -> NapiResult<Option<Buffer>> {
+        self.inner
+            .subject_key_identifier()
+            .map(|ski| ski.map(Buffer::from))
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn dhttp_subject_key_identifier(&self) -> NapiResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(napi_error)
+    }
+
+    #[napi]
     pub fn sign(&self, data: Buffer) -> NapiResult<Buffer> {
         self.inner
             .sign(data.as_ref())
@@ -227,6 +290,22 @@ impl LocalAuthority {
     }
 
     #[napi]
+    pub fn subject_key_identifier(&self) -> NapiResult<Option<Buffer>> {
+        self.inner
+            .subject_key_identifier()
+            .map(|ski| ski.map(Buffer::from))
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn dhttp_subject_key_identifier(&self) -> NapiResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(napi_error)
+    }
+
+    #[napi]
     pub async fn sign(&self, data: Buffer) -> NapiResult<Buffer> {
         let data = data.as_ref().to_vec();
         self.inner
@@ -271,6 +350,22 @@ impl RemoteAuthority {
     #[napi]
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key_der()
+    }
+
+    #[napi]
+    pub fn subject_key_identifier(&self) -> NapiResult<Option<Buffer>> {
+        self.inner
+            .subject_key_identifier()
+            .map(|ski| ski.map(Buffer::from))
+            .map_err(napi_error)
+    }
+
+    #[napi]
+    pub fn dhttp_subject_key_identifier(&self) -> NapiResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(napi_error)
     }
 
     #[napi]

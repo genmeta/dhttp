@@ -130,7 +130,9 @@ def test_top_level_exports_include_query_params_and_json_response():
     module_name = "dhttp_exports_for_test"
     native = types.ModuleType(f"{module_name}._native")
     for name in (
+        "CertificateChainKey",
         "DhttpHome",
+        "DhttpSubjectKeyIdentifier",
         "EndpointOptions",
         "Identity",
         "IdentityProfile",
@@ -153,15 +155,21 @@ def test_top_level_exports_include_query_params_and_json_response():
 
     assert module.QueryParams.__name__ == "QueryParams"
     assert module.json_response.__name__ == "json_response"
+    assert module.CertificateChainKey.__name__ == "CertificateChainKey"
+    assert module.DhttpSubjectKeyIdentifier.__name__ == "DhttpSubjectKeyIdentifier"
     assert "QueryParams" in module.__all__
     assert "json_response" in module.__all__
+    assert "CertificateChainKey" in module.__all__
+    assert "DhttpSubjectKeyIdentifier" in module.__all__
 
 
 def test_root_exports_high_level_api_and_hides_raw_implementation_names():
     module_name = "dhttp_root_exports_redesign_test"
     native = types.ModuleType(f"{module_name}._native")
     for name in (
+        "CertificateChainKey",
         "DhttpHome",
+        "DhttpSubjectKeyIdentifier",
         "Identity",
         "IdentityProfile",
         "LocalAuthority",

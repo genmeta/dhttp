@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use dhttp::identity::{
-    LocalAuthority as CoreLocalAuthority, RemoteAuthority as CoreRemoteAuthority,
+    LocalAuthority as CoreLocalAuthority, LocalAuthorityCertificateExt,
+    RemoteAuthority as CoreRemoteAuthority, RemoteAuthorityCertificateExt,
     SignError as CoreSignError, VerifyError as CoreVerifyError,
 };
 
@@ -33,6 +34,24 @@ impl LocalAuthority {
 
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key().as_ref().to_vec()
+    }
+
+    pub fn subject_key_identifier(&self) -> Result<Option<Vec<u8>>> {
+        LocalAuthorityCertificateExt::subject_key_identifier(self.inner.as_ref())
+            .map(|ski| ski.map(<[u8]>::to_vec))
+            .map_err(|error| {
+                DhttpError::from_error("local_authority.subject_key_identifier", error)
+            })
+    }
+
+    pub fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<crate::certificate::DhttpSubjectKeyIdentifier> {
+        LocalAuthorityCertificateExt::dhttp_subject_key_identifier(self.inner.as_ref())
+            .map(crate::certificate::DhttpSubjectKeyIdentifier::from)
+            .map_err(|error| {
+                DhttpError::from_error("local_authority.dhttp_subject_key_identifier", error)
+            })
     }
 
     pub async fn sign(&self, data: Vec<u8>) -> Result<Vec<u8>> {
@@ -76,6 +95,24 @@ impl RemoteAuthority {
 
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key().as_ref().to_vec()
+    }
+
+    pub fn subject_key_identifier(&self) -> Result<Option<Vec<u8>>> {
+        RemoteAuthorityCertificateExt::subject_key_identifier(self.inner.as_ref())
+            .map(|ski| ski.map(<[u8]>::to_vec))
+            .map_err(|error| {
+                DhttpError::from_error("remote_authority.subject_key_identifier", error)
+            })
+    }
+
+    pub fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<crate::certificate::DhttpSubjectKeyIdentifier> {
+        RemoteAuthorityCertificateExt::dhttp_subject_key_identifier(self.inner.as_ref())
+            .map(crate::certificate::DhttpSubjectKeyIdentifier::from)
+            .map_err(|error| {
+                DhttpError::from_error("remote_authority.dhttp_subject_key_identifier", error)
+            })
     }
 
     pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> Result<bool> {

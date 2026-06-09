@@ -8,7 +8,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use ::pyo3::{exceptions::PyRuntimeError, prelude::*};
+use ::pyo3::{
+    exceptions::{PyRuntimeError, PyTypeError},
+    prelude::*,
+};
 use futures::{FutureExt, future::BoxFuture};
 
 fn py_error(error: crate::error::DhttpError) -> PyErr {
@@ -90,6 +93,87 @@ where
     }
 }
 
+#[pyclass(name = "CertificateChainKey", frozen, skip_from_py_object)]
+#[derive(Clone)]
+pub struct CertificateChainKey {
+    #[pyo3(get)]
+    sequence: u32,
+    #[pyo3(get)]
+    kind: String,
+}
+
+impl From<crate::certificate::CertificateChainKey> for CertificateChainKey {
+    fn from(value: crate::certificate::CertificateChainKey) -> Self {
+        Self {
+            sequence: value.sequence,
+            kind: value.kind,
+        }
+    }
+}
+
+#[pyclass(name = "DhttpSubjectKeyIdentifier", frozen, skip_from_py_object)]
+#[derive(Clone)]
+pub struct DhttpSubjectKeyIdentifier {
+    inner: crate::certificate::DhttpSubjectKeyIdentifier,
+}
+
+impl From<crate::certificate::DhttpSubjectKeyIdentifier> for DhttpSubjectKeyIdentifier {
+    fn from(inner: crate::certificate::DhttpSubjectKeyIdentifier) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl DhttpSubjectKeyIdentifier {
+    #[staticmethod]
+    pub fn parse(value: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(bytes) = value.extract::<Vec<u8>>() {
+            return crate::certificate::parse_dhttp_subject_key_identifier_bytes(&bytes)
+                .map(Self::from)
+                .map_err(py_error);
+        }
+        if let Ok(text) = value.extract::<String>() {
+            return crate::certificate::parse_dhttp_subject_key_identifier_str(&text)
+                .map(Self::from)
+                .map_err(py_error);
+        }
+        Err(PyTypeError::new_err(
+            "value must be bytes, bytearray, memoryview, or str",
+        ))
+    }
+
+    #[getter]
+    pub fn value(&self) -> String {
+        self.inner.value.clone()
+    }
+
+    #[getter]
+    pub fn chain(&self) -> CertificateChainKey {
+        CertificateChainKey::from(self.inner.chain.clone())
+    }
+
+    #[getter]
+    pub fn owner_hash(&self) -> String {
+        self.inner.owner_hash.clone()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "DhttpSubjectKeyIdentifier(value={:?}, chain=CertificateChainKey(sequence={}, kind={:?}), owner_hash={:?})",
+            self.inner.value,
+            self.inner.chain.sequence,
+            self.inner.chain.kind,
+            self.inner.owner_hash
+        )
+    }
+}
+
+fn dhttp_subject_key_identifier(
+    value: crate::certificate::DhttpSubjectKeyIdentifier,
+) -> DhttpSubjectKeyIdentifier {
+    DhttpSubjectKeyIdentifier::from(value)
+}
+
 #[pyclass(name = "Identity")]
 pub struct Identity {
     inner: crate::identity::Identity,
@@ -113,6 +197,17 @@ impl Identity {
 
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key_der()
+    }
+
+    pub fn subject_key_identifier(&self) -> PyResult<Option<Vec<u8>>> {
+        self.inner.subject_key_identifier().map_err(py_error)
+    }
+
+    pub fn dhttp_subject_key_identifier(&self) -> PyResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(py_error)
     }
 
     pub fn sign(&self, data: Vec<u8>) -> PyResult<Vec<u8>> {
@@ -158,6 +253,17 @@ impl LocalAuthority {
         self.inner.public_key_der()
     }
 
+    pub fn subject_key_identifier(&self) -> PyResult<Option<Vec<u8>>> {
+        self.inner.subject_key_identifier().map_err(py_error)
+    }
+
+    pub fn dhttp_subject_key_identifier(&self) -> PyResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(py_error)
+    }
+
     pub async fn sign(&self, data: Vec<u8>) -> PyResult<Vec<u8>> {
         let inner = self.inner.clone();
         with_tokio(async move { inner.sign(data).await })
@@ -197,6 +303,17 @@ impl RemoteAuthority {
 
     pub fn public_key_der(&self) -> Vec<u8> {
         self.inner.public_key_der()
+    }
+
+    pub fn subject_key_identifier(&self) -> PyResult<Option<Vec<u8>>> {
+        self.inner.subject_key_identifier().map_err(py_error)
+    }
+
+    pub fn dhttp_subject_key_identifier(&self) -> PyResult<DhttpSubjectKeyIdentifier> {
+        self.inner
+            .dhttp_subject_key_identifier()
+            .map(dhttp_subject_key_identifier)
+            .map_err(py_error)
     }
 
     pub async fn verify(&self, data: Vec<u8>, signature: Vec<u8>) -> PyResult<bool> {
@@ -1027,6 +1144,8 @@ impl Endpoint {
 
 #[pymodule]
 pub fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<CertificateChainKey>()?;
+    module.add_class::<DhttpSubjectKeyIdentifier>()?;
     module.add_class::<Identity>()?;
     module.add_class::<LocalAuthority>()?;
     module.add_class::<RemoteAuthority>()?;

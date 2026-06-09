@@ -35,6 +35,26 @@ function byteArrays(values) {
   return values.map((value) => bytes(value));
 }
 
+function normalizeDhttpSubjectKeyIdentifier(value) {
+  if (value == null) {
+    return value;
+  }
+  return {
+    value: value.value,
+    chain: {
+      sequence: value.chain.sequence,
+      kind: value.chain.kind,
+    },
+    ownerHash: value.ownerHash ?? value.owner_hash,
+  };
+}
+
+function parseDhttpSubjectKeyIdentifier(value) {
+  const input = typeof value === 'string' ? value : Buffer.from(value);
+  return normalizeDhttpSubjectKeyIdentifier(native.parseDhttpSubjectKeyIdentifier(input));
+}
+
+
 function rejectPseudoHeaders(headers, kind) {
   for (const [name] of headers) {
     if (String(name).startsWith(':')) {
@@ -560,64 +580,20 @@ class Identity {
     return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
   }
 
+  subjectKeyIdentifier() {
+    return bytes(this.#inner.subjectKeyIdentifier());
+  }
+
+  dhttpSubjectKeyIdentifier() {
+    return normalizeDhttpSubjectKeyIdentifier(this.#inner.dhttpSubjectKeyIdentifier());
+  }
+
   asLocalAuthority() {
-    return new LocalAuthorityCapability(this.#inner.asLocalAuthority());
+    return this.#inner.asLocalAuthority();
   }
 
   asRemoteAuthority() {
-    return new RemoteAuthorityCapability(this.#inner.asRemoteAuthority());
-  }
-}
-
-class LocalAuthorityCapability {
-  #inner;
-
-  constructor(inner) {
-    this.#inner = inner;
-  }
-
-  name() {
-    return this.#inner.name();
-  }
-
-  certChainDer() {
-    return byteArrays(this.#inner.certChainDer());
-  }
-
-  publicKeyDer() {
-    return bytes(this.#inner.publicKeyDer());
-  }
-
-  async sign(data) {
-    return bytes(await this.#inner.sign(Buffer.from(data)));
-  }
-
-  async verify(data, signature) {
-    return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
-  }
-}
-
-class RemoteAuthorityCapability {
-  #inner;
-
-  constructor(inner) {
-    this.#inner = inner;
-  }
-
-  name() {
-    return this.#inner.name();
-  }
-
-  certChainDer() {
-    return byteArrays(this.#inner.certChainDer());
-  }
-
-  publicKeyDer() {
-    return bytes(this.#inner.publicKeyDer());
-  }
-
-  async verify(data, signature) {
-    return this.#inner.verify(Buffer.from(data), Buffer.from(signature));
+    return this.#inner.asRemoteAuthority();
   }
 }
 
@@ -766,5 +742,8 @@ module.exports = {
   DhttpHome,
   IdentityProfile,
   Identity,
+  LocalAuthority: native.LocalAuthority,
+  RemoteAuthority: native.RemoteAuthority,
+  parseDhttpSubjectKeyIdentifier,
   ServeHandle: native.ServeHandle,
 };

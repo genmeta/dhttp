@@ -21,6 +21,26 @@ impl Identity {
         self.0.public_key().as_ref().to_vec()
     }
 
+    pub fn subject_key_identifier(&self) -> Result<Option<Vec<u8>>, crate::error::DhttpError> {
+        self.0
+            .subject_key_identifier()
+            .map(|ski| ski.map(<[u8]>::to_vec))
+            .map_err(|error| {
+                crate::error::DhttpError::from_error("identity.subject_key_identifier", error)
+            })
+    }
+
+    pub fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<crate::certificate::DhttpSubjectKeyIdentifier, crate::error::DhttpError> {
+        self.0
+            .dhttp_subject_key_identifier()
+            .map(crate::certificate::DhttpSubjectKeyIdentifier::from)
+            .map_err(|error| {
+                crate::error::DhttpError::from_error("identity.dhttp_subject_key_identifier", error)
+            })
+    }
+
     pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, crate::error::DhttpError> {
         self.0
             .sign(data)
