@@ -301,29 +301,37 @@ impl Endpoint {
         self.inner.quic().bind_patterns().clone()
     }
 
-    pub fn publisher(
+    pub fn publisher_loop(
         &self,
-    ) -> Result<crate::ddns::publisher::Publisher, crate::ddns::publisher::CreatePublisherError>
-    {
-        self.publisher_with_options(crate::ddns::publisher::PublishOptions::default())
+    ) -> Result<
+        crate::ddns::publisher::EndpointPublisherLoop,
+        crate::ddns::publisher::CreatePublisherError,
+    > {
+        self.publisher_loop_with_options(crate::ddns::publisher::PublishOptions::default())
     }
 
-    pub fn publisher_with_options(
+    pub fn publisher_loop_with_options(
         &self,
         options: crate::ddns::publisher::PublishOptions,
-    ) -> Result<crate::ddns::publisher::Publisher, crate::ddns::publisher::CreatePublisherError>
-    {
+    ) -> Result<
+        crate::ddns::publisher::EndpointPublisherLoop,
+        crate::ddns::publisher::CreatePublisherError,
+    > {
         let identity = self
             .identity()
             .ok_or(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint)?;
-        let identity: Arc<dyn dhttp_identity::identity::LocalAuthority> = identity;
-        Ok(crate::ddns::publisher::Publisher::new(
-            identity,
+        let name = identity.name().to_owned();
+        let identity: Arc<dyn dhttp_identity::identity::LocalAuthority + Send + Sync> = identity;
+        let signer =
+            crate::ddns::publisher::EndpointRecordSigner::new(identity).with_options(options);
+        let publisher = crate::ddns::publisher::Publisher::new(signer, self.resolver());
+        let source = crate::ddns::publisher::EndpointBindingAddresses::new(
             self.network().network().clone(),
-            self.resolver(),
             self.bind_patterns(),
-        )
-        .with_options(options))
+        );
+        Ok(crate::ddns::publisher::EndpointPublicationLoop::new(
+            name, publisher, source,
+        ))
     }
 
     /// Load an endpoint from a domain name.
@@ -601,9 +609,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publisher_rejects_anonymous_endpoint() {
+    async fn publisher_loop_rejects_anonymous_endpoint() {
         let endpoint = Endpoint::builder().build().await.unwrap();
-        let error = endpoint.publisher().unwrap_err();
+        let error = endpoint.publisher_loop().unwrap_err();
         assert!(matches!(
             error,
             crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint
@@ -788,7 +796,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publisher_can_apply_publish_options() {
+    async fn publisher_loop_can_apply_publish_options() {
         use rustls::pki_types::PrivateKeyDer;
 
         let identity = Identity::new(
@@ -802,11 +810,17 @@ mod tests {
             .await
             .expect("dhttp identity should build endpoint");
 
-        let publisher = endpoint
-            .publisher_with_options(crate::ddns::publisher::PublishOptions { server_id: Some(7) })
+        let publisher_loop = endpoint
+            .publisher_loop_with_options(crate::ddns::publisher::PublishOptions {
+                server_id: Some(7),
+            })
             .expect("named endpoint can publish");
 
-        assert_eq!(publisher.options().server_id, Some(7));
+        assert_eq!(publisher_loop.options().server_id, Some(7));
+        assert_eq!(
+            publisher_loop.name().as_str(),
+            "publisher.example.com.dhttp.net"
+        );
     }
 
     #[tokio::test]
