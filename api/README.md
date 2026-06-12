@@ -63,7 +63,8 @@ endpoint.listen(service);
 
 ### Node raw request connection context
 
-`UnresolvedRequest` does not expose `connection`. Need identity information through:
+`UnresolvedRequest` does not expose `connection`, but it remains an aggregate raw
+request context. Need identity information through explicit connection endpoints:
 
 ```js
 await request.localAuthority();
@@ -110,7 +111,7 @@ handle = endpoint.listen(service)
 
 ### Python raw primitives
 
-`dhttp.raw.Connection.open_request()` returns `UnresolvedRequest`. `MessageReader` exposes `read_header()`, `read_data()`, and `stop(code)`. `MessageWriter` exposes `write_header(headers)`, `write_data(data)`, `flush()`, `close()`, and `reset(code)`.
+`dhttp.raw.Connection.open_request()` returns aggregate `UnresolvedRequest`, which keeps `local_authority()` / `remote_authority()` endpoint accessors. `MessageReader` exposes `read_header()`, `read_data()`, and `stop(code)`. `MessageWriter` exposes `write_header(headers)`, `write_data(data)`, `flush()`, `close()`, and `reset(code)`.
 
 ## Python breaking changes
 

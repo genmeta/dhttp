@@ -219,10 +219,19 @@ class QueryParams:
 
 
 class ServerRequest:
-    def __init__(self, read_stream: Any, method: str, url: str, headers: Headers):
+    def __init__(
+        self,
+        read_stream: Any,
+        method: str,
+        url: str,
+        headers: Headers,
+        *,
+        authority: Any = None,
+    ):
         self._read_stream = read_stream
         self._body: bytes | None = None
         self._released = False
+        self._authority = authority
         self.content = StreamContent(read_stream)
         self.method = method.upper()
         self.url = url
@@ -233,6 +242,9 @@ class ServerRequest:
         self.path = parts.path or "/"
         self.query_string = parts.query
         self.query = QueryParams.from_query_string(parts.query)
+
+    def authority(self):
+        return self._authority
 
     async def read(self) -> bytes:
         if self._body is not None:
@@ -370,6 +382,7 @@ class Endpoint:
         request = await connection.open_request()
         read_stream = request.reader
         write_stream = request.writer
+        authority = await request.remote_authority()
         upload_task: asyncio.Task[None] | None = None
         try:
             await write_stream.write_header(_request_header_fields(method, url, headers))
@@ -382,6 +395,7 @@ class Endpoint:
                 response_headers.items(),
                 method=method.upper(),
                 url=url,
+                authority=authority,
                 upload_task=upload_task,
             )
         except Exception:
@@ -422,7 +436,8 @@ class Service:
         request: ServerRequest | None = None
         try:
             method, url, headers = _parse_request_header(await reader.read_header())
-            request = ServerRequest(reader, method, url, headers)
+            authority = await raw_request.remote_authority()
+            request = ServerRequest(reader, method, url, headers, authority=authority)
             handler = self._match(method, request.path)
             result = handler(request)
             if isawaitable(result):

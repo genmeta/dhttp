@@ -46,8 +46,12 @@ def test_client_response_exposes_aiohttp_like_metadata_and_ok():
         [("x-demo", "1")],
         method="GET",
         url="https://peer.example/hello?name=reimu",
+        authority="remote",
     )
 
+    assert client_response.authority() == "remote"
+    assert not hasattr(client_response, "local_authority")
+    assert not hasattr(client_response, "remote_authority")
     assert client_response.method == "GET"
     assert client_response.url == "https://peer.example/hello?name=reimu"
     assert client_response.status == 204

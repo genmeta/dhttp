@@ -207,17 +207,22 @@ class ClientResponse:
         *,
         method: str,
         url: str,
+        authority: Any = None,
         upload_task: asyncio.Task[Any] | None = None,
     ):
         self._read_stream = read_stream
         self._body: bytes | None = None
         self._released = False
+        self._authority = authority
         self.content = StreamContent(read_stream, upload_task=upload_task)
         self.status = int(status)
         self.headers = Headers(headers)
         self.method = method.upper()
         self.url = url
         self.ok = 200 <= self.status < 400
+
+    def authority(self):
+        return self._authority
 
     async def read(self) -> bytes:
         if self._body is not None:

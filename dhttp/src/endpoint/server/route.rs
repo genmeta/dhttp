@@ -98,7 +98,8 @@ impl Serve for RouterInner {
         request: &'s mut Request,
         response: &'s mut Response,
     ) -> BoxServiceFuture<'s> {
-        let Some(path_and_query) = request.path() else {
+        let uri = request.uri();
+        let Some(path_and_query) = uri.path_and_query() else {
             tracing::debug!("missing path in request URI, call fallback service");
             return self.fallback.serve(request, response);
         };

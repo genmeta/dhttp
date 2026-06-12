@@ -26,6 +26,15 @@ fn root_and_raw_type_declarations_are_separated() {
     );
     assert!(root_dts.contains("export interface EndpointOptions"));
     assert!(root_dts.contains("export interface Service extends RawHandler"));
+    assert!(root_dts.contains("export interface DhttpRequest extends Request"));
+    assert!(root_dts.contains("export interface DhttpResponse extends Response"));
+    assert!(root_dts.contains("authority(): RemoteAuthority | null"));
+    assert!(root_dts.contains("export type FetchHandler = (request: DhttpRequest)"));
+    assert!(
+        root_dts.contains("fetch(input: FetchInput, init?: RequestInit): Promise<DhttpResponse>")
+    );
+    assert!(!root_dts.contains("localAuthority()"));
+    assert!(!root_dts.contains("remoteAuthority()"));
     assert!(root_dts.contains("export const Service"));
     assert!(root_dts.contains("new (): Service"));
     assert!(root_dts.contains("from(handler: FetchHandler): Service"));
@@ -47,6 +56,7 @@ fn root_and_raw_type_declarations_are_separated() {
     assert!(raw_dts.contains("export class UnresolvedRequest"));
     assert!(raw_dts.contains("get reader(): MessageReader"));
     assert!(raw_dts.contains("get writer(): MessageWriter"));
+    assert!(!raw_dts.contains("authority(): import(\"@genmeta/dhttp\").RemoteAuthority | null"));
     assert!(
         raw_dts.contains(
             "localAuthority(): Promise<import(\"@genmeta/dhttp\").LocalAuthority | null>"
@@ -70,6 +80,10 @@ fn root_js_facade_exposes_service_and_hides_raw_classes() {
     let js = std::fs::read_to_string(manifest_dir.join("js/index.js")).unwrap();
 
     assert!(js.contains("function Service()"));
+    assert!(js.contains("function withAuthority"));
+    assert!(js.contains("authority()"));
+    assert!(js.contains("unresolved.remoteAuthority()"));
+    assert!(!js.contains("unresolved.authority()"));
     assert!(js.contains("if (!new.target)"));
     assert!(js.contains("Service.from = function"));
     assert!(js.contains("function createService"));

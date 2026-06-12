@@ -11,6 +11,12 @@
 //!     let _ = response.read_stream();
 //! }
 //! ```
+//!
+//! ```compile_fail
+//! fn response_identity_uses_authority(response: &dhttp::endpoint::client::Response) {
+//!     let _ = response.remote_authority();
+//! }
+//! ```
 
 use std::{
     future::{Future, IntoFuture},
@@ -988,7 +994,7 @@ impl Response {
         self.stream.stop(code).await
     }
 
-    pub fn remote_authority(&self) -> &Arc<dyn authority::RemoteAuthority> {
+    pub fn authority(&self) -> &Arc<dyn authority::RemoteAuthority> {
         &self.authority
     }
 }
@@ -1003,6 +1009,13 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn response_authority_accessor_has_directional_identity_name() {
+        let _response_authority = |response: &Response| {
+            let _: &Arc<dyn authority::RemoteAuthority> = response.authority();
+        };
+    }
 
     fn request_message() -> RequestMessage {
         let section = FieldSection::header(

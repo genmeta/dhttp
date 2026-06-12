@@ -1,6 +1,14 @@
 export type DnsScheme = "mdns" | "http" | "h3" | "system";
 export type FetchInput = string | URL | Request;
-export type FetchHandler = (request: Request) => Response | Promise<Response>;
+export interface DhttpRequest extends Request {
+  authority(): RemoteAuthority | null;
+}
+
+export interface DhttpResponse extends Response {
+  authority(): RemoteAuthority | null;
+}
+
+export type FetchHandler = (request: DhttpRequest) => Response | Promise<Response>;
 export type RawHandler = (
   request: import("@genmeta/dhttp/raw").UnresolvedRequest,
 ) => void | Promise<void>;
@@ -112,7 +120,7 @@ export class Endpoint {
   static loadFrom(path: string): Promise<Endpoint>;
   identity(): Identity | null;
   bindPatterns(): string[];
-  fetch(input: FetchInput, init?: RequestInit): Promise<Response>;
+  fetch(input: FetchInput, init?: RequestInit): Promise<DhttpResponse>;
   listen(handler: RawHandler): ServeHandle;
   listen(service: Service): ServeHandle;
   connect(authority: string): Promise<import("@genmeta/dhttp/raw").Connection>;

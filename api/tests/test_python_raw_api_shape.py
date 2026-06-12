@@ -100,6 +100,7 @@ def test_header_field_is_immutable_bytes_value():
 def test_connection_request_reader_and_writer_wrappers():
     request = asyncio.run(raw.Connection(NativeConnection()).open_request())
     assert request.stream_id == 7
+    assert not hasattr(request, "authority")
     assert asyncio.run(request.local_authority()) == "local"
     assert asyncio.run(request.remote_authority()) == "remote"
     assert asyncio.run(request.reader.read_header()) == [raw.HeaderField(b":status", b"204")]

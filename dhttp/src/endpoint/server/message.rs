@@ -20,6 +20,24 @@
 //!     let _ = response.write_stream();
 //! }
 //! ```
+//!
+//! ```compile_fail
+//! fn request_target_parts_must_use_uri(request: &dhttp::endpoint::server::Request) {
+//!     let _ = request.scheme();
+//!     let _ = request.path();
+//!     let _ = request.target_authority();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn server_message_identity_uses_authority(
+//!     request: &dhttp::endpoint::server::Request,
+//!     response: &dhttp::endpoint::server::Response,
+//! ) {
+//!     let _ = request.remote_authority();
+//!     let _ = response.local_authority();
+//! }
+//! ```
 
 use bytes::{Buf, Bytes};
 use dhttp_identity::identity as authority;
@@ -27,7 +45,6 @@ use futures::{Stream, StreamExt};
 use http::{
     HeaderMap, HeaderValue, Method, Uri,
     header::{AsHeaderName, IntoHeaderName},
-    uri::{Authority, PathAndQuery, Scheme},
 };
 use snafu::{OptionExt, Report, ResultExt, Snafu};
 use std::{future::Future, sync::Arc};
@@ -131,18 +148,6 @@ impl Request {
         self.message.method().clone()
     }
 
-    pub fn scheme(&self) -> Option<Scheme> {
-        Some(self.message.header().scheme().clone())
-    }
-
-    pub fn authority(&self) -> Option<Authority> {
-        Some(self.message.header().authority().clone())
-    }
-
-    pub fn path(&self) -> Option<PathAndQuery> {
-        Some(self.message.header().path().clone())
-    }
-
     pub fn protocol(&self) -> Option<Protocol> {
         self.message.header().protocol().cloned()
     }
@@ -201,7 +206,7 @@ impl Request {
         self.stream.stop(code).await
     }
 
-    pub fn remote_authority(&self) -> Option<&Arc<dyn authority::RemoteAuthority>> {
+    pub fn authority(&self) -> Option<&Arc<dyn authority::RemoteAuthority>> {
         self.authority.as_ref()
     }
 
@@ -425,7 +430,7 @@ impl Response {
         }
     }
 
-    pub fn local_authority(&self) -> &Arc<dyn authority::LocalAuthority> {
+    pub fn authority(&self) -> &Arc<dyn authority::LocalAuthority> {
         &self.authority
     }
 
@@ -505,5 +510,20 @@ impl Drop for Response {
                 .in_current_span(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authority_accessors_have_directional_identity_names() {
+        let _request_authority = |request: &Request| {
+            let _: Option<&Arc<dyn authority::RemoteAuthority>> = request.authority();
+        };
+        let _response_authority = |response: &Response| {
+            let _: &Arc<dyn authority::LocalAuthority> = response.authority();
+        };
     }
 }

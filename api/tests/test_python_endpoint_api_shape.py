@@ -62,9 +62,13 @@ def test_server_request_exposes_aiohttp_like_url_parts_and_json():
         "post",
         "https://peer.example/hello/world?name=reimu&tag=a&tag=b",
         response.Headers({"content-type": "application/json"}),
+        authority="remote",
     )
 
     assert request.method == "POST"
+    assert request.authority() == "remote"
+    assert not hasattr(request, "local_authority")
+    assert not hasattr(request, "remote_authority")
     assert request.scheme == "https"
     assert request.host == "peer.example"
     assert request.path == "/hello/world"
@@ -235,10 +239,10 @@ class FakeNativeRawRequest:
         self.writer = FakeWriter()
 
     def local_authority(self):
-        return None
+        return "local"
 
     def remote_authority(self):
-        return None
+        return "remote"
 
 
 async def fake_read_header(self):
@@ -287,7 +291,10 @@ def test_endpoint_listen_passes_raw_request_and_rejects_response_return():
 
 def test_service_is_callable_raw_handler_and_routes_high_level_request():
     service = endpoint.Service().get(
-        "/hello", lambda request: response.Response.text(f"hello {request.query['name']}")
+        "/hello",
+        lambda request: response.Response.text(
+            f"hello {request.query['name']} from {request.authority()}"
+        ),
     )
     raw_request = FakeNativeRawRequest([
         (b":method", b"GET"),
@@ -299,7 +306,7 @@ def test_service_is_callable_raw_handler_and_routes_high_level_request():
     asyncio.run(service(endpoint.raw.UnresolvedRequest(raw_request)))
 
     assert raw_request.writer.headers[0][0] == (b":status", b"200")
-    assert raw_request.writer.data == [b"hello reimu"]
+    assert raw_request.writer.data == [b"hello reimu from remote"]
     assert raw_request.writer.closed is True
 
 

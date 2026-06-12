@@ -54,6 +54,19 @@ function parseDhttpSubjectKeyIdentifier(value) {
   return normalizeDhttpSubjectKeyIdentifier(native.parseDhttpSubjectKeyIdentifier(input));
 }
 
+function withAuthority(message, authority) {
+  const methods = {
+    authority() {
+      return authority ?? null;
+    },
+  };
+  Object.defineProperty(message, 'authority', {
+    value: methods.authority,
+    enumerable: false,
+    configurable: true,
+  });
+  return message;
+}
 
 function rejectPseudoHeaders(headers, kind) {
   for (const [name] of headers) {
@@ -378,6 +391,7 @@ function shouldHaveBody(method, status) {
 async function requestFromUnresolved(unresolved) {
   const reader = unresolved.reader;
   try {
+    const authority = await unresolved.remoteAuthority();
     const fields = await reader.readHeader();
     const { method, url, headers } = parseRequestHeader(fields);
     const init = { method, headers };
@@ -390,7 +404,7 @@ async function requestFromUnresolved(unresolved) {
       init.duplex = 'half';
       stopBody = body.stop;
     }
-    return { request: new Request(url, init), stopBody };
+    return { request: withAuthority(new Request(url, init), authority), stopBody };
   } catch (error) {
     await stopReadStream(reader);
     throw error;
@@ -441,6 +455,7 @@ async function fetchOnce(endpoint, input, init) {
   const unresolved = await connection.openRequest();
   const reader = unresolved.reader;
   const writer = unresolved.writer;
+  const authority = await unresolved.remoteAuthority();
 
   const { fields, uploadPromise } = await raceHeaderAndUpload({
     request,
@@ -455,7 +470,7 @@ async function fetchOnce(endpoint, input, init) {
   if (body == null) {
     await stopReadStream(reader);
   }
-  return new Response(body, { status, headers });
+  return withAuthority(new Response(body, { status, headers }), authority);
 }
 
 async function fetchWithRedirects(endpoint, input, init, count) {
