@@ -308,18 +308,8 @@ impl Endpoint {
         self.inner.quic().bind_patterns().clone()
     }
 
-    pub fn publisher_loop(
+    fn dns_publication_loop(
         &self,
-    ) -> Result<
-        crate::ddns::publisher::EndpointPublisherLoop,
-        crate::ddns::publisher::CreatePublisherError,
-    > {
-        self.publisher_loop_with_options(crate::ddns::publisher::PublishOptions::default())
-    }
-
-    pub fn publisher_loop_with_options(
-        &self,
-        options: crate::ddns::publisher::PublishOptions,
     ) -> Result<
         crate::ddns::publisher::EndpointPublisherLoop,
         crate::ddns::publisher::CreatePublisherError,
@@ -329,8 +319,7 @@ impl Endpoint {
             .ok_or(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint)?;
         let name = identity.name().to_owned();
         let identity: Arc<dyn dhttp_identity::identity::LocalAuthority + Send + Sync> = identity;
-        let signer =
-            crate::ddns::publisher::EndpointRecordSigner::new(identity).with_options(options);
+        let signer = crate::ddns::publisher::EndpointRecordSigner::new(identity);
         let publisher = crate::ddns::publisher::Publisher::new(signer, self.resolver());
         let source = crate::ddns::publisher::EndpointBindingAddresses::new(
             self.network().network().clone(),
@@ -339,6 +328,29 @@ impl Endpoint {
         Ok(crate::ddns::publisher::EndpointPublicationLoop::new(
             name, publisher, source,
         ))
+    }
+
+    #[deprecated(note = "dns publication is owned by Endpoint::listen")]
+    pub fn publisher_loop(
+        &self,
+    ) -> Result<
+        crate::ddns::publisher::EndpointPublisherLoop,
+        crate::ddns::publisher::CreatePublisherError,
+    > {
+        self.dns_publication_loop()
+    }
+
+    #[deprecated(
+        note = "dns publication is owned by Endpoint::listen and selector options are ignored"
+    )]
+    pub fn publisher_loop_with_options(
+        &self,
+        _options: crate::ddns::publisher::PublishOptions,
+    ) -> Result<
+        crate::ddns::publisher::EndpointPublisherLoop,
+        crate::ddns::publisher::CreatePublisherError,
+    > {
+        self.dns_publication_loop()
     }
 
     /// Load an endpoint from a domain name.
@@ -498,7 +510,26 @@ impl Endpoint {
         S::Future: Send,
         S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        self.inner.listen_owned(service)
+        let publisher_loop = self.dns_publication_loop();
+        let h3 = self.inner.clone();
+        async move {
+            let publisher_loop = match publisher_loop {
+                Ok(publisher_loop) => publisher_loop,
+                Err(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint) => {
+                    return Err(crate::h3x::dquic::AcceptError::ServerUnavailable);
+                }
+            };
+
+            let listen = h3.listen_owned(service);
+            let publish = publisher_loop.run();
+            futures::pin_mut!(listen);
+            futures::pin_mut!(publish);
+
+            match futures::future::select(listen, publish).await {
+                futures::future::Either::Left((result, _publish)) => result,
+                futures::future::Either::Right((never, _listen)) => match never {},
+            }
+        }
     }
 }
 
@@ -669,12 +700,48 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn publisher_loop_rejects_anonymous_endpoint() {
         let endpoint = Endpoint::builder().build().await.unwrap();
         let error = endpoint.publisher_loop().unwrap_err();
         assert!(matches!(
             error,
             crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint
+        ));
+    }
+
+    #[derive(Clone)]
+    struct NoopService;
+
+    impl tower_service::Service<server::UnresolvedRequest> for NoopService {
+        type Response = ();
+        type Error = std::convert::Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _request: server::UnresolvedRequest) -> Self::Future {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn listen_maps_anonymous_publisher_to_server_unavailable() {
+        let endpoint = Endpoint::builder().build().await.unwrap();
+
+        let error = endpoint
+            .listen(NoopService)
+            .await
+            .expect_err("anonymous publishing endpoint cannot listen");
+
+        assert!(matches!(
+            error,
+            crate::h3x::dquic::AcceptError::ServerUnavailable
         ));
     }
 
@@ -856,7 +923,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publisher_loop_can_apply_publish_options() {
+    #[allow(deprecated)]
+    async fn publisher_loop_uses_endpoint_identity_name() {
         let identity = valid_dhttp_identity("publisher.example.com.dhttp.net");
         let endpoint = Endpoint::builder()
             .identity(Arc::new(identity))
@@ -865,12 +933,9 @@ mod tests {
             .expect("dhttp identity should build endpoint");
 
         let publisher_loop = endpoint
-            .publisher_loop_with_options(crate::ddns::publisher::PublishOptions {
-                server_id: Some(7),
-            })
+            .publisher_loop()
             .expect("named endpoint can publish");
 
-        assert_eq!(publisher_loop.options().server_id, Some(7));
         assert_eq!(
             publisher_loop.name().as_str(),
             "publisher.example.com.dhttp.net"
