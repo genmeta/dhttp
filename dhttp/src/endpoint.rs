@@ -330,29 +330,6 @@ impl Endpoint {
         ))
     }
 
-    #[deprecated(note = "dns publication is owned by Endpoint::listen")]
-    pub fn publisher_loop(
-        &self,
-    ) -> Result<
-        crate::ddns::publisher::EndpointPublisherLoop,
-        crate::ddns::publisher::CreatePublisherError,
-    > {
-        self.dns_publication_loop()
-    }
-
-    #[deprecated(
-        note = "dns publication is owned by Endpoint::listen and selector options are ignored"
-    )]
-    pub fn publisher_loop_with_options(
-        &self,
-        _options: crate::ddns::publisher::PublishOptions,
-    ) -> Result<
-        crate::ddns::publisher::EndpointPublisherLoop,
-        crate::ddns::publisher::CreatePublisherError,
-    > {
-        self.dns_publication_loop()
-    }
-
     /// Load an endpoint from a domain name.
     ///
     /// Accepts a [`dhttp_identity::name::DhttpName`], locates the `.dhttp`
@@ -699,17 +676,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[allow(deprecated)]
-    async fn publisher_loop_rejects_anonymous_endpoint() {
-        let endpoint = Endpoint::builder().build().await.unwrap();
-        let error = endpoint.publisher_loop().unwrap_err();
-        assert!(matches!(
-            error,
-            crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint
-        ));
-    }
-
     #[derive(Clone)]
     struct NoopService;
 
@@ -919,26 +885,6 @@ mod tests {
             !resolver_names
                 .iter()
                 .any(|name| name == "System DNS Resolver")
-        );
-    }
-
-    #[tokio::test]
-    #[allow(deprecated)]
-    async fn publisher_loop_uses_endpoint_identity_name() {
-        let identity = valid_dhttp_identity("publisher.example.com.dhttp.net");
-        let endpoint = Endpoint::builder()
-            .identity(Arc::new(identity))
-            .build()
-            .await
-            .expect("dhttp identity should build endpoint");
-
-        let publisher_loop = endpoint
-            .publisher_loop()
-            .expect("named endpoint can publish");
-
-        assert_eq!(
-            publisher_loop.name().as_str(),
-            "publisher.example.com.dhttp.net"
         );
     }
 
