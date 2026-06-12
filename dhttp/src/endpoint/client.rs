@@ -938,11 +938,11 @@ impl Response {
         self.message.header().status()
     }
 
-    pub fn headers(&mut self) -> &HeaderMap {
+    pub fn headers(&self) -> &HeaderMap {
         self.message.header().header_map()
     }
 
-    pub fn header(&mut self, name: impl AsHeaderName) -> Option<&HeaderValue> {
+    pub fn header(&self, name: impl AsHeaderName) -> Option<&HeaderValue> {
         self.headers().get(name)
     }
 
