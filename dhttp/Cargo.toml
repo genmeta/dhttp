@@ -22,8 +22,10 @@ tower-service = { workspace = true }
 tracing = { workspace = true }
 dhttp-identity = { workspace = true }
 dhttp-home = { workspace = true }
+dhttp-access = { workspace = true }
 ddns = { workspace = true }
 h3x = { workspace = true }
 
 [dev-dependencies]
+dhttp-access = { workspace = true, features = ["http", "orm"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
