@@ -2,6 +2,9 @@
 resolver = "3"
 members = ["dhttp", "identity", "home", "api", "access"]
 
+[patch."https://github.com/genmeta/dhttp.git"]
+dhttp-identity = { path = "identity" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
