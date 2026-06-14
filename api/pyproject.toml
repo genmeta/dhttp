@@ -3,11 +3,11 @@ requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
 [project]
-name = "dhttp"
+name = "dhttpy"
 dynamic = ["version"]
 requires-python = ">=3.10"
 
 [tool.maturin]
 python-source = "python"
-module-name = "dhttp._native"
+module-name = "dhttpy._native"
 features = ["pyo3", "pyo3/extension-module"]

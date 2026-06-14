@@ -10,12 +10,12 @@ API_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = API_ROOT / "python"
 sys.path.insert(0, str(PYTHON_ROOT))
 
-fake_native = types.ModuleType("dhttp._native")
-package = types.ModuleType("dhttp")
-package.__path__ = [str(PYTHON_ROOT / "dhttp")]
+fake_native = types.ModuleType("dhttpy._native")
+package = types.ModuleType("dhttpy")
+package.__path__ = [str(PYTHON_ROOT / "dhttpy")]
 package._native = fake_native
-sys.modules["dhttp"] = package
-sys.modules["dhttp._native"] = fake_native
+sys.modules["dhttpy"] = package
+sys.modules["dhttpy._native"] = fake_native
 
 
 class NativeMessageReader:
@@ -82,7 +82,7 @@ fake_native.UnresolvedRequest = NativeUnresolvedRequest
 fake_native.MessageReader = NativeMessageReader
 fake_native.MessageWriter = NativeMessageWriter
 
-raw = importlib.import_module("dhttp.raw")
+raw = importlib.import_module("dhttpy.raw")
 
 
 def test_header_field_is_immutable_bytes_value():

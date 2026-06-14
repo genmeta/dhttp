@@ -161,8 +161,8 @@ fn pyo3_read_stream_stop_can_interrupt_in_flight_read() {
 #[test]
 fn python_wrapper_uses_aiohttp_like_request_and_body_helpers() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let endpoint = std::fs::read_to_string(manifest_dir.join("python/dhttp/endpoint.py")).unwrap();
-    let response = std::fs::read_to_string(manifest_dir.join("python/dhttp/response.py")).unwrap();
+    let endpoint = std::fs::read_to_string(manifest_dir.join("python/dhttpy/endpoint.py")).unwrap();
+    let response = std::fs::read_to_string(manifest_dir.join("python/dhttpy/response.py")).unwrap();
 
     assert!(endpoint.contains("def _endpoint_options"));
     assert!(endpoint.contains("dns_schemes"));

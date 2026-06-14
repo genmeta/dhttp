@@ -9,18 +9,18 @@ from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = API_ROOT / "python"
-INIT_PATH = PYTHON_ROOT / "dhttp" / "__init__.py"
+INIT_PATH = PYTHON_ROOT / "dhttpy" / "__init__.py"
 sys.path.insert(0, str(PYTHON_ROOT))
 
-fake_native = types.ModuleType("dhttp._native")
-package = types.ModuleType("dhttp")
-package.__path__ = [str(PYTHON_ROOT / "dhttp")]
+fake_native = types.ModuleType("dhttpy._native")
+package = types.ModuleType("dhttpy")
+package.__path__ = [str(PYTHON_ROOT / "dhttpy")]
 package._native = fake_native
-sys.modules["dhttp"] = package
-sys.modules["dhttp._native"] = fake_native
+sys.modules["dhttpy"] = package
+sys.modules["dhttpy._native"] = fake_native
 
-endpoint = importlib.import_module("dhttp.endpoint")
-response = importlib.import_module("dhttp.response")
+endpoint = importlib.import_module("dhttpy.endpoint")
+response = importlib.import_module("dhttpy.response")
 
 
 class FakeReadStream:
@@ -149,7 +149,7 @@ def test_top_level_exports_include_query_params_and_json_response():
     spec = importlib.util.spec_from_file_location(
         module_name,
         INIT_PATH,
-        submodule_search_locations=[str(PYTHON_ROOT / "dhttp")],
+        submodule_search_locations=[str(PYTHON_ROOT / "dhttpy")],
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -185,7 +185,7 @@ def test_root_exports_high_level_api_and_hides_raw_implementation_names():
     spec = importlib.util.spec_from_file_location(
         module_name,
         INIT_PATH,
-        submodule_search_locations=[str(PYTHON_ROOT / "dhttp")],
+        submodule_search_locations=[str(PYTHON_ROOT / "dhttpy")],
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -284,7 +284,7 @@ def test_endpoint_listen_passes_raw_request_and_rejects_response_return():
         asyncio.run(native.handler(raw_request))
     except TypeError as error:
         assert "Endpoint.listen(function) receives raw UnresolvedRequest" in str(error)
-        assert "dhttp.Service" in str(error)
+        assert "dhttpy.Service" in str(error)
     else:
         raise AssertionError("raw listen handler returning Response must fail")
 

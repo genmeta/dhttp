@@ -419,7 +419,7 @@ class Endpoint:
             if result is not None:
                 raise TypeError(
                     "Endpoint.listen(function) receives raw UnresolvedRequest; "
-                    "use dhttp.Service for ServerRequest -> Response handlers"
+                    "use dhttpy.Service for ServerRequest -> Response handlers"
                 )
 
         return self._inner.listen_raw(raw_handler)
