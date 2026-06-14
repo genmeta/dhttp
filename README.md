@@ -96,9 +96,9 @@ console.log(await response.text());
 Python:
 
 ```python
-import dhttp
+import dhttpy
 
-endpoint = await dhttp.Endpoint.create(dns_schemes=["h3", "mdns", "system"])
+endpoint = await dhttpy.Endpoint.create(dns_schemes=["h3", "mdns", "system"])
 
 async with endpoint.get("https://alice.example.dhttp.net/hello") as response:
     print(await response.text())
