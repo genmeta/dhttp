@@ -105,7 +105,8 @@ class Response:
 
     def __init__(
         self,
-        body: bytes | bytearray | memoryview | str | AsyncIterator[bytes] | Iterable[bytes] | None = b"",
+        body: bytes | bytearray | memoryview | str | AsyncIterator[
+            bytes] | Iterable[bytes] | None = b"",
         *,
         status: int = 200,
         headers: HeaderInput = None,
