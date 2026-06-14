@@ -142,17 +142,17 @@ impl IdentityProfile {
 
     pub async fn load_key(&self) -> Result<PrivateKeyDer<'static>, LoadKeyError> {
         let key_path = self.ssl_dir().join(KEY_FILE_NAME);
-        let metadata =
-            fs::metadata(key_path.as_path())
-                .await
-                .context(load_key_error::MetadataSnafu {
-                    path: key_path.clone(),
-                })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
 
             use snafu::ensure;
+            let metadata =
+                fs::metadata(key_path.as_path())
+                    .await
+                    .context(load_key_error::MetadataSnafu {
+                        path: key_path.clone(),
+                    })?;
             let permissions = metadata.mode() & 0o777;
             ensure!(
                 permissions == 0o400,
