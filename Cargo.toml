@@ -2,12 +2,6 @@
 resolver = "3"
 members = ["dhttp", "identity", "home", "api", "access"]
 
-[patch."https://github.com/genmeta/dhttp.git"]
-dhttp-identity = { path = "identity" }
-
-[patch.crates-io]
-dhttp-identity = { path = "identity" }
-
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -42,11 +36,11 @@ derive_more = "2"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# Keep workspace-local crates as path dependencies. They are members of this
-# repository's own Cargo workspace and are not cross-repo local patches.
-dhttp-identity = { path = "identity", version = "0.1.0" }
+# Keep same-repository workspace members as path dependencies. Cross-repo
+# release dependencies resolve through crates.io in the formal release graph.
+dhttp-identity = "0.1.0"
 dhttp-home = { path = "home", version = "0.1.0" }
-ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch = "endpoint", version = "0.3.0", features = [
+ddns = { package = "dyns", version = "0.3.0", features = [
     "h3x-resolver",
     "mdns-resolver",
     "http-resolver",
