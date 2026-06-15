@@ -125,6 +125,49 @@ jobs:
         run: npm run smoke
         working-directory: api
 
+      - name: Probe npm registry publish eligibility
+        id: probe
+        shell: bash
+        working-directory: api
+        run: |
+          set -euo pipefail
+
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "$package_name" version --json > /tmp/npm-existing.json 2> /tmp/npm-existing.err; then
+            echo "package_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            if grep -qiE 'E404|404 Not Found|Not Found|no such package' /tmp/npm-existing.err; then
+              echo "package_exists=false" >> "$GITHUB_OUTPUT"
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=package-missing" >> "$GITHUB_OUTPUT"
+              echo "skip npm publish for $package_name@$package_version (package not yet initialized on npm)"
+              exit 0
+            fi
+
+            cat /tmp/npm-existing.err >&2
+            exit 1
+          fi
+
+          if npm view "$package_name@$package_version" version --json > /tmp/npm-target.json 2> /tmp/npm-target.err; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=version-exists" >> "$GITHUB_OUTPUT"
+            echo "skip npm publish for $package_name@$package_version (version already published)"
+            exit 0
+          fi
+
+          if grep -qiE 'E404|404 Not Found|Not Found|no such package|No match found' /tmp/npm-target.err; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            echo "publish npm package $package_name@$package_version"
+            exit 0
+          fi
+
+          cat /tmp/npm-target.err >&2
+          exit 1
+
       - name: Publish npm package
+        if: steps.probe.outputs.should_publish == 'true'
         run: npm publish --ignore-scripts --access public --provenance
         working-directory: api

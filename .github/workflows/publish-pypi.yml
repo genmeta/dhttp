@@ -96,6 +96,74 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Probe PyPI publish eligibility
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          package_name = "dhttpy"
+          wheels = sorted(Path("dist").glob("dhttpy-*.whl"))
+          if not wheels:
+              raise SystemExit("failed to find built dhttpy wheel in dist/")
+
+          wheel = wheels[0]
+          with zipfile.ZipFile(wheel) as archive:
+              metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = archive.read(metadata_name).decode("utf-8")
+
+          package_version = None
+          for line in metadata.splitlines():
+              if line.startswith("Version: "):
+                  package_version = line.split(": ", 1)[1]
+                  break
+
+          if package_version is None:
+              raise SystemExit(f"failed to determine wheel version from {wheel.name}")
+
+          headers = {"User-Agent": "genmeta dhttp publish workflow"}
+          package_url = f"https://pypi.org/pypi/{package_name}/json"
+          request = urllib.request.Request(package_url, headers=headers)
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  if response.status != 200:
+                      raise SystemExit(f"unexpected PyPI status for {package_name}: {response.status}")
+                  payload = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  with output.open("a", encoding="utf-8") as handle:
+                      handle.write("should_publish=false\n")
+                      handle.write("skip_reason=package-missing\n")
+                  print(f"skip PyPI publish for {package_name} {package_version} (package not yet initialized on PyPI)")
+                  raise SystemExit(0)
+              raise
+
+          releases = payload.get("releases", {})
+          if package_version in releases:
+              with output.open("a", encoding="utf-8") as handle:
+                  handle.write("should_publish=false\n")
+                  handle.write("skip_reason=version-exists\n")
+              print(f"skip PyPI publish for {package_name} {package_version} (version already published)")
+          else:
+              with output.open("a", encoding="utf-8") as handle:
+                  handle.write("should_publish=true\n")
+                  handle.write("skip_reason=\n")
+              print(f"publish PyPI package {package_name} {package_version}")
+          PY
+
       - uses: pypa/gh-action-pypi-publish@release/v1
+        if: steps.probe.outputs.should_publish == 'true'
         with:
           packages-dir: dist
