@@ -43,7 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # repository's own Cargo workspace and are not cross-repo local patches.
 dhttp-identity = { path = "identity", version = "0.1.0" }
 dhttp-home = { path = "home", version = "0.1.0" }
-ddns = { git = "https://github.com/genmeta/ddns.git", branch = "endpoint", version = "0.3.0", features = [
+ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch = "endpoint", version = "0.3.0", features = [
     "h3x-resolver",
     "mdns-resolver",
     "http-resolver",
