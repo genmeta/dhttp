@@ -8,7 +8,7 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
 readme = "README.md"
-keywords = ["dhttp", "http3", "quic"]
+keywords = ["dhttp", "http3", "quic", "identity", "network"]
 categories = ["network-programming"]
 
 [workspace.dependencies]
