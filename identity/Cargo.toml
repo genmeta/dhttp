@@ -1,6 +1,6 @@
 [package]
 name = "dhttp-identity"
-description = "Identity primitives for DHTTP applications"
+description = "Identity primitives for DHttp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

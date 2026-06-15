@@ -1,15 +1,28 @@
 {
   "name": "@genmeta/dhttp",
   "version": "0.1.0",
-  "main": "js/index.js",
-  "types": "js/index.d.ts",
-  "engines": {
-    "node": ">=22.17.0"
-  },
+  "description": "The True Internet",
+  "license": "Apache-2.0",
+  "homepage": "https://dhttp.net/",
   "repository": {
     "type": "git",
     "url": "https://github.com/genmeta/dhttp.git",
     "directory": "api"
+  },
+  "bugs": {
+    "url": "https://github.com/genmeta/dhttp/issues"
+  },
+  "keywords": [
+    "dhttp",
+    "http3",
+    "quic",
+    "identity",
+    "sdk"
+  ],
+  "main": "js/index.js",
+  "types": "js/index.d.ts",
+  "engines": {
+    "node": ">=22.17.0"
   },
   "publishConfig": {
     "access": "public",

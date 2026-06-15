@@ -1,6 +1,6 @@
 [package]
 name = "dhttp-home"
-description = "Local home and profile management for DHTTP applications"
+description = "Local identity home and profile management for DHttp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
