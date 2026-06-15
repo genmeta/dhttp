@@ -53,16 +53,6 @@ jobs:
             dhttp
           )
 
-          if [[ "$mode" == "dry-run" ]]; then
-            publish_args=(cargo publish --dry-run --locked)
-            for package in "${packages[@]}"; do
-              publish_args+=(-p "$package")
-            done
-            echo "dry-run publish packages: ${packages[*]}"
-            "${publish_args[@]}"
-            exit 0
-          fi
-
           cargo metadata --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
           package_versions="$(
             PACKAGES="$(printf '%s\n' "${packages[@]}")" RUNNER_TEMP="$RUNNER_TEMP" python3 - <<'PY'
@@ -135,7 +125,14 @@ jobs:
             exit 0
           fi
 
-          publish_args=(cargo publish --locked)
+          if [[ "$mode" == "dry-run" ]]; then
+            publish_args=(cargo publish --dry-run --locked)
+            echo "dry-run publish packages: ${packages_to_publish[*]}"
+          else
+            publish_args=(cargo publish --locked)
+            echo "publish packages: ${packages_to_publish[*]}"
+          fi
+
           for package in "${packages_to_publish[@]}"; do
             publish_args+=(-p "$package")
           done
