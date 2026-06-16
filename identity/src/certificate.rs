@@ -13,6 +13,8 @@ const OWNER_HASH_HEX_LEN: usize = 64;
 pub struct CertificateSequence(u32);
 
 impl CertificateSequence {
+    pub const MAX: u32 = i32::MAX as u32;
+
     pub fn get(self) -> u32 {
         self.0
     }
@@ -23,6 +25,34 @@ impl CertificateSequence {
 pub enum InvalidCertificateSequence {
     #[snafu(display("certificate sequence must be non-negative"))]
     Negative,
+    #[snafu(display("certificate sequence exceeds supported database range"))]
+    OutOfRange { value: u64 },
+}
+
+impl From<u8> for CertificateSequence {
+    fn from(value: u8) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<u16> for CertificateSequence {
+    fn from(value: u16) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl TryFrom<u32> for CertificateSequence {
+    type Error = InvalidCertificateSequence;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value > Self::MAX {
+            return invalid_certificate_sequence::OutOfRangeSnafu {
+                value: value as u64,
+            }
+            .fail();
+        }
+        Ok(Self(value))
+    }
 }
 
 impl TryFrom<i32> for CertificateSequence {
@@ -32,13 +62,18 @@ impl TryFrom<i32> for CertificateSequence {
         if value < 0 {
             return invalid_certificate_sequence::NegativeSnafu.fail();
         }
-        Ok(Self(value as u32))
+        Self::try_from(value as u32)
     }
 }
 
-impl From<u32> for CertificateSequence {
-    fn from(value: u32) -> Self {
-        Self(value)
+impl TryFrom<u64> for CertificateSequence {
+    type Error = InvalidCertificateSequence;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if value > Self::MAX as u64 {
+            return invalid_certificate_sequence::OutOfRangeSnafu { value }.fail();
+        }
+        Ok(Self(value as u32))
     }
 }
 
@@ -122,6 +157,12 @@ impl CertificateChainKey {
     }
 }
 
+impl fmt::Display for CertificateChainKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.kind.as_str(), self.sequence.get())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DhttpSubjectKeyIdentifier {
     chain: CertificateChainKey,
@@ -161,6 +202,8 @@ pub enum InvalidDhttpSubjectKeyIdentifier {
     FieldCount,
     #[snafu(display("dhttp subject key identifier sequence is invalid"))]
     Sequence { source: ParseIntError },
+    #[snafu(display("dhttp subject key identifier sequence is out of range"))]
+    SequenceRange { source: InvalidCertificateSequence },
     #[snafu(display("dhttp subject key identifier kind flag is invalid"))]
     KindFlag,
     #[snafu(display("dhttp subject key identifier owner hash is invalid"))]
@@ -179,8 +222,10 @@ impl FromStr for DhttpSubjectKeyIdentifier {
         let kind = fields[1];
         let owner_hash = fields[2];
         let sequence = sequence
-            .parse::<u32>()
+            .parse::<u64>()
             .context(invalid_dhttp_subject_key_identifier::SequenceSnafu)?;
+        let sequence = CertificateSequence::try_from(sequence)
+            .context(invalid_dhttp_subject_key_identifier::SequenceRangeSnafu)?;
         let kind = match kind {
             "0" => CertificateChainKind::Primary,
             "1" => CertificateChainKind::Secondary,
@@ -190,7 +235,7 @@ impl FromStr for DhttpSubjectKeyIdentifier {
             .context(invalid_dhttp_subject_key_identifier::OwnerHashSnafu)?;
 
         Ok(Self::new(
-            CertificateChainKey::new(CertificateSequence::from(sequence), kind),
+            CertificateChainKey::new(sequence, kind),
             owner_hash,
         ))
     }
@@ -213,6 +258,68 @@ mod tests {
     use super::*;
 
     const OWNER_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn certificate_sequence_accepts_database_compatible_range() {
+        assert_eq!(CertificateSequence::from(7u8).get(), 7);
+        assert_eq!(CertificateSequence::from(u16::MAX).get(), u16::MAX as u32);
+        assert_eq!(CertificateSequence::try_from(0u32).unwrap().get(), 0);
+        assert_eq!(
+            CertificateSequence::try_from(i32::MAX as u32)
+                .unwrap()
+                .get(),
+            i32::MAX as u32
+        );
+        assert_eq!(
+            CertificateSequence::try_from(i32::MAX as u64)
+                .unwrap()
+                .get(),
+            i32::MAX as u32
+        );
+    }
+
+    #[test]
+    fn certificate_sequence_rejects_values_outside_database_range() {
+        assert!(matches!(
+            CertificateSequence::try_from(-1),
+            Err(InvalidCertificateSequence::Negative)
+        ));
+        assert!(matches!(
+            CertificateSequence::try_from(i32::MAX as u32 + 1),
+            Err(InvalidCertificateSequence::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            CertificateSequence::try_from(i32::MAX as u64 + 1),
+            Err(InvalidCertificateSequence::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn certificate_chain_key_displays_user_facing_label() {
+        let primary = CertificateChainKey::new(
+            CertificateSequence::try_from(0u32).unwrap(),
+            CertificateChainKind::Primary,
+        );
+        let secondary = CertificateChainKey::new(
+            CertificateSequence::try_from(2u32).unwrap(),
+            CertificateChainKind::Secondary,
+        );
+
+        assert_eq!(primary.to_string(), "primary:0");
+        assert_eq!(secondary.to_string(), "secondary:2");
+    }
+
+    #[test]
+    fn rejects_out_of_range_subject_key_identifier_sequence() {
+        let error = format!("{}:0:{OWNER_HASH}", i32::MAX as u64 + 1)
+            .parse::<DhttpSubjectKeyIdentifier>()
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InvalidDhttpSubjectKeyIdentifier::SequenceRange { .. }
+        ));
+    }
 
     #[test]
     fn parses_canonical_dhttp_subject_key_identifier() {
