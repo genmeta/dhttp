@@ -40,7 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # release dependencies resolve through crates.io in the formal release graph.
 dhttp-identity = "0.2.0"
 dhttp-home = { path = "home", version = "0.2.0" }
-ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch = "dev/v0.4.0", version = "0.4.0", features = [
+ddns = { package = "dyns", version = "0.4.0", features = [
     "resolvers",
     "publishers",
     "h3",
@@ -48,7 +48,7 @@ ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch =
     "mdns",
     "dquic-network",
 ] }
-h3x = { git = "https://github.com/genmeta/h3x.git", branch = "dev/v0.4.0", version = "0.4.0", features = [
+h3x = { version = "0.4.0", features = [
     "dquic",
 ] }
 dhttp = { path = "dhttp", version = "0.2.0" }
