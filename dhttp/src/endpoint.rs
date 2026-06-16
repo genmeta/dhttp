@@ -40,20 +40,6 @@ pub struct Endpoint {
     publishers: crate::ddns::publishers::Publishers,
 }
 
-impl TryFrom<Arc<DquicH3Endpoint>> for Endpoint {
-    type Error = InvalidEndpointIdentityError;
-
-    fn try_from(inner: Arc<DquicH3Endpoint>) -> Result<Self, Self::Error> {
-        Self::validate_identity(inner.quic().identity().as_deref())?;
-        let network = DhttpNetwork::from(inner.quic().network().clone());
-        Ok(Self {
-            inner,
-            network,
-            publishers: crate::ddns::publishers::Publishers::new(),
-        })
-    }
-}
-
 #[derive(Debug, snafu::Snafu)]
 #[snafu(module(invalid_endpoint_identity_error))]
 pub enum InvalidEndpointIdentityError {
@@ -65,6 +51,17 @@ pub enum InvalidEndpointIdentityError {
     InvalidCertificateMetadata {
         source: dhttp_identity::identity::ExtractDhttpSubjectKeyIdentifierError,
     },
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(invalid_endpoint_parts_error))]
+pub enum InvalidEndpointPartsError {
+    #[snafu(display("invalid endpoint identity"))]
+    InvalidIdentity {
+        source: InvalidEndpointIdentityError,
+    },
+    #[snafu(display("endpoint parts use different networks"))]
+    NetworkMismatch,
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -272,6 +269,25 @@ pub enum ConnectError {
 }
 
 impl Endpoint {
+    pub fn from_parts(
+        h3: Arc<DquicH3Endpoint>,
+        publishers: crate::ddns::publishers::Publishers,
+        network: DhttpNetwork,
+    ) -> Result<Self, InvalidEndpointPartsError> {
+        Self::validate_identity(h3.quic().identity().as_deref())
+            .context(invalid_endpoint_parts_error::InvalidIdentitySnafu)?;
+
+        if !Arc::ptr_eq(h3.quic().network(), network.network()) {
+            return invalid_endpoint_parts_error::NetworkMismatchSnafu.fail();
+        }
+
+        Ok(Self {
+            inner: h3,
+            network,
+            publishers,
+        })
+    }
+
     fn validate_identity(identity: Option<&Identity>) -> Result<(), InvalidEndpointIdentityError> {
         if let Some(identity) = identity {
             Self::name_from_identity(identity)?;
@@ -680,6 +696,99 @@ mod tests {
             error,
             BuildEndpointError::InvalidIdentity {
                 source: InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn from_parts_preserves_matching_parts() {
+        let network = DhttpNetwork::builder()
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("network should build");
+        let quic = QuicEndpoint::builder()
+            .network(network.network().clone())
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await;
+        let h3 = Arc::new(H3Endpoint::new(quic));
+        let publisher: Arc<dyn crate::dquic::resolver::Publish + Send + Sync> =
+            Arc::new(CountingPublisher {
+                calls: Arc::new(AtomicUsize::new(0)),
+            });
+        let publishers = crate::ddns::publishers::Publishers::new().with(
+            crate::ddns::publishers::Publisher::new(
+                crate::ddns::publishers::PublishScope::WideArea,
+                publisher,
+            ),
+        );
+
+        let endpoint = Endpoint::from_parts(h3.clone(), publishers, network.clone())
+            .expect("matching endpoint parts should be accepted");
+
+        assert!(Arc::ptr_eq(&endpoint.as_h3(), &h3));
+        assert!(Arc::ptr_eq(endpoint.network().network(), network.network()));
+        assert_eq!(endpoint.dns_publishers().iter().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn from_parts_rejects_network_mismatch() {
+        let endpoint_network = DhttpNetwork::builder()
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("endpoint network should build");
+        let supplied_network = DhttpNetwork::builder()
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("supplied network should build");
+        let quic = QuicEndpoint::builder()
+            .network(endpoint_network.network().clone())
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await;
+        let h3 = Arc::new(H3Endpoint::new(quic));
+
+        let error = match Endpoint::from_parts(
+            h3,
+            crate::ddns::publishers::Publishers::new(),
+            supplied_network,
+        ) {
+            Ok(_) => panic!("mismatched endpoint parts should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, InvalidEndpointPartsError::NetworkMismatch));
+    }
+
+    #[tokio::test]
+    async fn from_parts_rejects_invalid_identity() {
+        let network = DhttpNetwork::builder()
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("network should build");
+        let identity = valid_dhttp_identity("example.com");
+        let quic = QuicEndpoint::builder()
+            .network(network.network().clone())
+            .identity(Arc::new(identity))
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await;
+        let h3 = Arc::new(H3Endpoint::new(quic));
+
+        let error =
+            match Endpoint::from_parts(h3, crate::ddns::publishers::Publishers::new(), network) {
+                Ok(_) => panic!("invalid identity should be rejected"),
+                Err(error) => error,
+            };
+
+        assert!(matches!(
+            error,
+            InvalidEndpointPartsError::InvalidIdentity {
+                source: InvalidEndpointIdentityError::InvalidName { .. }
             }
         ));
     }
