@@ -61,20 +61,24 @@ pub(crate) struct BuiltEndpointDns {
 }
 
 impl EndpointDnsPlan {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn with_dns(mut self, scheme: DnsScheme) -> Self {
         self.push_dns(scheme);
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_resolver(mut self, resolver: ArcResolver) -> Self {
         self.push_resolver(resolver);
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_publisher(mut self, scope: PublishScope, publisher: ArcPublisher) -> Self {
         self.push_publisher(scope, publisher);
         self

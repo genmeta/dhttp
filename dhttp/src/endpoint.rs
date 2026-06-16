@@ -919,10 +919,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let resolver = endpoint.resolver();
-        let any: &dyn std::any::Any = resolver.as_ref();
 
-        assert!(any.downcast_ref::<MarkerResolver>().is_some());
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["marker resolver"]);
     }
 
     #[tokio::test]
@@ -975,7 +973,10 @@ mod tests {
             &raw_network.quic().stun_resolver(),
             &external_resolver
         ));
-        assert!(Arc::ptr_eq(&endpoint.resolver(), &endpoint_resolver));
+        assert_eq!(
+            endpoint_resolver_names(&endpoint),
+            vec!["counting resolver"]
+        );
     }
 
     #[tokio::test]
