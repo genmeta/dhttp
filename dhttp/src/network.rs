@@ -1,5 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
+use snafu::Snafu;
+
 use crate::ddns::{
     mdns::MdnsResolvers,
     publishers::{PublishScope, Publisher, Publishers},
@@ -12,7 +14,7 @@ use crate::dquic::{
     Network, QuicEndpoint,
     binds::BindPattern,
     net::{Devices, InterfaceManager, Locations, ProductIO, QuicRouter, handy::DEFAULT_IO_FACTORY},
-    resolver::{Resolve, handy::SystemResolver},
+    resolver::{Publish, Resolve, handy::SystemResolver},
 };
 
 pub(crate) type DynResolver = dyn Resolve + Send + Sync;
@@ -20,6 +22,262 @@ pub(crate) type ArcResolver = Arc<DynResolver>;
 pub(crate) type DeferredStunResolver = DeferredResolver<WeakResolver<Resolvers>>;
 pub(crate) type DeferredEndpointH3Resolver = DeferredResolver<H3Resolver<QuicEndpoint>>;
 pub(crate) type ArcEndpointH3Resolver = Arc<DeferredEndpointH3Resolver>;
+pub(crate) type DynPublisher = dyn Publish + Send + Sync;
+pub(crate) type ArcPublisher = Arc<DynPublisher>;
+pub(crate) type ArcResolvers = Arc<Resolvers>;
+
+#[derive(Debug, Snafu)]
+#[snafu(module(build_endpoint_dns_error))]
+pub enum BuildEndpointDnsError {
+    #[snafu(display("endpoint dns resolver set is empty"))]
+    EmptyResolver,
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(module(build_stun_dns_error))]
+pub enum BuildStunDnsError {
+    #[snafu(display("stun dns resolver set is empty"))]
+    EmptyResolver,
+}
+
+#[derive(Clone)]
+pub(crate) enum EndpointDnsOp {
+    Dns(DnsScheme),
+    Resolver(ArcResolver),
+    Publisher(Publisher),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct EndpointDnsPlan {
+    ops: Vec<EndpointDnsOp>,
+}
+
+#[derive(Debug)]
+pub(crate) struct BuiltEndpointDns {
+    pub(crate) endpoint_resolver: ArcResolver,
+    pub(crate) endpoint_publishers: Publishers,
+    pub(crate) endpoint_h3_deferred: Option<ArcEndpointH3Resolver>,
+    pub(crate) endpoint_h3_underlay: ArcResolver,
+}
+
+impl EndpointDnsPlan {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with_dns(mut self, scheme: DnsScheme) -> Self {
+        self.push_dns(scheme);
+        self
+    }
+
+    pub(crate) fn with_resolver(mut self, resolver: ArcResolver) -> Self {
+        self.push_resolver(resolver);
+        self
+    }
+
+    pub(crate) fn with_publisher(mut self, scope: PublishScope, publisher: ArcPublisher) -> Self {
+        self.push_publisher(scope, publisher);
+        self
+    }
+
+    pub(crate) fn push_dns(&mut self, scheme: DnsScheme) {
+        self.ops.push(EndpointDnsOp::Dns(scheme));
+    }
+
+    pub(crate) fn push_resolver(&mut self, resolver: ArcResolver) {
+        self.ops.push(EndpointDnsOp::Resolver(resolver));
+    }
+
+    pub(crate) fn push_publisher(&mut self, scope: PublishScope, publisher: ArcPublisher) {
+        self.ops
+            .push(EndpointDnsOp::Publisher(Publisher::new(scope, publisher)));
+    }
+
+    fn effective_ops(&self) -> Vec<EndpointDnsOp> {
+        let source = if self.ops.is_empty() {
+            vec![
+                EndpointDnsOp::Dns(DnsScheme::H3),
+                EndpointDnsOp::Dns(DnsScheme::Mdns),
+                EndpointDnsOp::Dns(DnsScheme::System),
+            ]
+        } else {
+            self.ops.clone()
+        };
+
+        let mut seen = std::collections::BTreeSet::new();
+        source
+            .into_iter()
+            .filter(|operation| match operation {
+                EndpointDnsOp::Dns(scheme) => seen.insert(*scheme),
+                EndpointDnsOp::Resolver(_) | EndpointDnsOp::Publisher(_) => true,
+            })
+            .collect()
+    }
+
+    pub(crate) fn uses_h3(&self) -> bool {
+        self.effective_ops()
+            .iter()
+            .any(|operation| matches!(operation, EndpointDnsOp::Dns(DnsScheme::H3)))
+    }
+
+    pub(crate) async fn build_endpoint_dns(
+        &self,
+        network: Arc<Network>,
+        bind: Arc<Vec<BindPattern>>,
+    ) -> Result<BuiltEndpointDns, BuildEndpointDnsError> {
+        let operations = self.effective_ops();
+        let mut resolver_builder = Resolvers::builder();
+        let mut publishers = Publishers::new();
+        let mut endpoint_h3_deferred = None;
+
+        for operation in &operations {
+            match operation {
+                EndpointDnsOp::Dns(DnsScheme::Mdns) => {
+                    let mdns = Arc::new(
+                        MdnsResolvers::bind(network.clone(), bind.clone(), DHTTP_MDNS_SERVICE)
+                            .await,
+                    );
+                    resolver_builder = resolver_builder.resolver(mdns.clone());
+                    publishers.push(Publisher::mdns(mdns));
+                }
+                EndpointDnsOp::Dns(DnsScheme::System) => {
+                    resolver_builder = resolver_builder.system();
+                }
+                EndpointDnsOp::Dns(DnsScheme::Http) => {
+                    let http = Arc::new(
+                        HttpResolver::new(DHTTP_HTTP_DNS_SERVER)
+                            .expect("BUG: DHTTP HTTP DNS server is a valid URL"),
+                    );
+                    resolver_builder = resolver_builder.resolver(http.clone());
+                    publishers.push(Publisher::http(http));
+                }
+                EndpointDnsOp::Dns(DnsScheme::H3) => {
+                    let h3 = Arc::new(DeferredEndpointH3Resolver::new());
+                    resolver_builder = resolver_builder.resolver(h3.clone());
+                    publishers.push(Publisher::new(PublishScope::WideArea, h3.clone()));
+                    endpoint_h3_deferred = Some(h3);
+                }
+                EndpointDnsOp::Resolver(resolver) => {
+                    resolver_builder = resolver_builder.resolver(resolver.clone());
+                }
+                EndpointDnsOp::Publisher(publisher) => {
+                    publishers.push(publisher.clone());
+                }
+            }
+        }
+
+        let endpoint_resolver = endpoint_resolver_chain(resolver_builder.build())?;
+        let endpoint_h3_underlay = self.build_endpoint_h3_underlay(network, bind).await?;
+
+        Ok(BuiltEndpointDns {
+            endpoint_resolver,
+            endpoint_publishers: publishers,
+            endpoint_h3_deferred,
+            endpoint_h3_underlay,
+        })
+    }
+
+    async fn build_endpoint_h3_underlay(
+        &self,
+        network: Arc<Network>,
+        bind: Arc<Vec<BindPattern>>,
+    ) -> Result<ArcResolver, BuildEndpointDnsError> {
+        let operations = self.effective_ops();
+        let mut builder = Resolvers::builder();
+
+        for operation in &operations {
+            match operation {
+                EndpointDnsOp::Dns(DnsScheme::Mdns) => {
+                    builder = builder.mdns(network.clone(), bind.clone()).await;
+                }
+                EndpointDnsOp::Dns(DnsScheme::System) => {
+                    builder = builder.system();
+                }
+                EndpointDnsOp::Dns(DnsScheme::Http) => {
+                    builder = builder
+                        .http()
+                        .expect("BUG: DHTTP HTTP DNS server is a valid URL");
+                }
+                EndpointDnsOp::Dns(DnsScheme::H3) | EndpointDnsOp::Publisher(_) => {}
+                EndpointDnsOp::Resolver(resolver) => {
+                    builder = builder.resolver(resolver.clone());
+                }
+            }
+        }
+
+        if self.uses_h3() && !has_custom_resolver(&operations) && !has_system_dns(&operations) {
+            builder = builder.system();
+        }
+
+        endpoint_resolver_chain(builder.build())
+    }
+
+    pub(crate) async fn build_stun_dns(
+        &self,
+        h3_resolver: Option<ArcResolver>,
+        network: Arc<Network>,
+        bind: Arc<Vec<BindPattern>>,
+    ) -> Result<ArcResolvers, BuildStunDnsError> {
+        let operations = self.effective_ops();
+        let mut builder = Resolvers::builder();
+
+        for operation in &operations {
+            match operation {
+                EndpointDnsOp::Dns(DnsScheme::Mdns) => {
+                    builder = builder.mdns(network.clone(), bind.clone()).await;
+                }
+                EndpointDnsOp::Dns(DnsScheme::System) => {
+                    builder = builder.system();
+                }
+                EndpointDnsOp::Dns(DnsScheme::Http) => {
+                    builder = builder
+                        .http()
+                        .expect("BUG: DHTTP HTTP DNS server is a valid URL");
+                }
+                EndpointDnsOp::Dns(DnsScheme::H3) => {
+                    if let Some(h3_resolver) = h3_resolver.clone() {
+                        builder = builder.resolver(h3_resolver);
+                    }
+                }
+                EndpointDnsOp::Resolver(resolver) => {
+                    builder = builder.resolver(resolver.clone());
+                }
+                EndpointDnsOp::Publisher(_) => {}
+            }
+        }
+
+        stun_resolver_chain(builder.build())
+    }
+}
+
+fn endpoint_resolver_chain(resolvers: Resolvers) -> Result<ArcResolver, BuildEndpointDnsError> {
+    if resolvers.iter().next().is_none() {
+        build_endpoint_dns_error::EmptyResolverSnafu.fail()
+    } else {
+        Ok(Arc::new(resolvers))
+    }
+}
+
+fn stun_resolver_chain(resolvers: Resolvers) -> Result<ArcResolvers, BuildStunDnsError> {
+    if resolvers.iter().next().is_none() {
+        build_stun_dns_error::EmptyResolverSnafu.fail()
+    } else {
+        Ok(Arc::new(resolvers))
+    }
+}
+
+fn has_custom_resolver(operations: &[EndpointDnsOp]) -> bool {
+    operations
+        .iter()
+        .any(|operation| matches!(operation, EndpointDnsOp::Resolver(_)))
+}
+
+fn has_system_dns(operations: &[EndpointDnsOp]) -> bool {
+    operations
+        .iter()
+        .any(|operation| matches!(operation, EndpointDnsOp::Dns(DnsScheme::System)))
+}
+
 
 #[derive(Clone)]
 pub(crate) struct ResolverPlan {
