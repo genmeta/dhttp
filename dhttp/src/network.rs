@@ -294,6 +294,9 @@ impl DhttpNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ddns::publishers::PublishScope;
+    use crate::dquic::resolver::{Publish, PublishFuture};
+    use futures::FutureExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug)]
@@ -314,6 +317,216 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             async move { Ok(stream::empty().boxed()) }.boxed()
         }
+    }
+
+    #[derive(Debug)]
+    struct CountingPublisher {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for CountingPublisher {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("counting publisher")
+        }
+    }
+
+    impl Publish for CountingPublisher {
+        fn publish<'a>(&'a self, _name: &'a str, _packet: &'a [u8]) -> PublishFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(()) }.boxed()
+        }
+    }
+
+    #[derive(Debug)]
+    struct NamedResolver(&'static str);
+
+    impl std::fmt::Display for NamedResolver {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl Resolve for NamedResolver {
+        fn lookup<'a>(&'a self, _name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
+            use futures::{StreamExt, stream};
+
+            async move { Ok(stream::empty().boxed()) }.boxed()
+        }
+    }
+
+    fn resolver_names(resolver: &ArcResolver) -> Vec<String> {
+        let any: &dyn std::any::Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("resolver should be a resolver chain");
+        resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect()
+    }
+
+    fn arc_resolvers_names(resolvers: &ArcResolvers) -> Vec<String> {
+        resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect()
+    }
+
+    fn publisher_names(publishers: &Publishers) -> Vec<String> {
+        publishers
+            .iter()
+            .map(|publisher| publisher.to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_defaults_when_no_ops() {
+        let network = Network::builder().build();
+        let plan = EndpointDnsPlan::new();
+        let built = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect("default plan should build");
+
+        let names = resolver_names(&built.endpoint_resolver);
+        assert!(
+            names
+                .iter()
+                .any(|name| name.starts_with("DeferredResolver("))
+        );
+        assert!(names.iter().any(|name| name == "mDNS resolvers"));
+        assert!(names.iter().any(|name| name == "System DNS Resolver"));
+
+        let publisher_names = publisher_names(&built.endpoint_publishers);
+        assert!(
+            publisher_names
+                .iter()
+                .any(|name| name.starts_with("DeferredResolver("))
+        );
+        assert!(publisher_names.iter().any(|name| name == "mDNS resolvers"));
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_custom_resolver_only_has_no_publishers() {
+        let network = Network::builder().build();
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = EndpointDnsPlan::new().with_resolver(custom);
+        let built = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect("custom resolver plan should build");
+
+        assert_eq!(
+            resolver_names(&built.endpoint_resolver),
+            vec!["counting resolver"]
+        );
+        assert!(built.endpoint_publishers.iter().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_custom_publisher_only_is_empty_resolver_error() {
+        let network = Network::builder().build();
+        let publisher = Arc::new(CountingPublisher {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = EndpointDnsPlan::new().with_publisher(PublishScope::WideArea, publisher);
+        let error = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect_err("publisher-only plan should not build a resolver");
+
+        assert!(matches!(error, BuildEndpointDnsError::EmptyResolver));
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_deduplicates_dns_schemes_but_not_custom_resolvers() {
+        let network = Network::builder().build();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first: ArcResolver = Arc::new(CountingResolver {
+            calls: calls.clone(),
+        });
+        let second = first.clone();
+        let plan = EndpointDnsPlan::new()
+            .with_dns(DnsScheme::System)
+            .with_resolver(first)
+            .with_dns(DnsScheme::System)
+            .with_resolver(second);
+        let built = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect("mixed plan should build");
+
+        assert_eq!(
+            resolver_names(&built.endpoint_resolver),
+            vec![
+                "System DNS Resolver".to_string(),
+                "counting resolver".to_string(),
+                "counting resolver".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_h3_underlay_uses_custom_without_system_fallback() {
+        let network = Network::builder().build();
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = EndpointDnsPlan::new()
+            .with_dns(DnsScheme::H3)
+            .with_resolver(custom);
+        let built = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect("h3 plus custom resolver should build");
+
+        assert_eq!(
+            resolver_names(&built.endpoint_h3_underlay),
+            vec!["counting resolver"]
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_dns_plan_h3_underlay_adds_system_without_custom_or_system() {
+        let network = Network::builder().build();
+        let plan = EndpointDnsPlan::new().with_dns(DnsScheme::H3);
+        let built = plan
+            .build_endpoint_dns(network, Arc::new(Vec::new()))
+            .await
+            .expect("h3-only plan should build");
+
+        assert_eq!(
+            resolver_names(&built.endpoint_h3_underlay),
+            vec!["System DNS Resolver"]
+        );
+    }
+
+    #[tokio::test]
+    async fn build_stun_dns_keeps_h3_position_and_custom_resolvers() {
+        let network = Network::builder().build();
+        let h3_marker: ArcResolver = Arc::new(NamedResolver("stun h3 marker"));
+        let custom: ArcResolver = Arc::new(CountingResolver {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let plan = EndpointDnsPlan::new()
+            .with_dns(DnsScheme::H3)
+            .with_resolver(custom)
+            .with_dns(DnsScheme::System);
+        let stun_dns = plan
+            .build_stun_dns(Some(h3_marker), network, Arc::new(Vec::new()))
+            .await
+            .expect("stun dns should build");
+
+        assert_eq!(
+            arc_resolvers_names(&stun_dns),
+            vec![
+                "stun h3 marker".to_string(),
+                "counting resolver".to_string(),
+                "System DNS Resolver".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
