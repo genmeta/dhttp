@@ -116,10 +116,16 @@ fn h3_resolver_arc_from_quic(quic: QuicEndpoint) -> ArcResolver {
 impl Endpoint {
     /// Construct a new endpoint with full configuration control.
     ///
-    /// Use the builder pattern (via [`Endpoint::builder`]) to configure
-    /// DNS schemes, network, identity, client/server config, and bind
-    /// patterns. For a simpler setup from a domain name, see
+    /// Use the builder pattern (via [`Endpoint::builder`]) to configure DNS
+    /// resolution, DNS publication, network, identity, client/server config,
+    /// and bind patterns. For a simpler setup from a domain name, see
     /// [`Endpoint::load`].
+    ///
+    /// DNS defaults are used only when no DNS operations are configured. A
+    /// default endpoint resolves through H3 DNS, mDNS, and System DNS, and
+    /// publishes through H3 DNS and mDNS. Calling [`EndpointBuilder::dns`],
+    /// [`EndpointBuilder::resolver`], or [`EndpointBuilder::publisher`] makes
+    /// the DNS plan explicit and disables default DNS injection.
     #[builder]
     pub async fn new(
         #[builder(field)] dns_plan: EndpointDnsPlan,
@@ -198,16 +204,32 @@ impl Endpoint {
 }
 
 impl<S: endpoint_builder::State> EndpointBuilder<S> {
+    /// Add a built-in DNS scheme to the endpoint DNS plan.
+    ///
+    /// Schemes are deduplicated by first occurrence. Schemes that support
+    /// publication add both resolver and publisher capabilities; System DNS
+    /// adds only resolver capability.
     pub fn dns(mut self, scheme: DnsScheme) -> Self {
         self.dns_plan.push_dns(scheme);
         self
     }
 
+    /// Add a custom resolver to the endpoint DNS plan.
+    ///
+    /// This appends resolver capability only. It does not add a DNS publisher
+    /// and it disables default DNS injection because the DNS plan is no longer
+    /// empty.
     pub fn resolver(mut self, resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
         self.dns_plan.push_resolver(resolver);
         self
     }
 
+    /// Add a custom scoped DNS publisher to the endpoint DNS plan.
+    ///
+    /// This appends publisher capability only. It does not add a resolver and
+    /// it disables default DNS injection because the DNS plan is no longer
+    /// empty. A plan with publishers but no resolvers fails during endpoint
+    /// construction.
     pub fn publisher(
         mut self,
         scope: crate::ddns::publishers::PublishScope,
