@@ -4,9 +4,7 @@ use bon::bon;
 use http::uri::Authority;
 use snafu::{OptionExt, ResultExt};
 
-use crate::ddns::resolvers::{
-    DHTTP_H3_DNS_SERVER, DnsScheme, H3Resolver, deferred::DeferredResolver,
-};
+use crate::ddns::resolvers::{DHTTP_H3_DNS_SERVER, DnsScheme, H3Resolver};
 use crate::dquic::{
     Identity, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
     connection::Connection as QuicConnection, resolver::Resolve, server::ServerQuicConfig,
@@ -22,7 +20,9 @@ pub mod client;
 pub mod server;
 
 use self::client::Request;
-use crate::network::{ArcEndpointH3Resolver, ArcResolver, DhttpNetwork, ResolverPlan};
+use crate::network::{
+    ArcResolver, BuildEndpointDnsError, BuildStunDnsError, DhttpNetwork, EndpointDnsPlan,
+};
 
 /// A DHttp endpoint bound to a QUIC connection.
 ///
@@ -67,6 +67,19 @@ pub enum InvalidEndpointIdentityError {
 }
 
 #[derive(Debug, snafu::Snafu)]
+#[snafu(module(build_endpoint_error))]
+pub enum BuildEndpointError {
+    #[snafu(display("invalid endpoint identity"))]
+    InvalidIdentity {
+        source: InvalidEndpointIdentityError,
+    },
+    #[snafu(display("failed to build endpoint dns"))]
+    EndpointDns { source: BuildEndpointDnsError },
+    #[snafu(display("failed to build stun dns"))]
+    StunDns { source: BuildStunDnsError },
+}
+
+#[derive(Debug, snafu::Snafu)]
 #[snafu(module(create_endpoint_publication_loop_error))]
 pub enum CreateEndpointPublicationLoopError {
     #[snafu(display("anonymous endpoint cannot publish dns records"))]
@@ -89,10 +102,6 @@ fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
     }
 }
 
-fn deferred_h3_resolver() -> ArcEndpointH3Resolver {
-    Arc::new(DeferredResolver::new())
-}
-
 fn h3_resolver_from_quic(quic: QuicEndpoint) -> H3Resolver<QuicEndpoint> {
     let h3 = Arc::new(H3Endpoint::new(quic));
     H3Resolver::from_endpoint(DHTTP_H3_DNS_SERVER, h3)
@@ -113,7 +122,7 @@ impl Endpoint {
     /// [`Endpoint::load`].
     #[builder]
     pub async fn new(
-        #[builder(field)] dns_schemes: Vec<DnsScheme>,
+        #[builder(field)] dns_plan: EndpointDnsPlan,
 
         identity: Option<Arc<Identity>>,
         network: Option<DhttpNetwork>,
@@ -121,65 +130,46 @@ impl Endpoint {
         #[builder(default = crate::trust::default_client_quic_config())] client: ClientQuicConfig,
         #[builder(default = crate::trust::default_server_quic_config())] server: ServerQuicConfig,
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
-        resolver: Option<Arc<dyn Resolve + Send + Sync>>,
         #[builder(default)] connection_builder: Arc<ConnectionBuilder<QuicConnection>>,
-    ) -> Result<Self, InvalidEndpointIdentityError> {
-        Self::validate_identity(identity.as_deref())?;
+    ) -> Result<Self, BuildEndpointError> {
+        Self::validate_identity(identity.as_deref())
+            .context(build_endpoint_error::InvalidIdentitySnafu)?;
 
         let bind = normalize_bind(bind);
-        let resolver_plan = ResolverPlan::new(dns_schemes, resolver);
-
         let (mut network, owns_network) = match network {
             Some(network) => (network, false),
-            None => {
-                let builder = DhttpNetwork::builder().dns_schemes(resolver_plan.schemes().to_vec());
-                let network = match resolver_plan.custom() {
-                    Some(resolver) => builder.resolver(resolver).build(),
-                    None => builder.build(),
-                };
-                (network, true)
-            }
+            None => (DhttpNetwork::endpoint_owned(), true),
         };
         let raw_network = network.network().clone();
 
-        let resolvers_without_h3 = resolver_plan
-            .build_resolvers(None, raw_network.clone(), bind.clone())
-            .await;
-        let resolver_without_h3 = resolver_plan.resolver_without_h3(resolvers_without_h3);
-
-        let endpoint_h3_deferred = resolver_plan.uses_h3().then(deferred_h3_resolver);
-        let (endpoint_resolvers, publishers) = resolver_plan
-            .build_resolvers_and_publishers(
-                endpoint_h3_deferred.clone(),
-                raw_network.clone(),
-                bind.clone(),
-            )
-            .await;
-        let quic_resolver = resolver_plan.final_resolver(endpoint_resolvers);
+        let built_dns = dns_plan
+            .build_endpoint_dns(raw_network.clone(), bind.clone())
+            .await
+            .context(build_endpoint_error::EndpointDnsSnafu)?;
 
         let quic = QuicEndpoint::builder()
             .network(raw_network.clone())
             .maybe_identity(identity)
-            .resolver(quic_resolver)
+            .resolver(built_dns.endpoint_resolver.clone())
             .client(client.clone())
             .server(server)
             .bind(bind.clone())
             .build()
             .await;
 
-        if let Some(endpoint_h3_deferred) = endpoint_h3_deferred {
+        if let Some(endpoint_h3_deferred) = built_dns.endpoint_h3_deferred {
             let mut dns_quic = quic.clone();
-            dns_quic.set_resolver(resolver_without_h3.clone());
+            dns_quic.set_resolver(built_dns.endpoint_h3_underlay.clone());
             endpoint_h3_deferred
                 .set(h3_resolver_from_quic(dns_quic))
                 .expect("BUG: endpoint H3 resolver is set exactly once");
         }
 
         if owns_network {
-            let stun_h3_resolver = if resolver_plan.uses_h3() {
+            let stun_h3_resolver = if dns_plan.uses_h3() {
                 let stun_quic = QuicEndpoint::builder()
-                    .network(raw_network)
-                    .resolver(resolver_without_h3)
+                    .network(raw_network.clone())
+                    .resolver(built_dns.endpoint_h3_underlay)
                     .client(client)
                     .bind(bind.clone())
                     .build()
@@ -188,7 +178,11 @@ impl Endpoint {
             } else {
                 None
             };
-            network.finish_stun_resolver(stun_h3_resolver, bind).await;
+            let stun_dns = dns_plan
+                .build_stun_dns(stun_h3_resolver, raw_network, bind.clone())
+                .await
+                .context(build_endpoint_error::StunDnsSnafu)?;
+            network.finish_stun_resolver(stun_dns);
         }
 
         let h3 = H3Endpoint::builder()
@@ -198,14 +192,28 @@ impl Endpoint {
         Ok(Self {
             inner: Arc::new(h3),
             network,
-            publishers,
+            publishers: built_dns.endpoint_publishers,
         })
     }
 }
 
 impl<S: endpoint_builder::State> EndpointBuilder<S> {
     pub fn dns(mut self, scheme: DnsScheme) -> Self {
-        self.dns_schemes.push(scheme);
+        self.dns_plan.push_dns(scheme);
+        self
+    }
+
+    pub fn resolver(mut self, resolver: Arc<dyn Resolve + Send + Sync>) -> Self {
+        self.dns_plan.push_resolver(resolver);
+        self
+    }
+
+    pub fn publisher(
+        mut self,
+        scope: crate::ddns::publishers::PublishScope,
+        publisher: Arc<dyn crate::dquic::resolver::Publish + Send + Sync>,
+    ) -> Self {
+        self.dns_plan.push_publisher(scope, publisher);
         self
     }
 }
@@ -231,9 +239,7 @@ where
         source: crate::home::identity::ssl::LoadIdentityError,
     },
     #[snafu(display("failed to build endpoint"))]
-    BuildEndpoint {
-        source: InvalidEndpointIdentityError,
-    },
+    BuildEndpoint { source: BuildEndpointError },
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -248,9 +254,7 @@ pub enum LoadEndpointFromPathError {
         source: crate::home::identity::ssl::LoadIdentityError,
     },
     #[snafu(display("failed to build endpoint"))]
-    BuildEndpoint {
-        source: InvalidEndpointIdentityError,
-    },
+    BuildEndpoint { source: BuildEndpointError },
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -614,7 +618,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            InvalidEndpointIdentityError::InvalidName { .. }
+            BuildEndpointError::InvalidIdentity {
+                source: InvalidEndpointIdentityError::InvalidName { .. }
+            }
         ));
     }
 
@@ -635,7 +641,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+            BuildEndpointError::InvalidIdentity {
+                source: InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+            }
         ));
     }
 
@@ -656,7 +664,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+            BuildEndpointError::InvalidIdentity {
+                source: InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
+            }
         ));
     }
 
@@ -786,6 +796,89 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CountingPublisher {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Display for CountingPublisher {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("counting publisher")
+        }
+    }
+
+    impl crate::dquic::resolver::Publish for CountingPublisher {
+        fn publish<'a>(
+            &'a self,
+            _name: &'a str,
+            _packet: &'a [u8],
+        ) -> crate::dquic::resolver::PublishFuture<'a> {
+            use futures::FutureExt;
+
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(()) }.boxed()
+        }
+    }
+
+    fn endpoint_resolver_names(endpoint: &Endpoint) -> Vec<String> {
+        let resolver = endpoint.resolver();
+        let any: &dyn Any = resolver.as_ref();
+        let resolvers = any
+            .downcast_ref::<Resolvers>()
+            .expect("endpoint resolver should be an aggregate");
+        resolvers
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn endpoint_with_custom_resolver_only_uses_custom_resolver_chain() {
+        let resolver: Arc<dyn Resolve + Send + Sync> = Arc::new(MarkerResolver);
+        let endpoint = Endpoint::builder()
+            .resolver(resolver)
+            .build()
+            .await
+            .expect("custom resolver endpoint is valid");
+
+        assert!(endpoint.dns_publishers().iter().next().is_none());
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["marker resolver"]);
+    }
+
+    #[tokio::test]
+    async fn endpoint_with_publisher_only_fails_empty_resolver() {
+        let publisher: Arc<dyn crate::dquic::resolver::Publish + Send + Sync> =
+            Arc::new(CountingPublisher {
+                calls: Arc::new(AtomicUsize::new(0)),
+            });
+        let Err(error) = Endpoint::builder()
+            .publisher(crate::ddns::publishers::PublishScope::WideArea, publisher)
+            .build()
+            .await
+        else {
+            panic!("publisher-only endpoint should fail without resolver");
+        };
+
+        assert!(matches!(error, BuildEndpointError::EndpointDns { .. }));
+    }
+
+    #[tokio::test]
+    async fn endpoint_with_system_dns_and_custom_publisher_builds_both_sides() {
+        let publisher: Arc<dyn crate::dquic::resolver::Publish + Send + Sync> =
+            Arc::new(CountingPublisher {
+                calls: Arc::new(AtomicUsize::new(0)),
+            });
+        let endpoint = Endpoint::builder()
+            .dns(DnsScheme::System)
+            .publisher(crate::ddns::publishers::PublishScope::WideArea, publisher)
+            .build()
+            .await
+            .expect("system plus custom publisher endpoint should build");
+
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["System DNS Resolver"]);
+        assert_eq!(endpoint.dns_publishers().iter().count(), 1);
+    }
+
     #[tokio::test]
     async fn builder_accepts_explicit_resolver() {
         let resolver: Arc<dyn crate::dquic::qresolve::Resolve + Send + Sync> =
@@ -800,22 +893,6 @@ mod tests {
         let any: &dyn std::any::Any = resolver.as_ref();
 
         assert!(any.downcast_ref::<MarkerResolver>().is_some());
-    }
-
-    #[test]
-    fn h3_only_resolver_without_h3_uses_system_for_h3_underlay() {
-        let resolver_plan = ResolverPlan::new(vec![DnsScheme::H3], None);
-        let resolver = resolver_plan.resolver_without_h3(Resolvers::new());
-        let any: &dyn Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("resolver_without_h3 is a resolver chain");
-        let resolver_names = resolvers
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert_eq!(resolver_names, vec!["System DNS Resolver"]);
     }
 
     #[tokio::test]

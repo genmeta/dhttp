@@ -295,96 +295,6 @@ impl ResolverPlan {
         Self { schemes, custom }
     }
 
-    pub(crate) fn schemes(&self) -> &[DnsScheme] {
-        &self.schemes
-    }
-
-    pub(crate) fn custom(&self) -> Option<ArcResolver> {
-        self.custom.clone()
-    }
-
-    pub(crate) fn uses_h3(&self) -> bool {
-        self.schemes.contains(&DnsScheme::H3)
-    }
-
-    pub(crate) async fn build_resolvers(
-        &self,
-        h3_resolver: Option<ArcResolver>,
-        network: Arc<Network>,
-        bind: Arc<Vec<BindPattern>>,
-    ) -> Resolvers {
-        let mut builder = Resolvers::builder();
-
-        if self.schemes.contains(&DnsScheme::Mdns) {
-            builder = builder.mdns(network.clone(), bind).await;
-        }
-
-        if self.schemes.contains(&DnsScheme::System) {
-            builder = builder.system();
-        }
-
-        if self.schemes.contains(&DnsScheme::Http) {
-            builder = builder
-                .http()
-                .expect("BUG: DHTTP HTTP DNS server is a valid URL");
-        }
-
-        if self.uses_h3()
-            && let Some(h3_resolver) = h3_resolver
-        {
-            builder = builder.resolver(h3_resolver);
-        }
-
-        if let Some(custom) = self.custom.clone() {
-            builder = builder.resolver(custom);
-        }
-
-        builder.build()
-    }
-
-    pub(crate) async fn build_resolvers_and_publishers(
-        &self,
-        h3_resolver: Option<ArcEndpointH3Resolver>,
-        network: Arc<Network>,
-        bind: Arc<Vec<BindPattern>>,
-    ) -> (Resolvers, Publishers) {
-        let mut resolver_builder = Resolvers::builder();
-        let mut publishers = Publishers::new();
-
-        if self.schemes.contains(&DnsScheme::Mdns) {
-            let mdns =
-                Arc::new(MdnsResolvers::bind(network.clone(), bind, DHTTP_MDNS_SERVICE).await);
-            resolver_builder = resolver_builder.resolver(mdns.clone());
-            publishers.push(Publisher::mdns(mdns));
-        }
-
-        if self.schemes.contains(&DnsScheme::System) {
-            resolver_builder = resolver_builder.system();
-        }
-
-        if self.schemes.contains(&DnsScheme::Http) {
-            let http = Arc::new(
-                HttpResolver::new(DHTTP_HTTP_DNS_SERVER)
-                    .expect("BUG: DHTTP HTTP DNS server is a valid URL"),
-            );
-            resolver_builder = resolver_builder.resolver(http.clone());
-            publishers.push(Publisher::http(http));
-        }
-
-        if self.uses_h3()
-            && let Some(h3_resolver) = h3_resolver
-        {
-            resolver_builder = resolver_builder.resolver(h3_resolver.clone());
-            publishers.push(Publisher::new(PublishScope::WideArea, h3_resolver));
-        }
-
-        if let Some(custom) = self.custom.clone() {
-            resolver_builder = resolver_builder.resolver(custom);
-        }
-
-        (resolver_builder.build(), publishers)
-    }
-
     pub(crate) fn select_resolver(&self, resolvers: Resolvers) -> ArcResolver {
         if self.schemes.is_empty()
             && let Some(custom) = self.custom.clone()
@@ -398,20 +308,12 @@ impl ResolverPlan {
     pub(crate) fn final_resolver(&self, resolvers: Resolvers) -> ArcResolver {
         self.select_resolver(resolvers)
     }
-
-    pub(crate) fn resolver_without_h3(&self, mut resolvers: Resolvers) -> ArcResolver {
-        if self.uses_h3() && self.custom.is_none() && !self.schemes.contains(&DnsScheme::System) {
-            resolvers.push(Arc::new(SystemResolver));
-        }
-        self.select_resolver(resolvers)
-    }
 }
 
 #[derive(Clone)]
 pub struct DhttpNetwork {
     network: Arc<Network>,
     deferred_stun_resolver: Option<Arc<DeferredStunResolver>>,
-    stun_resolver_plan: Option<ResolverPlan>,
     _stun_resolver: Option<ArcResolver>,
 }
 
@@ -421,26 +323,29 @@ impl DhttpNetwork {
         &self.network
     }
 
-    pub(crate) async fn finish_stun_resolver(
-        &mut self,
-        h3_resolver: Option<ArcResolver>,
-        bind: Arc<Vec<BindPattern>>,
-    ) {
-        let (Some(deferred), Some(plan)) = (
-            self.deferred_stun_resolver.clone(),
-            self.stun_resolver_plan.clone(),
-        ) else {
+    pub(crate) fn finish_stun_resolver(&mut self, stun_resolver: ArcResolvers) {
+        let Some(deferred) = self.deferred_stun_resolver.clone() else {
             return;
         };
-
-        let resolvers = plan
-            .build_resolvers(h3_resolver, self.network.clone(), bind)
-            .await;
-        let stun_resolver = Arc::new(resolvers);
         deferred
             .set(WeakResolver::new(Arc::downgrade(&stun_resolver)))
             .expect("BUG: network STUN resolver is set exactly once");
-        self._stun_resolver = Some(stun_resolver);
+        let keepalive: ArcResolver = stun_resolver;
+        self._stun_resolver = Some(keepalive);
+    }
+
+    pub(crate) fn endpoint_owned() -> Self {
+        let deferred = Arc::new(DeferredStunResolver::new());
+        let stun_resolver: ArcResolver = deferred.clone();
+        let network = Network::builder()
+            .maybe_stun_server(Some(Arc::<str>::from(crate::endpoint::STUN_SERVER)))
+            .stun_resolver(stun_resolver)
+            .build();
+        Self {
+            network,
+            deferred_stun_resolver: Some(deferred),
+            _stun_resolver: None,
+        }
     }
 }
 
@@ -463,7 +368,6 @@ impl From<Arc<Network>> for DhttpNetwork {
         Self {
             network,
             deferred_stun_resolver: None,
-            stun_resolver_plan: None,
             _stun_resolver: None,
         }
     }
@@ -511,23 +415,21 @@ impl DhttpNetwork {
         let plan = dns_schemes
             .or_else(|| resolver.as_ref().map(|_| Vec::new()))
             .map(|schemes| ResolverPlan::new(schemes, resolver));
-        let (stun_resolver, deferred_stun_resolver, stun_resolver_plan, keepalive_resolver) =
+        let (stun_resolver, deferred_stun_resolver, keepalive_resolver) =
             match (stun_resolver, plan) {
-                (Some(stun_resolver), _) => {
-                    (stun_resolver.clone(), None, None, Some(stun_resolver))
-                }
+                (Some(stun_resolver), _) => (stun_resolver.clone(), None, Some(stun_resolver)),
                 (None, Some(plan)) if plan.schemes.is_empty() => {
                     let stun_resolver = plan.final_resolver(Resolvers::new());
-                    (stun_resolver.clone(), None, None, Some(stun_resolver))
+                    (stun_resolver.clone(), None, Some(stun_resolver))
                 }
-                (None, Some(plan)) => {
+                (None, Some(_plan)) => {
                     let deferred = Arc::new(DeferredStunResolver::new());
                     let stun_resolver: ArcResolver = deferred.clone();
-                    (stun_resolver, Some(deferred), Some(plan), None)
+                    (stun_resolver, Some(deferred), None)
                 }
                 (None, None) => {
                     let stun_resolver: ArcResolver = Arc::new(SystemResolver);
-                    (stun_resolver.clone(), None, None, Some(stun_resolver))
+                    (stun_resolver.clone(), None, Some(stun_resolver))
                 }
             };
 
@@ -543,7 +445,6 @@ impl DhttpNetwork {
         DhttpNetwork {
             network,
             deferred_stun_resolver,
-            stun_resolver_plan,
             _stun_resolver: keepalive_resolver,
         }
     }
@@ -903,119 +804,4 @@ mod tests {
         assert_eq!(resolver.to_string(), "counting resolver");
     }
 
-    #[test]
-    fn resolver_without_h3_keeps_non_h3_schemes_and_custom_resolver() {
-        let custom: ArcResolver = Arc::new(CountingResolver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        });
-        let plan = ResolverPlan::new(
-            vec![
-                DnsScheme::H3,
-                DnsScheme::Mdns,
-                DnsScheme::Http,
-                DnsScheme::System,
-            ],
-            Some(custom.clone()),
-        );
-
-        let resolver = plan.resolver_without_h3(Resolvers::builder().system().build().with(custom));
-        let any: &dyn std::any::Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("resolver_without_h3 returns a resolver chain");
-        let names = resolvers
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(names.iter().any(|name| name == "System DNS Resolver"));
-        assert!(names.iter().any(|name| name == "counting resolver"));
-        assert!(
-            !names
-                .iter()
-                .any(|name| name.starts_with("H3 DNS Resolver("))
-        );
-    }
-
-    #[test]
-    fn resolver_without_h3_adds_system_when_h3_only_without_custom() {
-        let plan = ResolverPlan::new(vec![DnsScheme::H3], None);
-
-        let resolver = plan.resolver_without_h3(Resolvers::new());
-        let any: &dyn std::any::Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("h3-only resolver_without_h3 returns a concrete resolver chain");
-        let names = resolvers
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert_eq!(names, vec!["System DNS Resolver"]);
-    }
-
-    #[test]
-    fn resolver_without_h3_adds_system_to_h3_mdns_without_custom() {
-        let plan = ResolverPlan::new(vec![DnsScheme::H3, DnsScheme::Mdns], None);
-        let mdns_marker: ArcResolver = Arc::new(CountingResolver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        });
-
-        let resolver = plan.resolver_without_h3(Resolvers::new().with(mdns_marker));
-        let any: &dyn std::any::Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("h3+mdns resolver_without_h3 returns a resolver chain");
-        let names = resolvers
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(names.iter().any(|name| name == "counting resolver"));
-        assert!(names.iter().any(|name| name == "System DNS Resolver"));
-        assert!(
-            !names
-                .iter()
-                .any(|name| name.starts_with("H3 DNS Resolver("))
-        );
-    }
-
-    #[test]
-    fn resolver_without_h3_does_not_auto_add_system_when_custom_is_present() {
-        let custom: ArcResolver = Arc::new(CountingResolver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        });
-        let mdns_marker: ArcResolver = Arc::new(CountingResolver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        });
-        let plan = ResolverPlan::new(vec![DnsScheme::H3, DnsScheme::Mdns], Some(custom.clone()));
-
-        let resolver = plan.resolver_without_h3(Resolvers::new().with(mdns_marker).with(custom));
-        let any: &dyn std::any::Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("h3+mdns+custom resolver_without_h3 returns a resolver chain");
-        let names = resolvers
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            names,
-            vec!["counting resolver", "counting resolver"],
-            "custom suppresses automatic System insertion; duplicate marker names represent mdns-marker plus custom"
-        );
-    }
-
-    #[test]
-    fn resolver_without_h3_does_not_override_custom_only_plan() {
-        let custom: ArcResolver = Arc::new(CountingResolver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        });
-        let plan = ResolverPlan::new(Vec::new(), Some(custom));
-
-        let resolver = plan.resolver_without_h3(Resolvers::new());
-
-        assert_eq!(resolver.to_string(), "counting resolver");
-    }
 }
