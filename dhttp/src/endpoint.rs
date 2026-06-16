@@ -4,7 +4,10 @@ use bon::bon;
 use http::uri::Authority;
 use snafu::{OptionExt, ResultExt};
 
-use crate::ddns::resolvers::{DHTTP_H3_DNS_SERVER, DnsScheme, H3Resolver};
+use crate::ddns::{
+    BuildDhttpNetworkWithDnsError, BuildQuicEndpointWithDnsError, DhttpDnsPlan,
+    resolvers::DnsScheme,
+};
 use crate::dquic::{
     Identity, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
     connection::Connection as QuicConnection, resolver::Resolve, server::ServerQuicConfig,
@@ -20,9 +23,7 @@ pub mod client;
 pub mod server;
 
 use self::client::Request;
-use crate::network::{
-    ArcResolver, BuildEndpointDnsError, BuildStunDnsError, DhttpNetwork, EndpointDnsPlan,
-};
+use crate::network::DhttpNetwork;
 
 /// A DHttp endpoint bound to a QUIC connection.
 ///
@@ -74,9 +75,13 @@ pub enum BuildEndpointError {
         source: InvalidEndpointIdentityError,
     },
     #[snafu(display("failed to build endpoint dns"))]
-    EndpointDns { source: BuildEndpointDnsError },
+    EndpointDns {
+        source: BuildQuicEndpointWithDnsError,
+    },
     #[snafu(display("failed to build stun dns"))]
-    StunDns { source: BuildStunDnsError },
+    StunDns {
+        source: BuildDhttpNetworkWithDnsError,
+    },
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -102,16 +107,6 @@ fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
     }
 }
 
-fn h3_resolver_from_quic(quic: QuicEndpoint) -> H3Resolver<QuicEndpoint> {
-    let h3 = Arc::new(H3Endpoint::new(quic));
-    H3Resolver::from_endpoint(DHTTP_H3_DNS_SERVER, h3)
-        .expect("BUG: DHTTP H3 DNS server is a valid URL")
-}
-
-fn h3_resolver_arc_from_quic(quic: QuicEndpoint) -> ArcResolver {
-    Arc::new(h3_resolver_from_quic(quic))
-}
-
 #[bon]
 impl Endpoint {
     /// Construct a new endpoint with full configuration control.
@@ -128,7 +123,7 @@ impl Endpoint {
     /// the DNS plan explicit and disables default DNS injection.
     #[builder]
     pub async fn new(
-        #[builder(field)] dns_plan: EndpointDnsPlan,
+        #[builder(field)] dns_plan: DhttpDnsPlan,
 
         identity: Option<Arc<Identity>>,
         network: Option<DhttpNetwork>,
@@ -142,54 +137,40 @@ impl Endpoint {
             .context(build_endpoint_error::InvalidIdentitySnafu)?;
 
         let bind = normalize_bind(bind);
-        let (mut network, owns_network) = match network {
-            Some(network) => (network, false),
-            None => (DhttpNetwork::endpoint_owned(), true),
+        let network = match network {
+            Some(network) => network,
+            None => DhttpNetwork::builder()
+                .dns_plan(dns_plan.clone())
+                .bind(bind.clone())
+                .build()
+                .await
+                .context(build_endpoint_error::StunDnsSnafu)?,
         };
         let raw_network = network.network().clone();
 
-        let built_dns = dns_plan
-            .build_endpoint_dns(raw_network.clone(), bind.clone())
-            .await
-            .context(build_endpoint_error::EndpointDnsSnafu)?;
-
-        let quic = QuicEndpoint::builder()
-            .network(raw_network.clone())
-            .maybe_identity(identity)
-            .resolver(built_dns.endpoint_resolver.clone())
-            .client(client.clone())
-            .server(server)
-            .bind(bind.clone())
-            .build()
-            .await;
-
-        if let Some(endpoint_h3_deferred) = built_dns.endpoint_h3_deferred {
-            let mut dns_quic = quic.clone();
-            dns_quic.set_resolver(built_dns.endpoint_h3_underlay.clone());
-            endpoint_h3_deferred
-                .set(h3_resolver_from_quic(dns_quic))
-                .expect("BUG: endpoint H3 resolver is set exactly once");
-        }
-
-        if owns_network {
-            let stun_h3_resolver = if dns_plan.uses_h3() {
-                let stun_quic = QuicEndpoint::builder()
-                    .network(raw_network.clone())
-                    .resolver(built_dns.endpoint_h3_underlay)
-                    .client(client)
-                    .bind(bind.clone())
-                    .build()
-                    .await;
-                Some(h3_resolver_arc_from_quic(stun_quic))
-            } else {
-                None
-            };
-            let stun_dns = dns_plan
-                .build_stun_dns(stun_h3_resolver, raw_network, bind.clone())
-                .await
-                .context(build_endpoint_error::StunDnsSnafu)?;
-            network.finish_stun_resolver(stun_dns);
-        }
+        let (quic, publishers) = crate::ddns::quic_endpoint_builder_with_dns(
+            |resolver| {
+                let raw_network = raw_network.clone();
+                let identity = identity.clone();
+                let client = client.clone();
+                let bind = bind.clone();
+                async move {
+                    QuicEndpoint::builder()
+                        .network(raw_network)
+                        .maybe_identity(identity)
+                        .resolver(resolver)
+                        .client(client)
+                        .server(server)
+                        .bind(bind)
+                        .build()
+                        .await
+                }
+            },
+            &dns_plan,
+        )
+        .build()
+        .await
+        .context(build_endpoint_error::EndpointDnsSnafu)?;
 
         let h3 = H3Endpoint::builder()
             .quic(quic)
@@ -198,7 +179,7 @@ impl Endpoint {
         Ok(Self {
             inner: Arc::new(h3),
             network,
-            publishers: built_dns.endpoint_publishers,
+            publishers,
         })
     }
 }
@@ -590,7 +571,7 @@ impl crate::h3x::quic::Connect for Endpoint {
 mod tests {
     use super::*;
     use crate::{
-        ddns::resolvers::{DnsScheme, Resolvers},
+        ddns::resolvers::{DnsScheme, H3Resolver, Resolvers},
         dquic::Network,
         network::DeferredStunResolver,
     };
@@ -875,10 +856,19 @@ mod tests {
     fn endpoint_resolver_names(endpoint: &Endpoint) -> Vec<String> {
         let resolver = endpoint.resolver();
         let any: &dyn Any = resolver.as_ref();
-        let resolvers = any
-            .downcast_ref::<Resolvers>()
-            .expect("endpoint resolver should be an aggregate");
-        resolvers
+        if let Some(resolvers) = any.downcast_ref::<Resolvers>() {
+            return resolvers
+                .iter()
+                .map(|resolver| resolver.to_string())
+                .collect();
+        }
+
+        let deferred = any
+            .downcast_ref::<crate::ddns::resolvers::deferred::DeferredResolver<Resolvers>>()
+            .expect("endpoint resolver should be an aggregate or initialized deferred aggregate");
+        deferred
+            .get()
+            .expect("endpoint deferred resolver should be initialized")
             .iter()
             .map(|resolver| resolver.to_string())
             .collect()
@@ -911,7 +901,10 @@ mod tests {
             panic!("publisher-only endpoint should fail without resolver");
         };
 
-        assert!(matches!(error, BuildEndpointError::EndpointDns { .. }));
+        assert!(matches!(
+            error,
+            BuildEndpointError::EndpointDns { .. } | BuildEndpointError::StunDns { .. }
+        ));
     }
 
     #[tokio::test]
