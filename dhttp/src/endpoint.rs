@@ -331,24 +331,30 @@ impl Endpoint {
     pub fn dns_publication_loop(
         &self,
     ) -> Result<
-        crate::ddns::publishers::EndpointPublicationLoop<
-            crate::ddns::publishers::EndpointBindingAddresses,
+        Option<
+            crate::ddns::publishers::EndpointPublicationLoop<
+                crate::ddns::publishers::EndpointBindingAddresses,
+            >,
         >,
         CreateEndpointPublicationLoopError,
     > {
         let identity = self
             .identity()
             .context(create_endpoint_publication_loop_error::AnonymousEndpointSnafu)?;
+        if self.publishers.iter().next().is_none() {
+            return Ok(None);
+        }
+
         let name = identity.name().to_owned();
         let source = crate::ddns::publishers::EndpointBindingAddresses::new(
             self.network().network().clone(),
             self.bind_patterns(),
         );
-        Ok(crate::ddns::publishers::EndpointPublicationLoop::new(
+        Ok(Some(crate::ddns::publishers::EndpointPublicationLoop::new(
             name,
             self.publishers.clone(),
             source,
-        ))
+        )))
     }
 
     /// Load an endpoint from a domain name.
@@ -519,13 +525,18 @@ impl Endpoint {
             };
 
             let listen = h3.listen_owned(service);
-            let publish = publisher_loop.run();
-            futures::pin_mut!(listen);
-            futures::pin_mut!(publish);
+            match publisher_loop {
+                Some(publisher_loop) => {
+                    let publish = publisher_loop.run();
+                    futures::pin_mut!(listen);
+                    futures::pin_mut!(publish);
 
-            match futures::future::select(listen, publish).await {
-                futures::future::Either::Left((result, _publish)) => result,
-                futures::future::Either::Right((never, _listen)) => match never {},
+                    match futures::future::select(listen, publish).await {
+                        futures::future::Either::Left((result, _publish)) => result,
+                        futures::future::Either::Right((never, _listen)) => match never {},
+                    }
+                }
+                None => listen.await,
             }
         }
     }
@@ -736,6 +747,25 @@ mod tests {
             error,
             crate::h3x::dquic::AcceptError::ServerUnavailable
         ));
+    }
+
+    #[tokio::test]
+    async fn named_endpoint_with_empty_publishers_has_no_publication_loop() {
+        let identity = valid_dhttp_identity("empty-publisher.example.dhttp.net");
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(identity))
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("custom resolver endpoint should build");
+
+        assert!(endpoint.dns_publishers().iter().next().is_none());
+        assert!(
+            endpoint
+                .dns_publication_loop()
+                .expect("named endpoint can evaluate publication loop")
+                .is_none()
+        );
     }
 
     #[derive(Debug)]
