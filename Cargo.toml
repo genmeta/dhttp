@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dhttp", "identity", "home", "api", "access"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
@@ -38,9 +38,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Keep same-repository workspace members as path dependencies. Cross-repo
 # release dependencies resolve through crates.io in the formal release graph.
-dhttp-identity = "0.1.0"
-dhttp-home = { path = "home", version = "0.1.0" }
-ddns = { package = "dyns", version = "0.3.0", features = [
+dhttp-identity = "0.2.0"
+dhttp-home = { path = "home", version = "0.2.0" }
+ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch = "dev/v0.4.0", version = "0.4.0", features = [
     "resolvers",
     "publishers",
     "h3",
@@ -48,8 +48,8 @@ ddns = { package = "dyns", version = "0.3.0", features = [
     "mdns",
     "dquic-network",
 ] }
-h3x = { version = "0.3.1", features = [
+h3x = { git = "https://github.com/genmeta/h3x.git", branch = "dev/v0.4.0", version = "0.4.0", features = [
     "dquic",
 ] }
-dhttp = { path = "dhttp", version = "0.1.0" }
-dhttp-access = { path = "access", version = "0.1.0" }
+dhttp = { path = "dhttp", version = "0.2.0" }
+dhttp-access = { path = "access", version = "0.2.0" }

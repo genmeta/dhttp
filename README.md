@@ -32,11 +32,11 @@ Lower-level crates can be used independently, but application code should normal
 
 ### Add the Rust SDK
 
-Until the crates are published through the registry flow you use, depend on this repository directly:
+Add the published crate to your Cargo manifest:
 
 ```toml
 [dependencies]
-dhttp = { git = "https://github.com/genmeta/dhttp.git", version = "0.1.0" }
+dhttp = "0.2.0"
 ```
 
 ### Build an endpoint
