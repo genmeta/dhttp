@@ -927,7 +927,10 @@ mod tests {
             .await
             .expect("system plus custom publisher endpoint should build");
 
-        assert_eq!(endpoint_resolver_names(&endpoint), vec!["System DNS Resolver"]);
+        assert_eq!(
+            endpoint_resolver_names(&endpoint),
+            vec!["System DNS Resolver"]
+        );
         assert_eq!(endpoint.dns_publishers().iter().count(), 1);
     }
 

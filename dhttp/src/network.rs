@@ -282,7 +282,6 @@ fn has_system_dns(operations: &[EndpointDnsOp]) -> bool {
         .any(|operation| matches!(operation, EndpointDnsOp::Dns(DnsScheme::System)))
 }
 
-
 #[derive(Clone)]
 pub(crate) struct ResolverPlan {
     schemes: Vec<DnsScheme>,
@@ -807,5 +806,4 @@ mod tests {
 
         assert_eq!(resolver.to_string(), "counting resolver");
     }
-
 }
