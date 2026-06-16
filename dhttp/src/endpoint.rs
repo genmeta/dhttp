@@ -2,10 +2,10 @@ use std::{path::PathBuf, str::FromStr, sync::Arc};
 
 use bon::bon;
 use http::uri::Authority;
-use snafu::ResultExt;
+use snafu::{OptionExt, ResultExt};
 
 use crate::ddns::resolvers::{
-    DHTTP_H3_DNS_SERVER, DnsScheme, deferred::DeferredResolver, h3::H3Resolver,
+    DHTTP_H3_DNS_SERVER, DnsScheme, H3Resolver, deferred::DeferredResolver,
 };
 use crate::dquic::{
     Identity, QuicEndpoint, binds::BindPattern, client::ClientQuicConfig,
@@ -22,7 +22,7 @@ pub mod client;
 pub mod server;
 
 use self::client::Request;
-use crate::network::{ArcResolver, DhttpNetwork, ResolverPlan};
+use crate::network::{ArcEndpointH3Resolver, ArcResolver, DhttpNetwork, ResolverPlan};
 
 /// A DHttp endpoint bound to a QUIC connection.
 ///
@@ -36,6 +36,7 @@ use crate::network::{ArcResolver, DhttpNetwork, ResolverPlan};
 pub struct Endpoint {
     inner: Arc<DquicH3Endpoint>,
     network: DhttpNetwork,
+    publishers: crate::ddns::publishers::Publishers,
 }
 
 impl TryFrom<Arc<DquicH3Endpoint>> for Endpoint {
@@ -44,7 +45,11 @@ impl TryFrom<Arc<DquicH3Endpoint>> for Endpoint {
     fn try_from(inner: Arc<DquicH3Endpoint>) -> Result<Self, Self::Error> {
         Self::validate_identity(inner.quic().identity().as_deref())?;
         let network = DhttpNetwork::from(inner.quic().network().clone());
-        Ok(Self { inner, network })
+        Ok(Self {
+            inner,
+            network,
+            publishers: crate::ddns::publishers::Publishers::new(),
+        })
     }
 }
 
@@ -59,6 +64,13 @@ pub enum InvalidEndpointIdentityError {
     InvalidCertificateMetadata {
         source: dhttp_identity::identity::ExtractDhttpSubjectKeyIdentifierError,
     },
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(create_endpoint_publication_loop_error))]
+pub enum CreateEndpointPublicationLoopError {
+    #[snafu(display("anonymous endpoint cannot publish dns records"))]
+    AnonymousEndpoint,
 }
 
 /// Default STUN server for NAT traversal.
@@ -77,9 +89,7 @@ fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
     }
 }
 
-type DeferredH3Resolver = DeferredResolver<H3Resolver<QuicEndpoint>>;
-
-fn deferred_h3_resolver() -> Arc<DeferredH3Resolver> {
+fn deferred_h3_resolver() -> ArcEndpointH3Resolver {
     Arc::new(DeferredResolver::new())
 }
 
@@ -138,11 +148,12 @@ impl Endpoint {
         let resolver_without_h3 = resolver_plan.resolver_without_h3(resolvers_without_h3);
 
         let endpoint_h3_deferred = resolver_plan.uses_h3().then(deferred_h3_resolver);
-        let endpoint_h3_resolver = endpoint_h3_deferred
-            .as_ref()
-            .map(|resolver| resolver.clone() as ArcResolver);
-        let endpoint_resolvers = resolver_plan
-            .build_resolvers(endpoint_h3_resolver, raw_network.clone(), bind.clone())
+        let (endpoint_resolvers, publishers) = resolver_plan
+            .build_resolvers_and_publishers(
+                endpoint_h3_deferred.clone(),
+                raw_network.clone(),
+                bind.clone(),
+            )
             .await;
         let quic_resolver = resolver_plan.final_resolver(endpoint_resolvers);
 
@@ -187,6 +198,7 @@ impl Endpoint {
         Ok(Self {
             inner: Arc::new(h3),
             network,
+            publishers,
         })
     }
 }
@@ -303,30 +315,35 @@ impl Endpoint {
         self.inner.quic().resolver().clone()
     }
 
+    pub fn dns_publishers(&self) -> &crate::ddns::publishers::Publishers {
+        &self.publishers
+    }
+
     /// Return the bind patterns owned by this endpoint.
     pub fn bind_patterns(&self) -> Arc<Vec<BindPattern>> {
         self.inner.quic().bind_patterns().clone()
     }
 
-    fn dns_publication_loop(
+    pub fn dns_publication_loop(
         &self,
     ) -> Result<
-        crate::ddns::publisher::EndpointPublisherLoop,
-        crate::ddns::publisher::CreatePublisherError,
+        crate::ddns::publishers::EndpointPublicationLoop<
+            crate::ddns::publishers::EndpointBindingAddresses,
+        >,
+        CreateEndpointPublicationLoopError,
     > {
         let identity = self
             .identity()
-            .ok_or(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint)?;
+            .context(create_endpoint_publication_loop_error::AnonymousEndpointSnafu)?;
         let name = identity.name().to_owned();
-        let identity: Arc<dyn dhttp_identity::identity::LocalAuthority + Send + Sync> = identity;
-        let signer = crate::ddns::publisher::EndpointRecordSigner::new(identity);
-        let publisher = crate::ddns::publisher::Publisher::new(signer, self.resolver());
-        let source = crate::ddns::publisher::EndpointBindingAddresses::new(
+        let source = crate::ddns::publishers::EndpointBindingAddresses::new(
             self.network().network().clone(),
             self.bind_patterns(),
         );
-        Ok(crate::ddns::publisher::EndpointPublicationLoop::new(
-            name, publisher, source,
+        Ok(crate::ddns::publishers::EndpointPublicationLoop::new(
+            name,
+            self.publishers.clone(),
+            source,
         ))
     }
 
@@ -492,7 +509,7 @@ impl Endpoint {
         async move {
             let publisher_loop = match publisher_loop {
                 Ok(publisher_loop) => publisher_loop,
-                Err(crate::ddns::publisher::CreatePublisherError::AnonymousEndpoint) => {
+                Err(CreateEndpointPublicationLoopError::AnonymousEndpoint) => {
                     return Err(crate::h3x::dquic::AcceptError::ServerUnavailable);
                 }
             };
@@ -725,6 +742,28 @@ mod tests {
             use futures::{FutureExt, StreamExt, stream};
             async { Ok(stream::empty().boxed()) }.boxed()
         }
+    }
+
+    #[tokio::test]
+    async fn endpoint_default_builds_dns_publishers() {
+        let endpoint = Endpoint::builder()
+            .build()
+            .await
+            .expect("anonymous endpoint is valid");
+
+        assert!(endpoint.dns_publishers().iter().next().is_some());
+    }
+
+    #[tokio::test]
+    async fn endpoint_with_custom_resolver_only_has_no_dns_publishers() {
+        let resolver: Arc<dyn Resolve + Send + Sync> = Arc::new(MarkerResolver);
+        let endpoint = Endpoint::builder()
+            .resolver(resolver)
+            .build()
+            .await
+            .expect("anonymous endpoint is valid");
+
+        assert!(endpoint.dns_publishers().iter().next().is_none());
     }
 
     #[derive(Debug)]

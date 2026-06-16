@@ -41,9 +41,12 @@ chrono = { version = "0.4", features = ["serde"] }
 dhttp-identity = "0.1.0"
 dhttp-home = { path = "home", version = "0.1.0" }
 ddns = { package = "dyns", version = "0.3.0", features = [
-    "h3x-resolver",
-    "mdns-resolver",
-    "http-resolver",
+    "resolvers",
+    "publishers",
+    "h3",
+    "http",
+    "mdns",
+    "dquic-network",
 ] }
 h3x = { version = "0.3.1", features = [
     "dquic",

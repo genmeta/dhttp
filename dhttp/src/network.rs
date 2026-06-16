@@ -1,10 +1,15 @@
 use std::{ops::Deref, sync::Arc};
 
-use crate::ddns::resolvers::{
-    DnsScheme, Resolvers, deferred::DeferredResolver, weak::WeakResolver,
+use crate::ddns::{
+    mdns::MdnsResolvers,
+    publishers::{PublishScope, Publisher, Publishers},
+    resolvers::{
+        DHTTP_HTTP_DNS_SERVER, DHTTP_MDNS_SERVICE, DnsScheme, H3Resolver, HttpResolver, Resolvers,
+        deferred::DeferredResolver, weak::WeakResolver,
+    },
 };
 use crate::dquic::{
-    Network,
+    Network, QuicEndpoint,
     binds::BindPattern,
     net::{Devices, InterfaceManager, Locations, ProductIO, QuicRouter, handy::DEFAULT_IO_FACTORY},
     resolver::{Resolve, handy::SystemResolver},
@@ -13,6 +18,8 @@ use crate::dquic::{
 pub(crate) type DynResolver = dyn Resolve + Send + Sync;
 pub(crate) type ArcResolver = Arc<DynResolver>;
 pub(crate) type DeferredStunResolver = DeferredResolver<WeakResolver<Resolvers>>;
+pub(crate) type DeferredEndpointH3Resolver = DeferredResolver<H3Resolver<QuicEndpoint>>;
+pub(crate) type ArcEndpointH3Resolver = Arc<DeferredEndpointH3Resolver>;
 
 #[derive(Clone)]
 pub(crate) struct ResolverPlan {
@@ -75,6 +82,49 @@ impl ResolverPlan {
         }
 
         builder.build()
+    }
+
+    pub(crate) async fn build_resolvers_and_publishers(
+        &self,
+        h3_resolver: Option<ArcEndpointH3Resolver>,
+        network: Arc<Network>,
+        bind: Arc<Vec<BindPattern>>,
+    ) -> (Resolvers, Publishers) {
+        let mut resolver_builder = Resolvers::builder();
+        let mut publishers = Publishers::new();
+
+        if self.schemes.contains(&DnsScheme::Mdns) {
+            let mdns =
+                Arc::new(MdnsResolvers::bind(network.clone(), bind, DHTTP_MDNS_SERVICE).await);
+            resolver_builder = resolver_builder.resolver(mdns.clone());
+            publishers.push(Publisher::mdns(mdns));
+        }
+
+        if self.schemes.contains(&DnsScheme::System) {
+            resolver_builder = resolver_builder.system();
+        }
+
+        if self.schemes.contains(&DnsScheme::Http) {
+            let http = Arc::new(
+                HttpResolver::new(DHTTP_HTTP_DNS_SERVER)
+                    .expect("BUG: DHTTP HTTP DNS server is a valid URL"),
+            );
+            resolver_builder = resolver_builder.resolver(http.clone());
+            publishers.push(Publisher::http(http));
+        }
+
+        if self.uses_h3()
+            && let Some(h3_resolver) = h3_resolver
+        {
+            resolver_builder = resolver_builder.resolver(h3_resolver.clone());
+            publishers.push(Publisher::new(PublishScope::WideArea, h3_resolver));
+        }
+
+        if let Some(custom) = self.custom.clone() {
+            resolver_builder = resolver_builder.resolver(custom);
+        }
+
+        (resolver_builder.build(), publishers)
     }
 
     pub(crate) fn select_resolver(&self, resolvers: Resolvers) -> ArcResolver {

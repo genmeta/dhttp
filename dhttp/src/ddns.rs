@@ -1,3 +1,3 @@
 //! Re-export of the ddns crate APIs used by DHTTP.
 
-pub use ddns::{core, mdns, publisher, resolvers};
+pub use ddns::{core, mdns, publishers, resolvers};
