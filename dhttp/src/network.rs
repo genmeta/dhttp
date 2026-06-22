@@ -242,14 +242,14 @@ mod tests {
     #[tokio::test]
     async fn builder_allows_custom_stun_server() {
         let dhttp_network = DhttpNetwork::builder()
-            .stun_server(Some(Arc::from("custom.stun.example:3478")))
+            .stun_server(Some(Arc::from("custom.stun.example")))
             .build()
             .await
             .expect("network should build with custom stun server");
 
         assert_eq!(
             dhttp_network.network().quic().stun_server().as_deref(),
-            Some("custom.stun.example:3478")
+            Some("custom.stun.example")
         );
     }
 
@@ -267,7 +267,7 @@ mod tests {
             .iface_manager(iface_manager.clone())
             .io_factory(io_factory.clone())
             .stun_resolver(stun_resolver.clone())
-            .stun_server(Some(Arc::from("builder.stun.example:3478")))
+            .stun_server(Some(Arc::from("builder.stun.example")))
             .quic_router(quic_router.clone())
             .locations(locations.clone())
             .build()
@@ -278,16 +278,13 @@ mod tests {
         assert!(Arc::ptr_eq(&quic.iface_manager(), &iface_manager));
         assert!(Arc::ptr_eq(&quic.io_factory(), &io_factory));
         assert!(Arc::ptr_eq(&quic.stun_resolver(), &stun_resolver));
-        assert_eq!(
-            quic.stun_server().as_deref(),
-            Some("builder.stun.example:3478")
-        );
+        assert_eq!(quic.stun_server().as_deref(), Some("builder.stun.example"));
         assert!(Arc::ptr_eq(&quic.quic_router(), &quic_router));
         assert!(Arc::ptr_eq(&quic.locations(), &locations));
     }
 
     #[tokio::test]
-    async fn builder_derives_stun_resolver_from_custom_resolver() {
+    async fn builder_derives_stun_resolver_from_custom_resolver_without_literal_port() {
         use futures::StreamExt;
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -304,7 +301,7 @@ mod tests {
             .network()
             .quic()
             .stun_resolver()
-            .lookup("stun.example.test:3478")
+            .lookup("stun.example.test")
             .await
             .expect("custom resolver should resolve STUN server");
 

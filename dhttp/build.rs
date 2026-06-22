@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf};
 const ROOT_CA_ENV: &str = "DHTTP_ROOT_CA";
 const STUN_SERVER_ENV: &str = "DHTTP_STUN_SERVER";
 
-const DEFAULT_STUN_SERVER: &str = "dhttp.example.net:1";
+const DEFAULT_STUN_SERVER: &str = "stun.dhttp.example.net";
 const DEFAULT_ROOT_CA_PEM: &str = "\
 -----BEGIN CERTIFICATE-----\n\
 MIIDKTCCAhGgAwIBAgIUHNScq6R2U5QYUzxkEkNDaOJt4yMwDQYJKoZIhvcNAQEL\n\
@@ -84,7 +84,7 @@ mod tests {
 
         assert_eq!(
             env_or_default(&name, DEFAULT_STUN_SERVER),
-            "dhttp.example.net:1"
+            "stun.dhttp.example.net"
         );
     }
 

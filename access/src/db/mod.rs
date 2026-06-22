@@ -51,6 +51,7 @@ pub enum AccessDbError {
     InitializeDatabase { source: sea_orm::DbErr },
 }
 
+#[allow(deprecated)]
 pub fn load_dhttp_home() -> Result<DhttpHome, AccessDbError> {
     DhttpHome::load_from_environment().context(LocateDhttpHomeSnafu)
 }

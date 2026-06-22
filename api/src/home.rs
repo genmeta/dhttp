@@ -14,6 +14,7 @@ pub struct IdentityProfile(dhttp::home::identity::IdentityProfile);
 
 impl DhttpHome {
     pub fn load() -> Result<Self> {
+        #[allow(deprecated)]
         dhttp::home::DhttpHome::load_from_environment()
             .map(Self)
             .map_err(|error| DhttpError::from_error("home.load", error))

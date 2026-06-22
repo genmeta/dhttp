@@ -2061,6 +2061,15 @@ mod tests {
     }
 
     #[test]
+    fn into_authority_expands_dhttp_shorthand_selector_with_base() {
+        let self_name = "self.host".parse::<crate::name::DhttpName>().unwrap();
+
+        let authority = "reimu.hakurei~:0".into_authority(Some(&self_name)).unwrap();
+
+        assert_eq!(authority.as_str(), "reimu.hakurei.dhttp.net:0");
+    }
+
+    #[test]
     fn into_authority_rejects_bare_tilde_without_base() {
         let error = "~".into_authority(None).unwrap_err();
 

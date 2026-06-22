@@ -88,10 +88,11 @@ pub enum CreateEndpointPublicationLoopError {
     AnonymousEndpoint,
 }
 
-/// Default STUN server for NAT traversal.
+/// Default STUN bootstrap name for NAT traversal.
 ///
-/// STUN server resolution uses this authority so the well-known port remains
-/// part of the query.
+/// DDNS resolution of this name returns the actual socket addresses and ports
+/// from endpoint `E` records; the bootstrap value itself is a logical lookup
+/// name, not a raw `host:port` transport authority.
 pub const STUN_SERVER: &str = crate::bootstrap::DHTTP_STUN_SERVER;
 
 fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
@@ -393,6 +394,7 @@ impl Endpoint {
         let name = name
             .try_into()
             .context(load_endpoint_error::InvalidNameSnafu)?;
+        #[allow(deprecated)]
         let home = crate::home::DhttpHome::load_from_environment()
             .context(load_endpoint_error::NoHomeSnafu)?;
 
@@ -618,6 +620,13 @@ mod tests {
     fn stun_server_comes_from_compile_time_environment() {
         if let Some(expected) = option_env!("DHTTP_STUN_SERVER") {
             assert_eq!(STUN_SERVER, expected);
+        }
+    }
+
+    #[test]
+    fn stun_server_placeholder_is_plain_name_when_compile_time_env_is_absent() {
+        if option_env!("DHTTP_STUN_SERVER").is_none() {
+            assert_eq!(STUN_SERVER, "stun.dhttp.example.net");
         }
     }
 
@@ -1067,7 +1076,7 @@ mod tests {
             .network()
             .quic()
             .stun_resolver()
-            .lookup("stun.example.test:3478")
+            .lookup("stun.example.test")
             .await
             .expect("custom STUN resolver should be called");
 
