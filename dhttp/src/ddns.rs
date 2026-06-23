@@ -108,6 +108,46 @@ impl DhttpDnsPlan {
 }
 
 type DeferredEndpointResolver = resolvers::deferred::DeferredResolver<resolvers::Resolvers>;
+type EndpointH3Client = Arc<H3Endpoint<EndpointH3Connector, crate::dquic::connection::Connection>>;
+
+#[derive(Clone)]
+struct EndpointH3Clients {
+    resolver: EndpointH3Client,
+    publisher: EndpointH3Client,
+}
+
+#[derive(Clone)]
+struct EndpointH3Connector {
+    quic: QuicEndpoint,
+}
+
+impl EndpointH3Connector {
+    fn new(quic: QuicEndpoint) -> Self {
+        Self { quic }
+    }
+}
+
+impl crate::h3x::quic::Connect for EndpointH3Connector {
+    type Connection = crate::dquic::connection::Connection;
+    type Error = crate::dquic::ConnectError;
+
+    async fn connect(
+        &self,
+        server: &::http::uri::Authority,
+    ) -> Result<Arc<Self::Connection>, Self::Error> {
+        crate::h3x::quic::Connect::connect(&self.quic, server).await
+    }
+}
+
+impl crate::h3x::quic::WithLocalAuthority for EndpointH3Connector {
+    type LocalAuthority = crate::dquic::Identity;
+
+    async fn local_authority(
+        &self,
+    ) -> Result<Option<Self::LocalAuthority>, crate::h3x::quic::ConnectionError> {
+        crate::h3x::quic::WithLocalAuthority::local_authority(&self.quic).await
+    }
+}
 
 #[derive(Debug, snafu::Snafu)]
 #[snafu(module(build_dhttp_network_with_dns_error))]
@@ -187,12 +227,8 @@ async fn network_stun_resolver_from_plan(
     let operations = dns_plan.effective_ops();
     let h3_resolver = if uses_h3(&operations) {
         let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone()).await?;
-        let h3_quic = QuicEndpoint::builder()
-            .network(network.clone())
-            .resolver(h3_underlay)
-            .bind(bind.clone())
-            .build()
-            .await;
+        let h3_quic =
+            dedicated_network_h3_client_quic(network.clone(), bind.clone(), h3_underlay).await;
         Some(Arc::new(h3_resolver_for_network(
             h3_dns_server.as_ref(),
             h3_quic,
@@ -237,10 +273,7 @@ async fn endpoint_dns_from_quic(
 ) -> Result<(resolvers::Resolvers, publishers::Publishers), BuildQuicEndpointWithDnsError> {
     let operations = dns_plan.effective_ops();
     let endpoint_h3 = if uses_h3(&operations) {
-        let h3_underlay = endpoint_h3_underlay(&operations, endpoint).await?;
-        let mut h3_quic = endpoint.clone();
-        h3_quic.set_resolver(h3_underlay);
-        Some(Arc::new(H3Endpoint::new(h3_quic)))
+        Some(endpoint_h3_clients_from_quic(&operations, endpoint).await?)
     } else {
         None
     };
@@ -277,14 +310,18 @@ async fn endpoint_dns_from_quic(
                 let h3_endpoint = endpoint_h3
                     .clone()
                     .expect("BUG: endpoint H3 endpoint exists when H3 DNS is used");
-                let h3 = Arc::new(h3_resolver_for_endpoint(
+                let h3_resolver = Arc::new(h3_resolver_for_endpoint(
                     h3_dns_server.as_ref(),
-                    h3_endpoint,
+                    h3_endpoint.resolver,
                 )?);
-                resolver_builder = resolver_builder.resolver(h3.clone());
+                let h3_publisher = Arc::new(h3_resolver_for_endpoint(
+                    h3_dns_server.as_ref(),
+                    h3_endpoint.publisher,
+                )?);
+                resolver_builder = resolver_builder.resolver(h3_resolver);
                 publishers.push(publishers::Publisher::new(
                     publishers::PublishScope::WideArea,
-                    h3,
+                    h3_publisher,
                 ));
             }
             DhttpDnsOp::Resolver(resolver) => {
@@ -298,6 +335,55 @@ async fn endpoint_dns_from_quic(
 
     let resolvers = endpoint_resolver_chain(resolver_builder.build())?;
     Ok((resolvers, publishers))
+}
+
+async fn endpoint_h3_clients_from_quic(
+    operations: &[DhttpDnsOp],
+    endpoint: &QuicEndpoint,
+) -> Result<EndpointH3Clients, BuildQuicEndpointWithDnsError> {
+    let h3_underlay = endpoint_h3_underlay(operations, endpoint).await?;
+    let resolver_quic = dedicated_h3_client_quic(endpoint, h3_underlay.clone()).await;
+    let publisher_quic = dedicated_h3_client_quic(endpoint, h3_underlay).await;
+
+    Ok(EndpointH3Clients {
+        // Endpoint-facing DNS resolution and publication can run concurrently
+        // while the endpoint is also serving traffic. Keep separate H3 pools
+        // and dedicated QUIC endpoints. The H3 DNS clients must always use
+        // DHTTP's H3-capable trust/ALPN defaults instead of inheriting an
+        // arbitrary serving endpoint transport config; callers such as pishoo
+        // may construct the serving QUIC endpoint directly and omit H3 ALPNs.
+        // Preserve the serving identity so authenticated H3 DNS publish can
+        // still sign requests and present client certificates.
+        resolver: Arc::new(H3Endpoint::new(EndpointH3Connector::new(resolver_quic))),
+        publisher: Arc::new(H3Endpoint::new(EndpointH3Connector::new(publisher_quic))),
+    })
+}
+
+async fn dedicated_h3_client_quic(endpoint: &QuicEndpoint, resolver: ArcResolver) -> QuicEndpoint {
+    QuicEndpoint::builder()
+        .network(endpoint.network().clone())
+        .maybe_identity(endpoint.identity())
+        .resolver(resolver)
+        .client(crate::trust::default_client_quic_config())
+        .server(crate::trust::default_server_quic_config())
+        .bind(endpoint.bind_patterns().clone())
+        .build()
+        .await
+}
+
+async fn dedicated_network_h3_client_quic(
+    network: Arc<Network>,
+    bind: Arc<Vec<BindPattern>>,
+    resolver: ArcResolver,
+) -> QuicEndpoint {
+    QuicEndpoint::builder()
+        .network(network)
+        .resolver(resolver)
+        .client(crate::trust::default_client_quic_config())
+        .server(crate::trust::default_server_quic_config())
+        .bind(bind)
+        .build()
+        .await
 }
 
 async fn endpoint_h3_underlay(
@@ -369,8 +455,8 @@ fn h3_resolver_for_network(
 
 fn h3_resolver_for_endpoint(
     h3_dns_server: &str,
-    h3: Arc<H3Endpoint<QuicEndpoint, crate::dquic::connection::Connection>>,
-) -> Result<resolvers::H3Resolver<QuicEndpoint>, BuildQuicEndpointWithDnsError> {
+    h3: EndpointH3Client,
+) -> Result<resolvers::H3Resolver<EndpointH3Connector>, BuildQuicEndpointWithDnsError> {
     resolvers::H3Resolver::from_endpoint(h3_dns_server, h3)
         .context(build_quic_endpoint_with_dns_error::InvalidH3DnsServerSnafu)
 }
@@ -435,6 +521,7 @@ fn has_system_dns(operations: &[DhttpDnsOp]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::{
         fmt,
         sync::{
@@ -579,5 +666,85 @@ mod tests {
             "DeferredResolver(Resolvers(counting resolver))"
         );
         assert!(publishers.iter().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn endpoint_h3_dns_clients_split_resolver_and_publisher_connectors() {
+        let endpoint = crate::dquic::QuicEndpoint::builder().build().await;
+        let operations = vec![DhttpDnsOp::Dns(resolvers::DnsScheme::H3)];
+        let mut source_quic = endpoint.clone();
+        let source_client = (*source_quic.client_config_mut()).clone();
+        let source_server = (*source_quic.server_config_mut()).clone();
+
+        let clients = endpoint_h3_clients_from_quic(&operations, &endpoint)
+            .await
+            .expect("h3 dns clients should build");
+
+        assert!(
+            !Arc::ptr_eq(&clients.resolver, &clients.publisher),
+            "resolver and publisher must not share the same H3 endpoint pool"
+        );
+        assert!(
+            Arc::ptr_eq(clients.resolver.quic().quic.network(), endpoint.network()),
+            "resolver h3 dns client should stay on the serving endpoint network"
+        );
+        assert!(
+            Arc::ptr_eq(clients.publisher.quic().quic.network(), endpoint.network()),
+            "publisher h3 dns client should stay on the serving endpoint network"
+        );
+
+        let mut resolver_quic = clients.resolver.quic().quic.clone();
+        let resolver_client = (*resolver_quic.client_config_mut()).clone();
+        let resolver_server = (*resolver_quic.server_config_mut()).clone();
+        let mut publisher_quic = clients.publisher.quic().quic.clone();
+        let publisher_client = (*publisher_quic.client_config_mut()).clone();
+        let publisher_server = (*publisher_quic.server_config_mut()).clone();
+
+        assert_eq!(resolver_client, crate::trust::default_client_quic_config());
+        assert_eq!(publisher_client, crate::trust::default_client_quic_config());
+        assert_eq!(resolver_server, crate::trust::default_server_quic_config());
+        assert_eq!(publisher_server, crate::trust::default_server_quic_config());
+        assert!(
+            source_client.alpns.is_empty() && source_server.alpns.is_empty(),
+            "test source endpoint should keep the raw quic defaults so dedicated H3 DNS clients prove they install DHTTP H3 defaults independently"
+        );
+        assert!(
+            Arc::ptr_eq(
+                clients.resolver.quic().quic.resolver(),
+                clients.publisher.quic().quic.resolver()
+            ),
+            "resolver and publisher h3 dns clients should share the same dedicated underlay resolver chain"
+        );
+        assert!(
+            !Arc::ptr_eq(
+                clients.publisher.quic().quic.resolver(),
+                endpoint.resolver()
+            ),
+            "publisher h3 dns client should override the serving endpoint resolver with the dedicated underlay resolver"
+        );
+    }
+
+    #[tokio::test]
+    async fn network_h3_stun_resolver_quic_uses_dhttp_h3_defaults() {
+        let network = crate::dquic::Network::builder().build();
+        let bind = Arc::new(vec![
+            crate::dquic::binds::BindPattern::from_str("*")
+                .expect("wildcard bind pattern should parse"),
+        ]);
+        let operations = vec![DhttpDnsOp::Dns(resolvers::DnsScheme::H3)];
+        let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone())
+            .await
+            .expect("network h3 underlay should build");
+
+        let mut quic = dedicated_network_h3_client_quic(network, bind, h3_underlay).await;
+
+        assert_eq!(
+            (*quic.client_config_mut()).clone(),
+            crate::trust::default_client_quic_config()
+        );
+        assert_eq!(
+            (*quic.server_config_mut()).clone(),
+            crate::trust::default_server_quic_config()
+        );
     }
 }
