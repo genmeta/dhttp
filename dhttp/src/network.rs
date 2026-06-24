@@ -9,7 +9,9 @@ use crate::ddns::{
 use crate::dquic::{
     Network,
     binds::BindPattern,
-    net::{Devices, InterfaceManager, Locations, ProductIO, QuicRouter, handy::DEFAULT_IO_FACTORY},
+    net::{
+        Devices, InterfaceManager, LocalEndpoints, ProductIO, QuicRouter, handy::DEFAULT_IO_FACTORY,
+    },
 };
 
 pub(crate) type ArcResolvers = Arc<Resolvers>;
@@ -104,7 +106,7 @@ impl DhttpNetwork {
         >,
         #[builder(default = Arc::new(DEFAULT_IO_FACTORY))] io_factory: Arc<dyn ProductIO + 'static>,
         #[builder(default = Arc::new(QuicRouter::new()))] quic_router: Arc<QuicRouter>,
-        #[builder(default = Arc::new(Locations::new()))] locations: Arc<Locations>,
+        #[builder(default = Arc::new(LocalEndpoints::new()))] local_endpoints: Arc<LocalEndpoints>,
     ) -> Result<Self, BuildDhttpNetworkWithDnsError> {
         let stun_server =
             stun_server.unwrap_or_else(|| Some(Arc::<str>::from(crate::endpoint::STUN_SERVER)));
@@ -117,7 +119,7 @@ impl DhttpNetwork {
                 .iface_manager(iface_manager)
                 .io_factory(io_factory)
                 .quic_router(quic_router)
-                .locations(locations)
+                .local_endpoints(local_endpoints)
                 .build();
             return Ok(Self {
                 network,
@@ -135,7 +137,7 @@ impl DhttpNetwork {
                     .iface_manager(iface_manager)
                     .io_factory(io_factory)
                     .quic_router(quic_router)
-                    .locations(locations)
+                    .local_endpoints(local_endpoints)
                     .build()
             },
             &dns_plan,
@@ -261,7 +263,7 @@ mod tests {
         let stun_resolver: Arc<dyn Resolve + Send + Sync> =
             Arc::new(crate::dquic::resolver::handy::SystemResolver);
         let quic_router = Arc::new(crate::dquic::net::QuicRouter::new());
-        let locations = Arc::new(crate::dquic::net::Locations::new());
+        let local_endpoints = Arc::new(crate::dquic::net::LocalEndpoints::new());
 
         let dhttp_network = DhttpNetwork::builder()
             .iface_manager(iface_manager.clone())
@@ -269,7 +271,7 @@ mod tests {
             .stun_resolver(stun_resolver.clone())
             .stun_server(Some(Arc::from("builder.stun.example")))
             .quic_router(quic_router.clone())
-            .locations(locations.clone())
+            .local_endpoints(local_endpoints.clone())
             .build()
             .await
             .expect("network should build with forwarded options");
@@ -280,7 +282,7 @@ mod tests {
         assert!(Arc::ptr_eq(&quic.stun_resolver(), &stun_resolver));
         assert_eq!(quic.stun_server().as_deref(), Some("builder.stun.example"));
         assert!(Arc::ptr_eq(&quic.quic_router(), &quic_router));
-        assert!(Arc::ptr_eq(&quic.locations(), &locations));
+        assert!(Arc::ptr_eq(&quic.local_endpoints(), &local_endpoints));
     }
 
     #[tokio::test]
