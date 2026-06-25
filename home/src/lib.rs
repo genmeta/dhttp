@@ -10,6 +10,7 @@ use snafu::Snafu;
 
 const USER_HOME_ENV: &str = "DHTTP_HOME";
 const GLOBAL_HOME_ENV: &str = "DHTTP_GLOBAL_HOME";
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const DEFAULT_UNIX_GLOBAL_HOME: &str = "/etc/dhttp";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
