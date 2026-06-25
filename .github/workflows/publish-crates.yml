@@ -25,8 +25,17 @@ jobs:
       - name: Install Rust stable toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: Test workspace
         run: cargo test --workspace --all-features --all-targets
+
+      - name: Validate workspace publish graph
+        run: cargo publish --workspace --exclude dhttp-api --dry-run
 
       - name: Authenticate to crates.io
         if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
@@ -126,10 +135,10 @@ jobs:
           fi
 
           if [[ "$mode" == "dry-run" ]]; then
-            publish_args=(cargo publish --dry-run --locked)
+            publish_args=(cargo publish --dry-run)
             echo "dry-run publish packages: ${packages_to_publish[*]}"
           else
-            publish_args=(cargo publish --locked)
+            publish_args=(cargo publish)
             echo "publish packages: ${packages_to_publish[*]}"
           fi
 
