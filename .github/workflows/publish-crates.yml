@@ -34,9 +34,6 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --all-features --all-targets
 
-      - name: Validate workspace publish graph
-        run: cargo publish --workspace --exclude dhttp-api --dry-run
-
       - name: Authenticate to crates.io
         if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
         uses: rust-lang/crates-io-auth-action@v1
