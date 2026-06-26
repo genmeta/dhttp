@@ -229,7 +229,7 @@ where
     InvalidName { source: E },
     #[snafu(display("failed to locate dhttp home"))]
     NoHome {
-        source: crate::home::LocateDhttpHomeError,
+        source: crate::home::LoadDhttpHomeError,
     },
     #[snafu(display("failed to resolve identity profile"))]
     ResolveIdentityProfile {
@@ -394,8 +394,7 @@ impl Endpoint {
         let name = name
             .try_into()
             .context(load_endpoint_error::InvalidNameSnafu)?;
-        #[allow(deprecated)]
-        let home = crate::home::DhttpHome::load_from_environment()
+        let home = crate::home::DhttpHome::load(crate::home::HomeScope::User)
             .context(load_endpoint_error::NoHomeSnafu)?;
 
         let profile = home

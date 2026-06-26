@@ -4,9 +4,7 @@ mod bootstrap;
 
 use std::path::{Path, PathBuf};
 
-#[cfg(any(unix, windows))]
-use snafu::OptionExt;
-use snafu::Snafu;
+use snafu::{OptionExt, Snafu};
 
 const USER_HOME_ENV: &str = "DHTTP_HOME";
 const GLOBAL_HOME_ENV: &str = "DHTTP_GLOBAL_HOME";
@@ -27,18 +25,6 @@ pub enum HomeScope {
 #[derive(Debug, Clone)]
 pub struct DhttpHome {
     path: PathBuf,
-}
-
-#[derive(Debug, Snafu)]
-#[snafu(module)]
-pub enum LocateDhttpHomeError {
-    #[cfg(any(unix, windows))]
-    #[snafu(display("cannot locate user home directory"))]
-    NoUserHome {},
-    #[snafu(display(
-        "dhttp home cannot be automatically located on this platform, try setting DHTTP_HOME environment variable"
-    ))]
-    UnsupportedPlatform {},
 }
 
 #[derive(Debug, Snafu)]
@@ -78,21 +64,6 @@ impl DhttpHome {
                 platform_default_global_home(),
             )?)),
         }
-    }
-
-    #[deprecated(note = "use DhttpHome::load(HomeScope::User) instead")]
-    pub fn load_from_environment() -> Result<Self, LocateDhttpHomeError> {
-        if let Some(path) = std::env::var_os(USER_HOME_ENV) {
-            return Ok(Self::new(PathBuf::from(path)));
-        }
-
-        #[cfg(any(unix, windows))]
-        return Ok(Self::for_user_home_dir(
-            dirs::home_dir().context(locate_dhttp_home_error::NoUserHomeSnafu)?,
-        ));
-
-        #[allow(unreachable_code)]
-        locate_dhttp_home_error::UnsupportedPlatformSnafu.fail()
     }
 
     pub fn as_path(&self) -> &Path {

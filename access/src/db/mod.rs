@@ -28,7 +28,7 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 pub enum AccessDbError {
     #[snafu(display("failed to locate DHTTP_HOME"))]
     LocateDhttpHome {
-        source: identity::LocateDhttpHomeError,
+        source: identity::LoadDhttpHomeError,
     },
 
     #[snafu(display("access store does not exist at `{}`", path.display()))]
@@ -51,9 +51,8 @@ pub enum AccessDbError {
     InitializeDatabase { source: sea_orm::DbErr },
 }
 
-#[allow(deprecated)]
 pub fn load_dhttp_home() -> Result<DhttpHome, AccessDbError> {
-    DhttpHome::load_from_environment().context(LocateDhttpHomeSnafu)
+    DhttpHome::load(dhttp_home::HomeScope::User).context(LocateDhttpHomeSnafu)
 }
 
 pub fn access_db_path(home: &DhttpHome, identity: identity::Name<'_>) -> PathBuf {
