@@ -39,7 +39,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Keep same-repository workspace members as path dependencies. Cross-repo
 # release dependencies resolve through crates.io in the formal release graph.
 dhttp-identity = "0.2.0"
-dhttp-home = { path = "home", version = "0.2.0" }
+dhttp-home = { path = "home", version = "0.3.0" }
 ddns = { package = "dyns", version = "0.5.0", features = [
     "resolvers",
     "publishers",
