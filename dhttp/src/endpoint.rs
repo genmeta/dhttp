@@ -961,7 +961,7 @@ mod tests {
         fn publish<'a>(
             &'a self,
             _name: &'a str,
-            _packet: &'a [u8],
+            _endpoints: &mut dyn Iterator<Item = crate::dquic::net::EndpointAddr>,
         ) -> crate::dquic::resolver::PublishFuture<'a> {
             use futures::FutureExt;
 

@@ -565,7 +565,11 @@ mod tests {
     }
 
     impl Publish for CountingPublisher {
-        fn publish<'a>(&'a self, _name: &'a str, _packet: &'a [u8]) -> PublishFuture<'a> {
+        fn publish<'a>(
+            &'a self,
+            _name: &'a str,
+            _endpoints: &mut dyn Iterator<Item = crate::dquic::net::EndpointAddr>,
+        ) -> PublishFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             async move { Ok(()) }.boxed()
         }
