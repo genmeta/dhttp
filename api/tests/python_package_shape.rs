@@ -21,7 +21,10 @@ fn publish_workflows_use_dhttpy_and_supported_macos_runner() {
 
     assert!(publish_pypi.contains("import dhttpy"));
     assert!(publish_pypi.contains("import dhttpy._native"));
-    assert!(publish_pypi.contains("release_channel=preview"));
+    assert!(
+        publish_pypi.contains("release_channel = \"preview\" if is_prerelease else \"stable\"")
+    );
+    assert!(publish_pypi.contains("release_channel={release_channel}"));
     assert!(publish_npm.contains("- os: macos-15-intel"));
     assert!(publish_npm.contains("--tag \"$NPM_DIST_TAG\""));
     assert!(publish_npm.contains("dist_tag=\"preview\""));
