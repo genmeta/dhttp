@@ -108,6 +108,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           import urllib.error
           import urllib.request
           import zipfile
@@ -132,6 +133,16 @@ jobs:
 
           if package_version is None:
               raise SystemExit(f"failed to determine wheel version from {wheel.name}")
+
+          # PyPI does not have a mutable `latest` pointer like npm. Normal pip
+          # installs avoid prereleases unless users opt in with --pre or pin an
+          # exact prerelease version, but keep CI logs explicit for release review.
+          is_prerelease = bool(re.search(r"(?i)(?:^|[0-9_.!+-])(?:a|b|rc)\d+|\.dev\d*", package_version))
+          release_channel = "preview" if is_prerelease else "stable"
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"release_channel={release_channel}\n")
+              handle.write(f"prerelease={str(is_prerelease).lower()}\n")
+          print(f"PyPI package {package_name} {package_version} is classified as {release_channel}")
 
           headers = {"User-Agent": "genmeta dhttp publish workflow"}
           package_url = f"https://pypi.org/pypi/{package_name}/json"

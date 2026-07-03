@@ -85,10 +85,30 @@ jobs:
         run: npm run smoke
         working-directory: api
 
+      - name: Resolve npm dist-tag
+        id: npm_channel
+        shell: bash
+        working-directory: api
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$package_version" == *-* ]]; then
+            dist_tag="preview"
+            release_channel="preview"
+          else
+            dist_tag="latest"
+            release_channel="stable"
+          fi
+          echo "dist_tag=$dist_tag" >> "$GITHUB_OUTPUT"
+          echo "release_channel=$release_channel" >> "$GITHUB_OUTPUT"
+          echo "npm package version $package_version uses $release_channel channel and $dist_tag dist-tag"
+
       - name: Dry-run npm publish
         if: github.ref_type != 'tag' || !startsWith(github.ref_name, 'v')
-        run: npm publish --dry-run --ignore-scripts --access public
+        run: npm publish --dry-run --ignore-scripts --access public --tag "$NPM_DIST_TAG"
         working-directory: api
+        env:
+          NPM_DIST_TAG: ${{ steps.npm_channel.outputs.dist_tag }}
 
   publish:
     needs: package
@@ -127,6 +147,24 @@ jobs:
       - name: Smoke test package
         run: npm run smoke
         working-directory: api
+
+      - name: Resolve npm dist-tag
+        id: npm_channel
+        shell: bash
+        working-directory: api
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$package_version" == *-* ]]; then
+            dist_tag="preview"
+            release_channel="preview"
+          else
+            dist_tag="latest"
+            release_channel="stable"
+          fi
+          echo "dist_tag=$dist_tag" >> "$GITHUB_OUTPUT"
+          echo "release_channel=$release_channel" >> "$GITHUB_OUTPUT"
+          echo "npm package version $package_version uses $release_channel channel and $dist_tag dist-tag"
 
       - name: Probe npm registry publish eligibility
         id: probe
@@ -172,5 +210,7 @@ jobs:
 
       - name: Publish npm package
         if: steps.probe.outputs.should_publish == 'true'
-        run: npm publish --ignore-scripts --access public --provenance
+        run: npm publish --ignore-scripts --access public --provenance --tag "$NPM_DIST_TAG"
         working-directory: api
+        env:
+          NPM_DIST_TAG: ${{ steps.npm_channel.outputs.dist_tag }}
