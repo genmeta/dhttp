@@ -253,7 +253,7 @@ async fn network_stun_resolver_from_plan(
             }
             DhttpDnsOp::Dns(resolvers::DnsScheme::H3) => {
                 if let Some(h3_resolver) = h3_resolver.clone() {
-                    builder = builder.resolver(h3_resolver);
+                    builder = builder.candidate_resolver(h3_resolver);
                 }
             }
             DhttpDnsOp::Resolver(resolver) => {
@@ -292,7 +292,7 @@ async fn endpoint_dns_from_quic(
                     )
                     .await,
                 );
-                resolver_builder = resolver_builder.resolver(mdns.clone());
+                resolver_builder = resolver_builder.candidate_resolver(mdns.clone());
                 publishers.push(publishers::Publisher::mdns(mdns));
             }
             DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {
@@ -303,7 +303,7 @@ async fn endpoint_dns_from_quic(
                     resolvers::HttpResolver::new(resolvers::DHTTP_HTTP_DNS_SERVER)
                         .expect("BUG: DHTTP HTTP DNS server is a valid URL"),
                 );
-                resolver_builder = resolver_builder.resolver(http.clone());
+                resolver_builder = resolver_builder.candidate_resolver(http.clone());
                 publishers.push(publishers::Publisher::http(http));
             }
             DhttpDnsOp::Dns(resolvers::DnsScheme::H3) => {
@@ -318,7 +318,7 @@ async fn endpoint_dns_from_quic(
                     h3_dns_server.as_ref(),
                     h3_endpoint.publisher,
                 )?);
-                resolver_builder = resolver_builder.resolver(h3_resolver);
+                resolver_builder = resolver_builder.candidate_resolver(h3_resolver);
                 publishers.push(publishers::Publisher::new(
                     publishers::PublishScope::WideArea,
                     h3_publisher,
