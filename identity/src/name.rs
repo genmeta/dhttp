@@ -1089,16 +1089,16 @@ mod tests {
 
     #[test]
     fn name_from_dhttp_shorthand_lowercases_plain_name() {
-        let name = Name::from_dhttp_shorthand("Alice.Margatroid")
-            .expect("mixed-case name should parse");
+        let name =
+            Name::from_dhttp_shorthand("Alice.Margatroid").expect("mixed-case name should parse");
 
         assert_eq!(name.as_full(), "alice.margatroid");
     }
 
     #[test]
     fn name_from_dhttp_shorthand_expands_suffix_marker() {
-        let name = Name::from_dhttp_shorthand("alice.margatroid~")
-            .expect("dhttp shorthand should parse");
+        let name =
+            Name::from_dhttp_shorthand("alice.margatroid~").expect("dhttp shorthand should parse");
 
         assert_eq!(name.as_full(), "alice.margatroid.dhttp.net");
     }

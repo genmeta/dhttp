@@ -864,8 +864,8 @@ mod dhttp_suffix_tests {
 
     #[test]
     fn client_name_regex_expands_tilde_as_literal_dhttp_suffix() {
-        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^alice~$")
-            .expect("valid client name pattern");
+        let pattern =
+            Pattern::<ClientNamePatternKind>::new("~ ^alice~$").expect("valid client name pattern");
 
         assert!(pattern.is_match("alice.dhttp.net"));
         assert!(!pattern.is_match("alicexdhttpxnet"));

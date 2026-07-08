@@ -18,14 +18,19 @@ pub enum ReachabilityError {
     },
 
     #[snafu(display("{domain} pattern `{pattern}` cannot match any valid {domain}"))]
-    EmptyIntersection { domain: &'static str, pattern: String },
+    EmptyIntersection {
+        domain: &'static str,
+        pattern: String,
+    },
 }
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum PatternAutomatonError {
     #[snafu(display("failed to build regex DFA"))]
-    BuildRegex { source: regex_automata::dfa::dense::BuildError },
+    BuildRegex {
+        source: regex_automata::dfa::dense::BuildError,
+    },
 }
 
 pub trait PatternInputLanguage {
@@ -169,9 +174,12 @@ where
     false
 }
 
-const TCHARS: &[u8] = b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const URI_PCHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/";
-const URI_QUERY_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/?";
+const TCHARS: &[u8] =
+    b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const URI_PCHARS: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/";
+const URI_QUERY_CHARS: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/?";
 const HOST_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
 const FIELD_VALUE_CHARS: &[u8] = b"\t ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
@@ -255,9 +263,7 @@ impl PatternInputLanguage for HttpMethodLanguage {
     }
 
     fn step(_state: DomainState, byte: u8) -> Option<DomainState> {
-        TCHARS
-            .contains(&byte)
-            .then_some(DomainState::new(0, 1, 0))
+        TCHARS.contains(&byte).then_some(DomainState::new(0, 1, 0))
     }
 
     fn is_accept(state: DomainState) -> bool {
@@ -279,9 +285,7 @@ impl PatternInputLanguage for HeaderNameLanguage {
     }
 
     fn step(_state: DomainState, byte: u8) -> Option<DomainState> {
-        TCHARS
-            .contains(&byte)
-            .then_some(DomainState::new(0, 1, 0))
+        TCHARS.contains(&byte).then_some(DomainState::new(0, 1, 0))
     }
 
     fn is_accept(state: DomainState) -> bool {

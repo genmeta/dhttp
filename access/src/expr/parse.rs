@@ -525,9 +525,7 @@ mod tests {
 
     #[test]
     fn method_pattern_rejects_unreachable_space() {
-        let error = r#"*? with method "GET POST""#
-            .parse::<LocationRuleExprs>()
-            .unwrap_err();
+        let error = r#"*? with method "GET POST""#.parse::<LocationRuleExprs>().unwrap_err();
         let rendered = snafu::Report::from_error(error).to_string();
 
         assert!(rendered.contains("HTTP method"), "error: {rendered}");
