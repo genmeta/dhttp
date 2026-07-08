@@ -511,6 +511,11 @@ mod tests {
 
     #[test]
     fn client_name_pattern_expands_shorthand_in_expr() {
+        let exprs = "alice~"
+            .parse::<LocationRuleExprs>()
+            .expect("dhttp shorthand should parse");
+
+        assert_eq!(exprs.to_string(), "alice.dhttp.net");
         assert!(matches!(
             &location_invariant("alice~")[0],
             Expr(AtomicLocationRuleExpr::ClientName(pattern))

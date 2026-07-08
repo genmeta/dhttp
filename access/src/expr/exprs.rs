@@ -145,6 +145,11 @@ impl LocationRuleExprs {
 impl Display for LocationRuleExprs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self { infix, .. } = self;
+        if let [Part::Expr(AtomicLocationRuleExpr::ClientName(pattern))] =
+            self.polish.parts.as_slice()
+        {
+            return write!(f, "{}", pattern.as_ref().as_str());
+        }
         write!(f, "{infix}")
     }
 }
