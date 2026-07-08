@@ -77,6 +77,10 @@ where
     pub fn new(timestamp: i64, pattern: Pattern<Kind>) -> Self {
         Self { timestamp, pattern }
     }
+
+    pub fn pattern(&self) -> &Pattern<Kind> {
+        &self.pattern
+    }
 }
 
 impl<Kind> PartialOrd for PatternWithTime<Kind>

@@ -5,6 +5,7 @@
 //! - This crate composes identity-local paths on top of dhttp-home without modifying it.
 
 pub mod entities;
+pub mod evaluator;
 pub mod identity;
 pub mod service;
 
