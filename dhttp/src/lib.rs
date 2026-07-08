@@ -48,4 +48,22 @@ mod tests {
 
         assert_type::<crate::access::db::base::matcher::LocationRulesMatcher>();
     }
+
+    #[test]
+    fn facade_declares_access_feature_forwarding() {
+        let manifest = include_str!("../Cargo.toml");
+
+        for feature in [
+            "access-cli = [\"dhttp-access/cli\"]",
+            "access-http = [\"dhttp-access/http\"]",
+            "access-orm = [\"dhttp-access/orm\"]",
+            "access-migration = [\"access-orm\", \"dhttp-access/migration\"]",
+            "access-peg-trace = [\"dhttp-access/peg-trace\"]",
+        ] {
+            assert!(
+                manifest.contains(feature),
+                "dhttp facade should forward feature {feature}"
+            );
+        }
+    }
 }

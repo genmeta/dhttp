@@ -9,6 +9,14 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+access-cli = ["dhttp-access/cli"]
+access-http = ["dhttp-access/http"]
+access-orm = ["dhttp-access/orm"]
+access-migration = ["access-orm", "dhttp-access/migration"]
+access-peg-trace = ["dhttp-access/peg-trace"]
+
 [dependencies]
 bon = { workspace = true }
 bytes = { workspace = true }
