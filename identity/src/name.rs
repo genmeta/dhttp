@@ -1088,6 +1088,28 @@ mod tests {
     }
 
     #[test]
+    fn name_from_dhttp_shorthand_borrows_lowercase_without_marker() {
+        let input = "alice.margatroid";
+
+        let name = Name::from_dhttp_shorthand(input).expect("plain name should parse");
+
+        assert_eq!(name.as_full(), "alice.margatroid");
+        assert_eq!(name.as_str().as_ptr(), input.as_ptr());
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_reuses_owned_bytes_without_marker() {
+        let input = Bytes::from_static(b"alice.margatroid");
+        let input_ptr = input.as_ptr();
+
+        let name = Name::from_dhttp_shorthand(input).expect("plain name should parse");
+        let bytes = name.into_bytes();
+
+        assert_eq!(bytes.as_ref(), b"alice.margatroid");
+        assert_eq!(bytes.as_ptr(), input_ptr);
+    }
+
+    #[test]
     fn name_from_dhttp_shorthand_lowercases_plain_name() {
         let name =
             Name::from_dhttp_shorthand("Alice.Margatroid").expect("mixed-case name should parse");
@@ -1610,6 +1632,15 @@ mod tests {
         let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
 
         assert_eq!(expanded.as_str(), "alice@a.dhttp.net:443");
+    }
+
+    #[test]
+    fn expand_authority_expands_middle_tilde_suffix() {
+        let authority = "a~b".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "a.dhttp.netb");
     }
 
     #[test]

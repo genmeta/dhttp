@@ -167,10 +167,12 @@ where
 
 const TCHARS: &[u8] =
     b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const URI_PCHARS: &[u8] =
+const URI_PATH_ALPHABET: &[u8] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/";
-const URI_QUERY_CHARS: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/?";
+const URI_QUERY_KEY_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$'()*+,;:@%/?";
+const URI_QUERY_VALUE_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$'()*+,;=:@%/?";
 const HOST_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
 const FIELD_VALUE_CHARS: &[u8] = b"\t ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
@@ -322,9 +324,12 @@ impl PatternInputLanguage for LocationPathLanguage {
     }
 
     fn step(state: DomainState, byte: u8) -> Option<DomainState> {
-        match state.kind {
-            0 if byte == b'/' => Some(DomainState::new(1, 0, 0)),
-            1 if URI_PCHARS.contains(&byte) => Some(DomainState::new(1, 0, 0)),
+        match (state.kind, byte) {
+            (0, b'/') => Some(DomainState::new(1, 0, 0)),
+            (1, b'%') => Some(DomainState::new(2, 0, 0)),
+            (1, byte) if is_uri_path_plain_char(byte) => Some(DomainState::new(1, 0, 0)),
+            (2, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(3, 0, 0)),
+            (3, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(1, 0, 0)),
             _ => None,
         }
     }
@@ -334,7 +339,7 @@ impl PatternInputLanguage for LocationPathLanguage {
     }
 
     fn alphabet() -> &'static [u8] {
-        URI_PCHARS
+        URI_PATH_ALPHABET
     }
 }
 
@@ -347,18 +352,22 @@ impl PatternInputLanguage for QueryKeyLanguage {
         DomainState::new(0, 0, 0)
     }
 
-    fn step(_state: DomainState, byte: u8) -> Option<DomainState> {
-        URI_QUERY_CHARS
-            .contains(&byte)
-            .then_some(DomainState::new(0, 0, 0))
+    fn step(state: DomainState, byte: u8) -> Option<DomainState> {
+        match (state.kind, byte) {
+            (0, b'%') => Some(DomainState::new(1, 0, 0)),
+            (0, byte) if is_uri_query_key_plain_char(byte) => Some(DomainState::new(0, 0, 0)),
+            (1, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(2, 0, 0)),
+            (2, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(0, 0, 0)),
+            _ => None,
+        }
     }
 
-    fn is_accept(_state: DomainState) -> bool {
-        true
+    fn is_accept(state: DomainState) -> bool {
+        state.kind == 0
     }
 
     fn alphabet() -> &'static [u8] {
-        URI_QUERY_CHARS
+        URI_QUERY_KEY_ALPHABET
     }
 }
 
@@ -371,23 +380,58 @@ impl PatternInputLanguage for QueryValueLanguage {
         DomainState::new(0, 0, 0)
     }
 
-    fn step(_state: DomainState, byte: u8) -> Option<DomainState> {
-        URI_QUERY_CHARS
-            .contains(&byte)
-            .then_some(DomainState::new(0, 0, 0))
+    fn step(state: DomainState, byte: u8) -> Option<DomainState> {
+        match (state.kind, byte) {
+            (0, b'%') => Some(DomainState::new(1, 0, 0)),
+            (0, byte) if is_uri_query_value_plain_char(byte) => Some(DomainState::new(0, 0, 0)),
+            (1, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(2, 0, 0)),
+            (2, byte) if byte.is_ascii_hexdigit() => Some(DomainState::new(0, 0, 0)),
+            _ => None,
+        }
     }
 
-    fn is_accept(_state: DomainState) -> bool {
-        true
+    fn is_accept(state: DomainState) -> bool {
+        state.kind == 0
     }
 
     fn alphabet() -> &'static [u8] {
-        URI_QUERY_CHARS
+        URI_QUERY_VALUE_ALPHABET
     }
 }
 
 fn is_host_alphanumeric(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
+}
+
+fn is_uri_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_uri_sub_delim(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+    )
+}
+
+fn is_uri_pchar_plain(byte: u8) -> bool {
+    is_uri_unreserved(byte) || is_uri_sub_delim(byte) || matches!(byte, b':' | b'@')
+}
+
+fn is_uri_path_plain_char(byte: u8) -> bool {
+    is_uri_pchar_plain(byte) || byte == b'/'
+}
+
+fn is_uri_query_plain_char(byte: u8) -> bool {
+    is_uri_pchar_plain(byte) || matches!(byte, b'/' | b'?')
+}
+
+fn is_uri_query_key_plain_char(byte: u8) -> bool {
+    is_uri_query_plain_char(byte) && !matches!(byte, b'&' | b'=')
+}
+
+fn is_uri_query_value_plain_char(byte: u8) -> bool {
+    is_uri_query_plain_char(byte) && byte != b'&'
 }
 
 #[cfg(test)]
@@ -414,9 +458,18 @@ mod tests {
     #[test]
     fn rfc3986_path_and_query_domains_use_raw_uri_characters() {
         assert!(LocationPathLanguage::accepts(b"/api/a%20b"));
+        assert!(!LocationPathLanguage::accepts(b"/api/a%zzb"));
+        assert!(!LocationPathLanguage::accepts(b"/api/a%2"));
         assert!(!LocationPathLanguage::accepts(b"api/no-leading-slash"));
         assert!(QueryKeyLanguage::accepts(b"q"));
+        assert!(QueryKeyLanguage::accepts(b"q%20name"));
+        assert!(!QueryKeyLanguage::accepts(b"q%zzname"));
+        assert!(!QueryKeyLanguage::accepts(b"q=name"));
+        assert!(!QueryKeyLanguage::accepts(b"q&name"));
         assert!(QueryValueLanguage::accepts(b"a/b?c"));
+        assert!(QueryValueLanguage::accepts(b"a=b"));
+        assert!(!QueryValueLanguage::accepts(b"a&b"));
+        assert!(!QueryValueLanguage::accepts(b"a%"));
     }
 
     #[test]

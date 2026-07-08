@@ -39,7 +39,6 @@ http = { workspace = true, optional = true }
 peg = { workspace = true }
 regex = { workspace = true }
 regex-automata = { workspace = true }
-regex-syntax = { workspace = true }
 sea-orm = { workspace = true, features = ["sqlx-sqlite"], optional = true }
 sea-orm-migration = { workspace = true, features = [
     "sqlx-sqlite",

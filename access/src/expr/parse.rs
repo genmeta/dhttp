@@ -536,6 +536,30 @@ mod tests {
     }
 
     #[test]
+    fn query_key_pattern_rejects_split_delimiter() {
+        let error = r#"*? with query "= =""#.parse::<LocationRuleExprs>().unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(rendered.contains("query key"), "error: {rendered}");
+        assert!(
+            rendered.contains("cannot match any valid query key"),
+            "error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn query_value_pattern_rejects_pair_delimiter() {
+        let error = r#"*? with query q:"= a&b""#.parse::<LocationRuleExprs>().unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(rendered.contains("query value"), "error: {rendered}");
+        assert!(
+            rendered.contains("cannot match any valid query value"),
+            "error: {rendered}"
+        );
+    }
+
+    #[test]
     #[should_panic]
     fn keyword_panic() {
         location_invariant(r#" *? with header "X-Pasword" "and" X-User "#);

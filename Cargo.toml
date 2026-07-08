@@ -31,7 +31,6 @@ sea-orm-migration = { version = "1", features = ["runtime-tokio-rustls"] }
 sea-orm = { version = "1", features = ["runtime-tokio-rustls"] }
 regex = "1"
 regex-automata = "0.4"
-regex-syntax = "0.8"
 peg = "0.8"
 globset = "0.4"
 derive_more = "2"
