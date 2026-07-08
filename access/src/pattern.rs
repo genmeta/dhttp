@@ -357,27 +357,17 @@ impl Pattern<LocationPatternKind> {
     }
 }
 
-pub fn trim_suffix_once<'s>(s: &'s str, suffix: &str) -> Option<&'s str> {
-    if let Some(pos) = s.rfind(suffix)
-        && pos + suffix.len() == s.len()
-    {
-        return Some(&s[..pos]);
-    }
-    None
-}
-
 impl Pattern<ClientNamePatternKind> {
     /// 测试字符串是否匹配模式
     #[inline]
     pub fn is_match(&self, s: &str) -> bool {
-        trim_suffix_once(s, DhttpName::SUFFIX).is_some_and(|s| self.regex.is_match(s))
+        self.regex.is_match(s)
     }
 
     /// 获取匹配的子字符串
     #[inline]
     pub fn r#match<'s>(&self, s: &'s str) -> Option<&'s str> {
-        trim_suffix_once(s, DhttpName::SUFFIX)
-            .and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
+        self.regex.find(s).map(|m| &s[m.range()])
     }
 }
 
@@ -385,14 +375,13 @@ impl Pattern<DomainPatternKind> {
     /// 测试字符串是否匹配模式
     #[inline]
     pub fn is_match(&self, s: &str) -> bool {
-        trim_suffix_once(s, DhttpName::SUFFIX).is_some_and(|s| self.regex.is_match(s))
+        self.regex.is_match(s)
     }
 
     /// 获取匹配的子字符串
     #[inline]
     pub fn r#match<'s>(&self, s: &'s str) -> Option<&'s str> {
-        trim_suffix_once(s, DhttpName::SUFFIX)
-            .and_then(|s| self.regex.find(s).map(|m| &s[m.range()]))
+        self.regex.find(s).map(|m| &s[m.range()])
     }
 }
 
@@ -463,14 +452,50 @@ impl_pattern! {
     impl Evaluable<&str> for Pattern<ClientNamePatternKind> { ... }
     impl Pattern<ClientNamePatternKind> { pub const fn priority(&self) -> usize { ... } }
     impl From<Pattern<NormalPatternKind>> for Pattern<ClientNamePatternKind> { ... }
-    impl FromStr for Pattern<ClientNamePatternKind> from Pattern<NormalPatternKind> { ... }
     impl Orm for Pattern<ClientNamePatternKind> from json { ... }
 
     impl Evaluable<&str> for Pattern<DomainPatternKind> { ... }
     impl Pattern<DomainPatternKind> { pub const fn priority(&self) -> usize { ... } }
     impl From<Pattern<NormalPatternKind>> for Pattern<DomainPatternKind> { ... }
-    impl FromStr for Pattern<DomainPatternKind> from Pattern<NormalPatternKind> { ... }
     impl Orm for Pattern<DomainPatternKind> from json { ... }
+}
+
+fn expand_name_glob_or_exact(input: &str) -> String {
+    input.replace('~', DhttpName::SUFFIX)
+}
+
+fn expand_name_regex(input: &str) -> String {
+    input.replace('~', r"\.dhttp\.net")
+}
+
+fn canonicalize_name_pattern(pattern: &str) -> String {
+    match pattern.split_once(' ') {
+        Some(("~", regex)) => format!("~ {}", expand_name_regex(regex)),
+        Some(("~*", regex)) => format!("~* {}", expand_name_regex(regex)),
+        Some(("=", exact)) => format!("= {}", expand_name_glob_or_exact(exact)),
+        Some(("*", glob)) => format!("* {}", expand_name_glob_or_exact(glob)),
+        _ => expand_name_glob_or_exact(pattern),
+    }
+}
+
+impl FromStr for Pattern<ClientNamePatternKind> {
+    type Err = ParsePatternError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let canonical = canonicalize_name_pattern(s);
+        <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)
+    }
+}
+
+impl FromStr for Pattern<DomainPatternKind> {
+    type Err = ParsePatternError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let canonical = canonicalize_name_pattern(s);
+        <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)
+    }
 }
 
 /// 共同的正则表达式构建工具
@@ -800,11 +825,41 @@ mod dhttp_suffix_tests {
     use super::*;
 
     #[test]
-    fn client_name_pattern_uses_dhttp_name_suffix() {
-        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^reimu\\.pilot$")
+    fn client_name_pattern_matches_full_name_without_suffix_trimming() {
+        let pattern =
+            Pattern::<ClientNamePatternKind>::new("alice").expect("valid client name pattern");
+
+        assert!(pattern.is_match("alice"));
+        assert!(!pattern.is_match("alice.dhttp.net"));
+    }
+
+    #[test]
+    fn client_name_pattern_expands_tilde_to_full_dhttp_suffix() {
+        let pattern =
+            Pattern::<ClientNamePatternKind>::new("alice~").expect("valid client name pattern");
+
+        assert!(pattern.is_match("alice.dhttp.net"));
+        assert!(!pattern.is_match("alice"));
+        assert_eq!(pattern.as_str(), "alice.dhttp.net");
+    }
+
+    #[test]
+    fn client_name_regex_expands_tilde_as_literal_dhttp_suffix() {
+        let pattern = Pattern::<ClientNamePatternKind>::new("~ ^alice~$")
             .expect("valid client name pattern");
 
-        assert!(pattern.is_match("reimu.pilot.dhttp.net"));
-        assert!(!pattern.is_match("reimu.pilot.genmeta.net"));
+        assert!(pattern.is_match("alice.dhttp.net"));
+        assert!(!pattern.is_match("alicexdhttpxnet"));
+        assert_eq!(pattern.as_str(), r"~ ^alice\.dhttp\.net$");
+    }
+
+    #[test]
+    fn client_name_glob_expands_tilde_to_full_dhttp_suffix() {
+        let pattern =
+            Pattern::<ClientNamePatternKind>::new("*.dong~").expect("valid client glob pattern");
+
+        assert!(pattern.is_match("youmu.dong.dhttp.net"));
+        assert!(!pattern.is_match("youmu.dong"));
+        assert_eq!(pattern.as_str(), "*.dong.dhttp.net");
     }
 }
