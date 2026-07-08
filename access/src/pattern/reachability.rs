@@ -14,22 +14,13 @@ pub enum ReachabilityError {
     #[snafu(display("failed to compile pattern automaton for `{pattern}`"))]
     CompilePattern {
         pattern: String,
-        source: PatternAutomatonError,
+        source: Box<regex_automata::dfa::dense::BuildError>,
     },
 
     #[snafu(display("{domain} pattern `{pattern}` cannot match any valid {domain}"))]
     EmptyIntersection {
         domain: &'static str,
         pattern: String,
-    },
-}
-
-#[derive(Debug, Snafu)]
-#[snafu(module)]
-pub enum PatternAutomatonError {
-    #[snafu(display("failed to build regex DFA"))]
-    BuildRegex {
-        source: regex_automata::dfa::dense::BuildError,
     },
 }
 
@@ -119,7 +110,7 @@ where
     let dfa = dense::Builder::new()
         .configure(dense::Config::new().minimize(true))
         .build(&regex)
-        .map_err(|source| PatternAutomatonError::BuildRegex { source })
+        .map_err(Box::new)
         .context(reachability_error::CompilePatternSnafu {
             pattern: pattern.pattern_text().to_string(),
         })?;
