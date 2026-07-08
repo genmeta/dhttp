@@ -484,7 +484,10 @@ impl FromStr for Pattern<ClientNamePatternKind> {
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let canonical = canonicalize_name_pattern(s);
-        <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)
+        let pattern: Self = <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)?;
+        reachability::validate_reachable::<_, reachability::ClientNameLanguage>(&pattern)
+            .map_err(|source| ParsePatternError::Unreachable { source })?;
+        Ok(pattern)
     }
 }
 
@@ -494,7 +497,10 @@ impl FromStr for Pattern<DomainPatternKind> {
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let canonical = canonicalize_name_pattern(s);
-        <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)
+        let pattern: Self = <Pattern<NormalPatternKind>>::from_str(&canonical).map(Into::into)?;
+        reachability::validate_reachable::<_, reachability::DomainNameLanguage>(&pattern)
+            .map_err(|source| ParsePatternError::Unreachable { source })?;
+        Ok(pattern)
     }
 }
 
@@ -540,7 +546,7 @@ mod parse_pattern {
     /// // 注意：大多数 glob 模式实际上是有效的，这里只是示例
     /// // 实际的 InvalidGlob 错误比较难构造，通常发生在内部处理时
     /// ```
-    #[derive(snafu::Snafu, Debug, Clone)]
+    #[derive(snafu::Snafu, Debug)]
     pub enum ParsePatternError {
         /// 无效的正则表达式
         ///
@@ -575,6 +581,11 @@ mod parse_pattern {
         /// ```
         #[snafu(display("invalid glob pattern"))]
         InvalidGlob { source: globset::Error },
+
+        #[snafu(display("unreachable pattern"))]
+        Unreachable {
+            source: reachability::ReachabilityError,
+        },
     }
 
     impl FromStr for Pattern<NormalPatternKind> {
@@ -651,7 +662,7 @@ mod parse_location_pattern {
     /// let result: Result<LocationPattern, _> = "invalid".parse();
     /// assert!(matches!(result, Err(ParseLocationPatternError::UndefinedPrefixOrCommon { .. })));
     /// ```
-    #[derive(snafu::Snafu, Debug, Clone)]
+    #[derive(snafu::Snafu, Debug)]
     pub enum ParseLocationPatternError {
         /// 未知的符号
         ///
@@ -706,6 +717,11 @@ mod parse_location_pattern {
         /// ```
         #[snafu(display("expected common pattern or normal prefix starting with `{prefix}`"))]
         UndefinedPrefixOrCommon { prefix: &'static str },
+
+        #[snafu(display("unreachable location pattern"))]
+        Unreachable {
+            source: reachability::ReachabilityError,
+        },
     }
 
     impl FromStr for Pattern<LocationPatternKind> {
@@ -755,11 +771,14 @@ mod parse_location_pattern {
                     });
                 }
             };
-            Ok(Self {
+            let pattern = Self {
                 kind,
                 regex,
                 pattern,
-            })
+            };
+            reachability::validate_reachable::<_, reachability::LocationPathLanguage>(&pattern)
+                .context(UnreachableSnafu)?;
+            Ok(pattern)
         }
     }
 }
@@ -861,5 +880,27 @@ mod dhttp_suffix_tests {
         assert!(pattern.is_match("youmu.dong.dhttp.net"));
         assert!(!pattern.is_match("youmu.dong"));
         assert_eq!(pattern.as_str(), "*.dong.dhttp.net");
+    }
+
+    #[test]
+    fn client_name_pattern_rejects_unreachable_smart_quotes() {
+        let error = Pattern::<ClientNamePatternKind>::new("“*?”").unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(
+            rendered.contains("cannot match any valid client name"),
+            "error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn location_pattern_rejects_unreachable_regex_smart_quotes() {
+        let error = LocationPattern::new("~ “").unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(
+            rendered.contains("cannot match any valid location path"),
+            "error: {rendered}"
+        );
     }
 }

@@ -167,11 +167,18 @@ mod utils {
     use super::*;
 
     #[derive(snafu::Snafu, Debug)]
-    #[snafu(display("invalid value for `{expr}`: invalid pattern"))]
     #[snafu(visibility(pub))]
-    pub struct InvalidPatternExpr {
-        expr: &'static str,
-        source: ParsePatternError,
+    pub enum InvalidPatternExpr {
+        #[snafu(display("invalid value for `{expr}`: invalid pattern"))]
+        Pattern {
+            expr: &'static str,
+            source: ParsePatternError,
+        },
+        #[snafu(display("invalid value for `{expr}`: invalid pattern"))]
+        Atomic {
+            expr: &'static str,
+            source: BuildAtomicPatternError,
+        },
     }
 
     pub type Result<T, E = InvalidPatternExpr> = core::result::Result<T, E>;
@@ -246,13 +253,18 @@ peg::parser! {
             } }
 
         rule pattern_expr(expr: &'static str) -> Result<NormalPattern> =
-            pattern:pattern() { pattern.context(InvalidPatternExprSnafu { expr }) }
+            pattern:pattern() { pattern.context(PatternSnafu { expr }) }
 
         rule client_name_pattern() -> Result<ClientNamePattern> =
-            pattern:pattern_expr("client_name_pattern") { pattern.map(ClientNamePattern::from) }
+            pattern:pattern_expr("client_name_pattern") {
+                pattern.and_then(|pattern| {
+                    ClientNamePattern::from_str(pattern.as_str())
+                        .context(PatternSnafu { expr: "client_name_pattern" })
+                })
+            }
 
         rule client_name() -> Result<ClientName> = pattern:client_name_pattern() {
-            pattern.map(ClientName::from)
+            pattern.and_then(|pattern| ClientName::new(pattern).context(AtomicSnafu { expr: "client_name_pattern" }))
         }
 
         rule and() = ikeyword("and")
@@ -260,7 +272,9 @@ peg::parser! {
         rule not() = ikeyword("not")
 
         rule method_pattern() -> Result<Method> =
-            pattern:pattern_expr("method_pattern") { pattern.map(Method::from) }
+            pattern:pattern_expr("method_pattern") {
+                pattern.and_then(|pattern| Method::new(pattern).context(AtomicSnafu { expr: "method_pattern" }))
+            }
 
         rule method() -> Result<AtomicLocationRuleExpr> =
             ikeyword("method") method:method_pattern() { method.map(AtomicLocationRuleExpr::Method) }
@@ -278,20 +292,32 @@ peg::parser! {
                 Ok(KVPattern { key: key?, value: value? })
             } /
             key:pattern_expr(key) {
-                Ok(KVPattern {
-                    key: key?,
-                    value: NormalPattern::new("*").context(InvalidPatternExprSnafu { expr: value })?,
-                })
+                let value = NormalPattern::new("*").context(PatternSnafu { expr: value })?;
+                Ok(KVPattern { key: key?, value })
             }
 
         rule header_pattern() -> Result<Header> =
-            pattern:kv_pattern_expr("header_key", "header_value") { pattern.map(Header::from) }
+            pattern:kv_pattern_expr("header_key", "header_value") {
+                pattern.and_then(|pattern| {
+                    let KVPattern { key, value } = pattern;
+                    KVPattern::new_header(key, value)
+                        .map(Header::new)
+                        .context(AtomicSnafu { expr: "header_pattern" })
+                })
+            }
 
         rule header() -> Result<AtomicLocationRuleExpr> =
             i("header") header:header_pattern() { header.map(AtomicLocationRuleExpr::Header) }
 
         rule query_pattern() -> Result<Query> =
-            pattern:kv_pattern_expr("query_key", "query_value") { pattern.map(Query::from) }
+            pattern:kv_pattern_expr("query_key", "query_value") {
+                pattern.and_then(|pattern| {
+                    let KVPattern { key, value } = pattern;
+                    KVPattern::new_query(key, value)
+                        .map(Query::new)
+                        .context(AtomicSnafu { expr: "query_pattern" })
+                })
+            }
 
         rule query() -> Result<AtomicLocationRuleExpr> =
             ikeyword("query") query:query_pattern() { query.map(AtomicLocationRuleExpr::Query) }
@@ -412,9 +438,12 @@ mod tests {
             Expr(AtomicLocationRuleExpr::ClientName(pattern)) if pattern.as_ref().as_str() == "*.remote"
         ));
 
+        let exprs = location_invariant(r#" *? with header X:"\"remote" "#);
         assert!(matches!(
-            &location_invariant(r#" "\"*.remote" "#)[0],
-            Expr(AtomicLocationRuleExpr::ClientName(pattern)) if pattern.as_ref().as_str() == r#""*.remote"#
+            &exprs[2],
+            Expr(AtomicLocationRuleExpr::Header(header))
+                if header.as_ref().key.as_str() == "X"
+                    && header.as_ref().value.as_str() == r#""remote"#
         ));
     }
 
@@ -466,6 +495,41 @@ mod tests {
     fn keyword() {
         location_invariant(r#" *? with method "not" "#);
         location_invariant(r#" *? with method "method" "#);
+    }
+
+    #[test]
+    fn client_name_pattern_rejects_unreachable_smart_quotes() {
+        let error = "“*?”".parse::<LocationRuleExprs>().unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(rendered.contains("client name"), "error: {rendered}");
+        assert!(
+            rendered.contains("cannot match any valid client name"),
+            "error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn client_name_pattern_expands_shorthand_in_expr() {
+        assert!(matches!(
+            &location_invariant("alice~")[0],
+            Expr(AtomicLocationRuleExpr::ClientName(pattern))
+                if pattern.as_ref().as_str() == "alice.dhttp.net"
+        ));
+    }
+
+    #[test]
+    fn method_pattern_rejects_unreachable_space() {
+        let error = r#"*? with method "GET POST""#
+            .parse::<LocationRuleExprs>()
+            .unwrap_err();
+        let rendered = snafu::Report::from_error(error).to_string();
+
+        assert!(rendered.contains("HTTP method"), "error: {rendered}");
+        assert!(
+            rendered.contains("cannot match any valid HTTP method"),
+            "error: {rendered}"
+        );
     }
 
     #[test]

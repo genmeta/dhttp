@@ -6,7 +6,7 @@ use regex_automata::{
 };
 use snafu::{ResultExt, Snafu};
 
-use super::{LocationPattern, NormalPattern};
+use super::{ClientNamePattern, DomainPattern, LocationPattern, NormalPattern};
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
@@ -85,6 +85,26 @@ impl PatternLanguage for LocationPattern {
     }
 }
 
+impl PatternLanguage for ClientNamePattern {
+    fn pattern_text(&self) -> &str {
+        self.as_str()
+    }
+
+    fn search_regex(&self) -> String {
+        self.regex.as_str().to_owned()
+    }
+}
+
+impl PatternLanguage for DomainPattern {
+    fn pattern_text(&self) -> &str {
+        self.as_str()
+    }
+
+    fn search_regex(&self) -> String {
+        self.regex.as_str().to_owned()
+    }
+}
+
 pub fn validate_reachable<P, L>(pattern: &P) -> Result<(), ReachabilityError>
 where
     P: PatternLanguage,
@@ -128,8 +148,11 @@ where
             continue;
         }
         let matched = matched || dfa.is_match_state(regex_state);
-        if matched && L::is_accept(domain_state) {
-            return true;
+        if L::is_accept(domain_state) {
+            let eoi_state = dfa.next_eoi_state(regex_state);
+            if matched || dfa.is_match_state(eoi_state) {
+                return true;
+            }
         }
         if dfa.is_dead_state(regex_state) {
             continue;
@@ -150,9 +173,10 @@ const TCHARS: &[u8] = b"!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDE
 const URI_PCHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/";
 const URI_QUERY_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@%/?";
 const HOST_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
-const FIELD_VALUE_CHARS: &[u8] = b"\t ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+const FIELD_VALUE_CHARS: &[u8] = b"\t ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
 pub struct ClientNameLanguage;
+pub struct DomainNameLanguage;
 pub struct LocationPathLanguage;
 pub struct HttpMethodLanguage;
 pub struct HeaderNameLanguage;
@@ -196,6 +220,28 @@ impl PatternInputLanguage for ClientNameLanguage {
 
     fn alphabet() -> &'static [u8] {
         HOST_CHARS
+    }
+}
+
+impl PatternInputLanguage for DomainNameLanguage {
+    fn label() -> &'static str {
+        "domain"
+    }
+
+    fn start() -> DomainState {
+        ClientNameLanguage::start()
+    }
+
+    fn step(state: DomainState, byte: u8) -> Option<DomainState> {
+        ClientNameLanguage::step(state, byte)
+    }
+
+    fn is_accept(state: DomainState) -> bool {
+        ClientNameLanguage::is_accept(state)
+    }
+
+    fn alphabet() -> &'static [u8] {
+        ClientNameLanguage::alphabet()
     }
 }
 

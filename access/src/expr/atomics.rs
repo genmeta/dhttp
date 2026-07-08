@@ -2,7 +2,7 @@
 
 use std::{fmt::Display, net::IpAddr, str::FromStr};
 
-use derive_more::{AsRef, Display, From, Into};
+use derive_more::{AsRef, Display, Into};
 use snafu::OptionExt;
 
 use crate::{
@@ -11,7 +11,14 @@ use crate::{
         eval::{EvalRuleError, Evaluable},
         parse::{self, InvalidPatternExpr},
     },
-    pattern::{ClientNamePattern, NormalPattern, Pattern},
+    pattern::{
+        ClientNamePattern, NormalPattern, Pattern,
+        reachability::{
+            ClientNameLanguage, HeaderNameLanguage, HeaderValueLanguage, HttpMethodLanguage,
+            PatternInputLanguage, QueryKeyLanguage, QueryValueLanguage, ReachabilityError,
+            validate_reachable,
+        },
+    },
 };
 
 /// 表示网络请求的源类型
@@ -108,8 +115,30 @@ impl EvalRuleError<RequestAction> for EvalError {
     }
 }
 
-#[derive(Debug, Display, Clone, From, Into, AsRef, PartialEq, Eq)]
+#[derive(snafu::Snafu, Debug)]
+#[snafu(module)]
+pub enum BuildAtomicPatternError {
+    #[snafu(display("invalid {domain} pattern"))]
+    Unreachable {
+        domain: &'static str,
+        source: ReachabilityError,
+    },
+}
+
+#[derive(Debug, Display, Clone, Into, AsRef, PartialEq, Eq)]
 pub struct ClientName(ClientNamePattern);
+
+impl ClientName {
+    pub fn new(pattern: ClientNamePattern) -> Result<Self, BuildAtomicPatternError> {
+        validate_reachable::<_, ClientNameLanguage>(&pattern).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: "client name",
+                source,
+            }
+        })?;
+        Ok(Self(pattern))
+    }
+}
 
 impl Evaluable<Option<&str>> for ClientName {
     type Value = Result<bool, EvalError>;
@@ -121,9 +150,21 @@ impl Evaluable<Option<&str>> for ClientName {
     }
 }
 
-#[derive(Debug, Clone, From, Into, AsRef, PartialEq, Eq)]
+#[derive(Debug, Clone, Into, AsRef, PartialEq, Eq)]
 pub struct Method {
     pattern: NormalPattern,
+}
+
+impl Method {
+    pub fn new(pattern: NormalPattern) -> Result<Self, BuildAtomicPatternError> {
+        validate_reachable::<_, HttpMethodLanguage>(&pattern).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: "HTTP method",
+                source,
+            }
+        })?;
+        Ok(Self { pattern })
+    }
 }
 
 #[cfg(feature = "http")]
@@ -144,6 +185,46 @@ pub struct KVPattern {
     pub value: NormalPattern,
 }
 
+impl KVPattern {
+    pub fn new<K, V, KL, VL>(key: K, value: V) -> Result<Self, BuildAtomicPatternError>
+    where
+        K: Into<NormalPattern>,
+        V: Into<NormalPattern>,
+        KL: PatternInputLanguage,
+        VL: PatternInputLanguage,
+    {
+        let key = key.into();
+        let value = value.into();
+        validate_reachable::<_, KL>(&key).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: KL::label(),
+                source,
+            }
+        })?;
+        validate_reachable::<_, VL>(&value).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: VL::label(),
+                source,
+            }
+        })?;
+        Ok(Self { key, value })
+    }
+
+    pub fn new_header(
+        key: NormalPattern,
+        value: NormalPattern,
+    ) -> Result<Self, BuildAtomicPatternError> {
+        Self::new::<_, _, HeaderNameLanguage, HeaderValueLanguage>(key, value)
+    }
+
+    pub fn new_query(
+        key: NormalPattern,
+        value: NormalPattern,
+    ) -> Result<Self, BuildAtomicPatternError> {
+        Self::new::<_, _, QueryKeyLanguage, QueryValueLanguage>(key, value)
+    }
+}
+
 impl Evaluable<(&str, &str)> for KVPattern {
     type Value = bool;
 
@@ -158,9 +239,15 @@ impl Display for KVPattern {
     }
 }
 
-#[derive(Debug, Clone, From, Into, AsRef, PartialEq, Eq)]
+#[derive(Debug, Clone, Into, AsRef, PartialEq, Eq)]
 pub struct Header {
     pattern: KVPattern,
+}
+
+impl Header {
+    pub fn new(pattern: KVPattern) -> Self {
+        Self { pattern }
+    }
 }
 
 impl Evaluable<(&str, &str)> for Header {
@@ -184,9 +271,15 @@ impl Evaluable<(&http::HeaderName, &http::HeaderValue)> for Header {
     }
 }
 
-#[derive(Debug, Clone, From, Into, AsRef, PartialEq, Eq)]
+#[derive(Debug, Clone, Into, AsRef, PartialEq, Eq)]
 pub struct Query {
     pattern: KVPattern,
+}
+
+impl Query {
+    pub fn new(pattern: KVPattern) -> Self {
+        Self { pattern }
+    }
 }
 
 impl Evaluable<(&str, &str)> for Query {
