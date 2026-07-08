@@ -69,9 +69,71 @@ impl BytesStr {
 }
 
 #[derive(Clone, Debug)]
-enum CowBytes<'a> {
+pub enum CowBytes<'a> {
     Borrowed(&'a [u8]),
     Owned(Bytes),
+}
+
+impl<'a> From<&'a str> for CowBytes<'a> {
+    #[inline]
+    fn from(value: &'a str) -> Self {
+        Self::Borrowed(value.as_bytes())
+    }
+}
+
+impl<'a> From<&'a [u8]> for CowBytes<'a> {
+    #[inline]
+    fn from(value: &'a [u8]) -> Self {
+        Self::Borrowed(value)
+    }
+}
+
+impl<'a, const N: usize> From<&'a [u8; N]> for CowBytes<'a> {
+    #[inline]
+    fn from(value: &'a [u8; N]) -> Self {
+        Self::Borrowed(&value[..])
+    }
+}
+
+impl From<String> for CowBytes<'static> {
+    #[inline]
+    fn from(value: String) -> Self {
+        Self::Owned(Bytes::from(value.into_bytes()))
+    }
+}
+
+impl From<Vec<u8>> for CowBytes<'static> {
+    #[inline]
+    fn from(value: Vec<u8>) -> Self {
+        Self::Owned(Bytes::from(value))
+    }
+}
+
+impl From<Bytes> for CowBytes<'static> {
+    #[inline]
+    fn from(value: Bytes) -> Self {
+        Self::Owned(value)
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for CowBytes<'a> {
+    #[inline]
+    fn from(value: Cow<'a, str>) -> Self {
+        match value {
+            Cow::Borrowed(value) => Self::Borrowed(value.as_bytes()),
+            Cow::Owned(value) => Self::Owned(Bytes::from(value.into_bytes())),
+        }
+    }
+}
+
+impl<'a> From<Cow<'a, [u8]>> for CowBytes<'a> {
+    #[inline]
+    fn from(value: Cow<'a, [u8]>) -> Self {
+        match value {
+            Cow::Borrowed(value) => Self::Borrowed(value),
+            Cow::Owned(value) => Self::Owned(Bytes::from(value)),
+        }
+    }
 }
 
 impl AsRef<[u8]> for CowBytes<'_> {
@@ -82,6 +144,25 @@ impl AsRef<[u8]> for CowBytes<'_> {
             Self::Owned(bytes) => bytes,
         }
     }
+}
+
+fn expand_dhttp_shorthand<'a>(input: CowBytes<'a>) -> CowBytes<'a> {
+    let bytes = input.as_ref();
+    if !bytes.contains(&b'~') {
+        return input;
+    }
+
+    let suffix = DhttpName::SUFFIX.as_bytes();
+    let extra = bytes.iter().filter(|byte| **byte == b'~').count() * (suffix.len() - 1);
+    let mut expanded = BytesMut::with_capacity(bytes.len() + extra);
+    for byte in bytes {
+        if *byte == b'~' {
+            expanded.extend_from_slice(suffix);
+        } else {
+            expanded.extend_from_slice(&[*byte]);
+        }
+    }
+    CowBytes::Owned(expanded.freeze())
 }
 
 #[derive(Clone, Debug)]
@@ -268,6 +349,19 @@ pub struct Name<'a>(DnsName<CowBytesStr<'a>>);
 impl Name<'_> {
     pub const MAX_LABEL_LENGTH: usize = DnsName::<CowBytes<'static>>::MAX_LABEL_LENGTH;
     pub const MAX_LENGTH: usize = DnsName::<CowBytes<'static>>::MAX_LENGTH;
+
+    /// Parse a DNS name while treating each `~` byte as shorthand for
+    /// [`DhttpName::SUFFIX`].
+    ///
+    /// Unlike [`DhttpName::try_from`], this does not implicitly append the
+    /// DHTTP suffix when `~` is absent.
+    #[inline]
+    pub fn from_dhttp_shorthand<'a>(
+        input: impl Into<CowBytes<'a>>,
+    ) -> Result<Name<'a>, InvalidName> {
+        let input = expand_dhttp_shorthand(input.into());
+        DnsName::try_from(input).map(Name::from)
+    }
 
     /// Return the name as a `&str`.
     #[inline]
@@ -977,6 +1071,54 @@ mod tests {
     fn name_from_str_trait_rejects_invalid() {
         let result: Result<Name, _> = "INVALID!!!".parse();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_leaves_plain_name_unchanged() {
+        let input = "alice.margatroid";
+
+        let name = Name::from_dhttp_shorthand(input).expect("plain name should parse");
+
+        assert_eq!(name.as_full(), "alice.margatroid");
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_lowercases_plain_name() {
+        let name = Name::from_dhttp_shorthand("Alice.Margatroid")
+            .expect("mixed-case name should parse");
+
+        assert_eq!(name.as_full(), "alice.margatroid");
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_expands_suffix_marker() {
+        let name = Name::from_dhttp_shorthand("alice.margatroid~")
+            .expect("dhttp shorthand should parse");
+
+        assert_eq!(name.as_full(), "alice.margatroid.dhttp.net");
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_expands_every_suffix_marker() {
+        let name = Name::from_dhttp_shorthand("alice~bar")
+            .expect("any-position dhttp shorthand should parse when expanded name is valid");
+
+        assert_eq!(name.as_full(), "alice.dhttp.netbar");
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_rejects_bare_suffix_marker() {
+        let error = Name::from_dhttp_shorthand("~").expect_err("bare shorthand is not a name");
+
+        assert!(matches!(error, InvalidName::EmptyLabel { .. }));
+    }
+
+    #[test]
+    fn name_from_dhttp_shorthand_accepts_owned_bytes() {
+        let name = Name::from_dhttp_shorthand(Bytes::from_static(b"alice~"))
+            .expect("owned bytes shorthand should parse");
+
+        assert_eq!(name.as_full(), "alice.dhttp.net");
     }
 
     #[test]
