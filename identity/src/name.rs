@@ -722,9 +722,9 @@ impl DhttpName<'_> {
 
     /// Expand DHttp shorthand in the authority of `uri`.
     ///
-    /// The bare host `~` expands to this name. A host ending with `~` expands
-    /// to the same host with the DHttp suffix appended. Ordinary host names
-    /// pass through unchanged.
+    /// The bare host `~` expands to this name. Other hosts containing `~`
+    /// expand each marker to the DHttp suffix. Ordinary host names pass through
+    /// unchanged.
     #[inline]
     pub fn expand_uri(&self, uri: http::Uri) -> Result<http::Uri, ExpandUriError> {
         Self::expand_uri_with_base(Some(self), uri)
@@ -732,9 +732,9 @@ impl DhttpName<'_> {
 
     /// Expand DHttp shorthand in `authority` with an optional base name.
     ///
-    /// The bare host `~` expands to `base` and fails when `base` is absent. A host
-    /// ending with `~` expands to the same host with the DHttp suffix appended and
-    /// does not require `base`. Ordinary host names pass through unchanged.
+    /// The bare host `~` expands to `base` and fails when `base` is absent. Other
+    /// hosts containing `~` expand each marker to the DHttp suffix and do not
+    /// require `base`. Ordinary host names pass through unchanged.
     pub fn expand_authority_with_base(
         base: Option<&DhttpName<'_>>,
         authority: http::uri::Authority,
@@ -744,9 +744,14 @@ impl DhttpName<'_> {
 
         let replacement = if host == "~" {
             base.context(expand_authority_error::MissingBaseNameSnafu)?
+                .as_name()
                 .to_owned()
-        } else if let Some(partial) = host.strip_suffix('~') {
-            DhttpName::try_from(partial)?.into_owned()
+        } else if host.as_bytes().contains(&b'~') {
+            Name::from_dhttp_shorthand(host)
+                .map_err(|source| ExpandAuthorityError::InvalidName {
+                    source: InvalidDhttpName::InvalidName { source },
+                })?
+                .into_owned()
         } else if host.len() >= Self::SUFFIX.len()
             && host[host.len() - Self::SUFFIX.len()..].eq_ignore_ascii_case(Self::SUFFIX)
         {
@@ -758,14 +763,14 @@ impl DhttpName<'_> {
                     });
                 }
             };
-            DhttpName::try_from(name)?.into_owned()
+            DhttpName::try_from(name)?.into_name()
         } else {
             return Ok(authority);
         };
 
         if raw == host {
             let authority = replacement.as_full().to_owned();
-            return http::uri::Authority::from_maybe_shared(replacement.into_name().into_bytes())
+            return http::uri::Authority::from_maybe_shared(replacement.into_bytes())
                 .context(expand_authority_error::ParseAuthoritySnafu { authority });
         }
 
@@ -789,9 +794,9 @@ impl DhttpName<'_> {
 
     /// Expand DHttp shorthand in the authority of `uri` with an optional base name.
     ///
-    /// The bare host `~` expands to `base` and fails when `base` is absent. A host
-    /// ending with `~` expands to the same host with the DHttp suffix appended and
-    /// does not require `base`. Ordinary host names pass through unchanged.
+    /// The bare host `~` expands to `base` and fails when `base` is absent. Other
+    /// hosts containing `~` expand each marker to the DHttp suffix and do not
+    /// require `base`. Ordinary host names pass through unchanged.
     pub fn expand_uri_with_base(
         base: Option<&DhttpName<'_>>,
         uri: http::Uri,
@@ -1596,6 +1601,34 @@ mod tests {
         let expanded = DhttpName::expand_authority_with_base(Some(&name), authority).unwrap();
 
         assert_eq!(expanded.as_str(), "alice@reimu.pilot.dhttp.net:443");
+    }
+
+    #[test]
+    fn expand_authority_expands_any_position_tilde_suffix() {
+        let authority = "alice@a~:443".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(None, authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "alice@a.dhttp.net:443");
+    }
+
+    #[test]
+    fn expand_authority_keeps_bare_tilde_as_self_with_base() {
+        let base = "reimu.pilot".parse::<DhttpName>().unwrap();
+        let authority = "~".parse().unwrap();
+
+        let expanded = DhttpName::expand_authority_with_base(Some(&base), authority).unwrap();
+
+        assert_eq!(expanded.as_str(), "reimu.pilot.dhttp.net");
+    }
+
+    #[test]
+    fn expand_authority_rejects_invalid_shorthand_host() {
+        let authority = "~bar".parse().unwrap();
+
+        let error = DhttpName::expand_authority_with_base(None, authority).unwrap_err();
+
+        assert!(matches!(error, ExpandAuthorityError::InvalidName { .. }));
     }
 
     #[test]
