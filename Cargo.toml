@@ -53,4 +53,4 @@ h3x = { version = "0.6.0-beta.2", features = [
     "dquic",
 ] }
 dhttp = { path = "dhttp", version = "0.5.0-beta.2" }
-dhttp-access = { path = "access", version = "0.3.0" }
+dhttp-access = { path = "access", version = "0.4.0-beta.1" }
