@@ -48,3 +48,6 @@ serde_json = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

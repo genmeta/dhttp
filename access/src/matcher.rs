@@ -129,7 +129,7 @@ impl LocationRulesMatcher {
             })
     }
 
-    pub fn match_rule<'r, NewRequest>(
+    pub fn match_rule<'r, NewRequest: ?Sized>(
         &'r self,
         path: &str,
         new_request: &NewRequest,
@@ -147,5 +147,121 @@ impl LocationRulesMatcher {
             .find_map(|rule| rule.eval(new_request))
             .map(|action| (location_pattern, action))
             .context(MatchRuleInSetSnafu)
+    }
+}
+
+impl crate::policy::LocationRuleEvaluator for LocationRulesMatcher {
+    fn evaluate<'a>(
+        &'a self,
+        path: &'a str,
+        request: &'a (dyn crate::policy::LocationRuleRequest + Send + Sync),
+    ) -> crate::policy::LocationRuleFuture<'a> {
+        Box::pin(async move {
+            match self.match_rule(path, request) {
+                Ok((location, action)) => Ok(crate::policy::LocationRuleDecision {
+                    location: location.clone(),
+                    action,
+                }),
+                Err(MatchRuleFailed::MatchSet { source }) => match source {
+                    crate::error::location::MatchLocationFailed::NoMatchedPath { path } => {
+                        Err(crate::policy::LocationRuleDecisionError::NoRuleSet { path })
+                    }
+                    crate::error::location::MatchLocationFailed::NoMatchedLocation { location } => {
+                        Err(crate::policy::LocationRuleDecisionError::NoRuleSet {
+                            path: location.to_string(),
+                        })
+                    }
+                },
+                Err(MatchRuleFailed::MatchRuleInSet) => {
+                    let location = self
+                        .match_rules(path)
+                        .map(|(location, _)| location.clone())
+                        .map_err(|_| crate::policy::LocationRuleDecisionError::NoRuleSet {
+                            path: path.to_owned(),
+                        })?;
+                    Err(crate::policy::LocationRuleDecisionError::NoRuleInSet { location })
+                }
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use crate::{
+        action::RequestAction,
+        expr::{atomics::AtomicLocationRuleExpr, atomics::EvalError, exprs::LocationRuleExprs},
+        matcher::{LocationRulesMatcher, PatternWithTime},
+        pattern::{LocationPattern, LocationPatternKind},
+        policy::{LocationRuleDecisionError, LocationRuleEvaluator, LocationRuleRequest},
+    };
+
+    struct TestRequest {
+        client_name: Option<String>,
+    }
+
+    impl TestRequest {
+        fn named(name: &str) -> Self {
+            Self {
+                client_name: Some(name.to_owned()),
+            }
+        }
+    }
+
+    impl LocationRuleRequest for TestRequest {
+        fn eval_atomic(&self, expr: &AtomicLocationRuleExpr) -> Result<bool, EvalError> {
+            use crate::expr::eval::Evaluable;
+            Ok(match expr {
+                AtomicLocationRuleExpr::Any(..) => true,
+                AtomicLocationRuleExpr::ClientName(pattern) => {
+                    pattern.eval(&self.client_name.as_deref())?
+                }
+                AtomicLocationRuleExpr::Method(_) => false,
+                AtomicLocationRuleExpr::Header(_) => false,
+                AtomicLocationRuleExpr::Query(_) => false,
+            })
+        }
+    }
+
+    fn root_allow_all_matcher() -> LocationRulesMatcher {
+        let mut matcher = LocationRulesMatcher::default();
+        matcher.map.insert(
+            PatternWithTime::<LocationPatternKind>::new(
+                1,
+                "/".parse::<LocationPattern>().expect("valid root pattern"),
+            ),
+            vec![(
+                "*".parse::<LocationRuleExprs>().expect("valid any-client expr"),
+                RequestAction::Allow,
+            )],
+        );
+        matcher
+    }
+
+    #[tokio::test]
+    async fn matcher_policy_evaluator_allows_matching_rule() {
+        let matcher = root_allow_all_matcher();
+        let request = TestRequest::named("alice.pilot.dhttp.net");
+
+        let decision = matcher
+            .evaluate("/", &request)
+            .await
+            .expect("matcher should decide");
+
+        assert_eq!(decision.location.to_string(), "/");
+        assert_eq!(decision.action, RequestAction::Allow);
+    }
+
+    #[tokio::test]
+    async fn matcher_policy_evaluator_reports_no_rule_set() {
+        let matcher = LocationRulesMatcher::default();
+        let request = TestRequest::named("alice.pilot.dhttp.net");
+
+        let error = matcher
+            .evaluate("/missing", &request)
+            .await
+            .expect_err("empty matcher should not match");
+
+        assert!(matches!(error, LocationRuleDecisionError::NoRuleSet { .. }));
     }
 }

@@ -3,6 +3,7 @@ pub mod error;
 pub mod expr;
 pub mod matcher;
 pub mod pattern;
+pub mod policy;
 
 #[macro_export]
 #[cfg(feature = "orm")]
