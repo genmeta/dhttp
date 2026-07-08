@@ -52,12 +52,16 @@ jobs:
             mode=dry-run
           fi
 
-          packages=(
-            dhttp-identity
-            dhttp-home
-            dhttp-access
-            dhttp
-          )
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v*-dhttp-identity ]]; then
+            packages=(dhttp-identity)
+          else
+            packages=(
+              dhttp-identity
+              dhttp-home
+              dhttp-access
+              dhttp
+            )
+          fi
 
           cargo metadata --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
           package_versions="$(
