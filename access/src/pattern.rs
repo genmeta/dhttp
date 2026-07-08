@@ -295,6 +295,8 @@ pub type ClientNamePattern = Pattern<ClientNamePatternKind>;
 
 pub type DomainPattern = Pattern<DomainPatternKind>;
 
+pub mod reachability;
+
 impl<Kind> Pattern<Kind> {
     /// 创建新的模式实例
     ///
