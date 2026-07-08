@@ -235,7 +235,8 @@ mod policy_tests {
                 "/".parse::<LocationPattern>().expect("valid root pattern"),
             ),
             vec![(
-                "*".parse::<LocationRuleExprs>().expect("valid any-client expr"),
+                "*".parse::<LocationRuleExprs>()
+                    .expect("valid any-client expr"),
                 RequestAction::Allow,
             )],
         );

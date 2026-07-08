@@ -152,7 +152,11 @@ mod tests {
         }
     }
 
-    async fn seeded_store() -> (TestHome, sea_orm::DatabaseConnection, identity::Name<'static>) {
+    async fn seeded_store() -> (
+        TestHome,
+        sea_orm::DatabaseConnection,
+        identity::Name<'static>,
+    ) {
         let test_home = TestHome::new("seeded");
         let home = test_home.home();
         let identity: identity::Name<'static> = "server.pilot".parse().unwrap();
