@@ -37,9 +37,10 @@ derive_more = "2"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# Keep same-repository workspace members as path dependencies. Cross-repo
-# release dependencies resolve through crates.io in the formal release graph.
-dhttp-identity = { path = "identity", version = "0.3.0-beta.1" }
+# Keep same-repository workspace members as path dependencies, except staged
+# dhttp-identity releases, which resolve through crates.io to avoid duplicate
+# identity types with h3x/ddns in the formal release graph.
+dhttp-identity = "0.3.0-beta.1"
 dhttp-home = { path = "home", version = "0.4.0-beta.1" }
 ddns = { package = "dyns", version = "0.6.0-beta.3", features = [
     "resolvers",
