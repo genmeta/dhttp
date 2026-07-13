@@ -31,6 +31,7 @@ tracing = { workspace = true }
 dhttp-identity = { workspace = true }
 dhttp-home = { workspace = true }
 dhttp-access = { workspace = true }
+dhttp-log = { workspace = true }
 ddns = { workspace = true }
 h3x = { workspace = true }
 

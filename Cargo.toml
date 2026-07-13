@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dhttp", "identity", "home", "api", "access"]
+members = ["dhttp", "identity", "home", "api", "access", "log"]
 
 [workspace.package]
 version = "0.5.0-beta.3"
@@ -36,6 +36,7 @@ globset = "0.4"
 derive_more = "2"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
 # Keep same-repository workspace members as path dependencies, except staged
 # dhttp-identity releases, which resolve through crates.io to avoid duplicate
@@ -55,3 +56,4 @@ h3x = { version = "0.6.0-beta.3", features = [
 ] }
 dhttp = { path = "dhttp", version = "0.5.0-beta.3" }
 dhttp-access = { path = "access", version = "0.4.0-beta.1" }
+dhttp-log = { path = "log", version = "0.1.0" }

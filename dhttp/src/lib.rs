@@ -17,6 +17,7 @@ pub mod name {
 pub mod trust;
 
 pub use dhttp_home as home;
+pub use dhttp_log as log;
 pub use h3x;
 pub use h3x::dquic;
 
