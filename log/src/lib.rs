@@ -13,4 +13,6 @@ pub use compact::{
 pub use filter::{AllowAll, FilterRecord};
 pub use format::FormatRecord;
 pub use make_writer::{DeliverRecordError, DeliveryOutcome, MakeWriterSink};
-pub use record::{FormatError, FormattedRecord, MAX_RECORD_LEN, RecordBuilder};
+pub use record::{
+    FormatError, FormattedRecord, MAX_RECORD_LEN, RecordBuilder, RecordDelimiterError,
+};

@@ -3,7 +3,8 @@ use std::time::Duration;
 use chrono::{FixedOffset, TimeZone};
 use dhttp_log::{
     ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, FormatElementError,
-    MAX_RECORD_LEN, Optional, Quoted, RecordBuilder, SecondsMillis,
+    FormatError, MAX_RECORD_LEN, Optional, Quoted, RecordBuilder, RecordDelimiterError,
+    SecondsMillis,
 };
 
 struct RawBytes<'a>(&'a [u8]);
@@ -28,14 +29,35 @@ where
 }
 
 #[test]
-fn finish_adds_exactly_one_line_feed() {
-    assert_eq!(one_element(&RawBytes(b"record")).unwrap(), b"record\n");
+fn finish_adds_exactly_one_delimiter_and_rejects_embedded_newlines() {
+    let mut builder = RecordBuilder::new();
+    builder.literal(b"value").unwrap();
+    assert_eq!(builder.finish().unwrap().as_bytes(), b"value\n");
+
+    let mut builder = RecordBuilder::new();
+    assert!(matches!(
+        builder.literal(b"value\n"),
+        Err(FormatError::RecordDelimiter {
+            source: RecordDelimiterError::LineFeed,
+        })
+    ));
 }
 
 #[test]
 fn embedded_carriage_return_or_line_feed_is_rejected() {
-    for bytes in [b"bad\rrecord".as_slice(), b"bad\nrecord".as_slice()] {
-        assert!(one_element(&RawBytes(bytes)).is_err());
+    for (bytes, delimiter) in [
+        (
+            b"bad\rrecord".as_slice(),
+            RecordDelimiterError::CarriageReturn,
+        ),
+        (b"bad\nrecord".as_slice(), RecordDelimiterError::LineFeed),
+    ] {
+        assert!(matches!(
+            one_element(&RawBytes(bytes)),
+            Err(FormatError::Element {
+                source: FormatElementError::RecordDelimiter { source },
+            }) if source == delimiter
+        ));
     }
 }
 
@@ -77,6 +99,69 @@ fn quoted_composes_with_external_raw_bytes_and_optional() {
     assert_eq!(
         one_element(&Quoted(Optional(Some(RawBytes(b"raw value"))))).unwrap(),
         b"\"raw value\"\n"
+    );
+}
+
+struct RequestLine<'a> {
+    method: &'a [u8],
+    target: &'a [u8],
+    version: &'a [u8],
+}
+
+impl FormatElement<CompactConvention> for RequestLine<'_> {
+    fn format_element(
+        &self,
+        _convention: &CompactConvention,
+        output: &mut ElementWriter<'_>,
+    ) -> Result<(), FormatElementError> {
+        output.bytes(self.method)?;
+        output.bytes(b" ")?;
+        output.bytes(self.target)?;
+        output.bytes(b" ")?;
+        output.bytes(self.version)
+    }
+}
+
+#[test]
+fn composite_request_line_formats_through_quoted_wrapper() {
+    let request_line = RequestLine {
+        method: b"GET",
+        target: b"/assets/a.css",
+        version: b"HTTP/3",
+    };
+
+    assert_eq!(
+        one_element(&Quoted(request_line)).unwrap(),
+        b"\"GET /assets/a.css HTTP/3\"\n"
+    );
+}
+
+struct Sha256Fingerprint<'a>(&'a [u8]);
+
+impl FormatElement<CompactConvention> for Sha256Fingerprint<'_> {
+    fn format_element(
+        &self,
+        _convention: &CompactConvention,
+        output: &mut ElementWriter<'_>,
+    ) -> Result<(), FormatElementError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        output.bytes(b"sha256:")?;
+        for byte in self.0 {
+            output.bytes(&[HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0x0f)]])?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn canonical_fingerprint_formats_through_optional_and_quoted_wrappers() {
+    assert_eq!(
+        one_element(&Quoted(Optional(Some(Sha256Fingerprint(&[
+            0x01, 0x23, 0xab, 0xcd,
+        ])))))
+        .unwrap(),
+        b"\"sha256:0123abcd\"\n"
     );
 }
 

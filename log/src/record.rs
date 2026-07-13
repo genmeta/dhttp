@@ -23,6 +23,18 @@ impl AsRef<[u8]> for FormattedRecord {
     }
 }
 
+/// The physical record delimiter found inside record content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Snafu)]
+pub enum RecordDelimiterError {
+    /// A carriage return (`CR`) appeared inside record content.
+    #[snafu(display("embedded carriage return record delimiter"))]
+    CarriageReturn,
+
+    /// A line feed (`LF`) appeared inside record content.
+    #[snafu(display("embedded line feed record delimiter"))]
+    LineFeed,
+}
+
 /// A failure while assembling a complete physical record.
 #[derive(Debug, Snafu)]
 #[snafu(module)]
@@ -30,6 +42,10 @@ pub enum FormatError {
     /// A dynamic element could not be formatted safely.
     #[snafu(display("failed to format record element"))]
     Element { source: FormatElementError },
+
+    /// A static literal contains an embedded physical record delimiter.
+    #[snafu(display("record literal contains embedded record delimiter"))]
+    RecordDelimiter { source: RecordDelimiterError },
 
     /// A static literal contains a byte that cannot appear inside a record.
     #[snafu(display("record literal contains invalid byte {byte:#04x}"))]
@@ -55,8 +71,11 @@ impl RecordBuilder {
 
     /// Appends a source-code literal separator or template fragment.
     pub fn literal(&mut self, value: &'static [u8]) -> Result<(), FormatError> {
-        if let Some(&byte) = value.iter().find(|&&byte| !is_record_content_byte(byte)) {
-            return format_error::InvalidLiteralSnafu { byte }.fail();
+        for &byte in value {
+            reject_record_delimiter(byte).context(format_error::RecordDelimiterSnafu)?;
+            if !is_record_content_byte(byte) {
+                return format_error::InvalidLiteralSnafu { byte }.fail();
+            }
         }
         self.ensure_content_fits(value.len())?;
         self.bytes.extend_from_slice(value);
@@ -84,8 +103,12 @@ impl RecordBuilder {
     }
 
     pub(crate) fn append_plain(&mut self, value: &[u8]) -> Result<(), FormatElementError> {
-        if let Some(&byte) = value.iter().find(|&&byte| !is_record_content_byte(byte)) {
-            return Err(FormatElementError::InvalidByte { byte });
+        for &byte in value {
+            reject_record_delimiter(byte)
+                .context(crate::compact::format_element_error::RecordDelimiterSnafu)?;
+            if !is_record_content_byte(byte) {
+                return Err(FormatElementError::InvalidByte { byte });
+            }
         }
         self.ensure_element_fits(value.len())?;
         self.bytes.extend_from_slice(value);
@@ -163,6 +186,14 @@ impl RecordBuilder {
 
 fn is_record_content_byte(byte: u8) -> bool {
     byte.is_ascii() && !byte.is_ascii_control()
+}
+
+fn reject_record_delimiter(byte: u8) -> Result<(), RecordDelimiterError> {
+    match byte {
+        b'\r' => Err(RecordDelimiterError::CarriageReturn),
+        b'\n' => Err(RecordDelimiterError::LineFeed),
+        _ => Ok(()),
+    }
 }
 
 fn hex_digit(value: u8) -> u8 {

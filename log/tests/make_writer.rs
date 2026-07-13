@@ -5,8 +5,9 @@ use std::{
 };
 
 use dhttp_log::{
-    AllowAll, CompactConvention, DeliveryOutcome, ElementWriter, FilterRecord, FormatElement,
-    FormatElementError, FormatError, FormatRecord, FormattedRecord, MakeWriterSink, RecordBuilder,
+    AllowAll, CompactConvention, DeliverRecordError, DeliveryOutcome, ElementWriter, FilterRecord,
+    FormatElement, FormatElementError, FormatError, FormatRecord, FormattedRecord, MakeWriterSink,
+    RecordBuilder, RecordDelimiterError,
 };
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -81,7 +82,7 @@ struct ErrorFormatter;
 impl FormatRecord<&str> for ErrorFormatter {
     fn format_record(&self, _record: &&str) -> Result<FormattedRecord, FormatError> {
         let mut builder = RecordBuilder::new();
-        builder.literal(b"bad\nrecord")?;
+        builder.element(&CompactConvention::default(), &RawBytes(b"bad\nrecord"))?;
         builder.finish()
     }
 }
@@ -118,7 +119,16 @@ fn format_error_does_not_acquire_writer() {
     let maker = CountingMaker::default();
     let sink = MakeWriterSink::new(&maker);
 
-    assert!(sink.deliver(&"record", &AllowAll, &ErrorFormatter).is_err());
+    assert!(matches!(
+        sink.deliver(&"record", &AllowAll, &ErrorFormatter),
+        Err(DeliverRecordError::Format {
+            source: FormatError::Element {
+                source: FormatElementError::RecordDelimiter {
+                    source: RecordDelimiterError::LineFeed,
+                },
+            },
+        })
+    ));
     assert_eq!(maker.acquires.load(Ordering::SeqCst), 0);
 }
 

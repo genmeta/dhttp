@@ -7,8 +7,12 @@ use crate::record::RecordBuilder;
 
 /// A failure while formatting one dynamic element.
 #[derive(Debug, Snafu)]
-#[snafu(module)]
+#[snafu(module, visibility(pub(crate)))]
 pub enum FormatElementError {
+    /// Plain output contains an embedded physical record delimiter.
+    #[snafu(display("element contains embedded record delimiter"))]
+    RecordDelimiter { source: crate::RecordDelimiterError },
+
     /// Plain output contains an unsafe control or non-ASCII byte.
     #[snafu(display("element contains invalid byte {byte:#04x}"))]
     InvalidByte { byte: u8 },
@@ -139,21 +143,46 @@ where
 }
 
 /// Formats an integer in base ten.
+///
+/// Floating-point values are not decimal integer elements:
+///
+/// ```compile_fail
+/// use dhttp_log::{CompactConvention, Decimal, FormatElement};
+///
+/// fn require_compact<E: FormatElement<CompactConvention>>(_element: &E) {}
+/// require_compact(&Decimal(1.25_f64));
+/// ```
+///
+/// String-like values must define their own typed element contract:
+///
+/// ```compile_fail
+/// use dhttp_log::{CompactConvention, Decimal, FormatElement};
+///
+/// fn require_compact<E: FormatElement<CompactConvention>>(_element: &E) {}
+/// require_compact(&Decimal("123"));
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Decimal<N>(pub N);
 
-impl<N> FormatElement<CompactConvention> for Decimal<N>
-where
-    N: Display,
-{
-    fn format_element(
-        &self,
-        _convention: &CompactConvention,
-        output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
-        output.bytes(self.0.to_string().as_bytes())
-    }
+macro_rules! impl_decimal_integer {
+    ($($integer:ty),+ $(,)?) => {
+        $(
+            impl FormatElement<CompactConvention> for Decimal<$integer> {
+                fn format_element(
+                    &self,
+                    _convention: &CompactConvention,
+                    output: &mut ElementWriter<'_>,
+                ) -> Result<(), FormatElementError> {
+                    output.bytes(self.0.to_string().as_bytes())
+                }
+            }
+        )+
+    };
 }
+
+impl_decimal_integer!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize,
+);
 
 /// Formats a duration as seconds with three rounded decimal places.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
