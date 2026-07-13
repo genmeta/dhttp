@@ -59,6 +59,7 @@ jobs:
               dhttp-identity
               dhttp-home
               dhttp-access
+              dhttp-log
               dhttp
             )
           fi

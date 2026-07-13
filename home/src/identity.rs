@@ -35,6 +35,7 @@ pub enum IdentityProfileFromPathError {
 
 impl IdentityProfile {
     pub const LOGS_DIR: &'static str = "logs";
+    pub const CERT_LOG_FILE: &'static str = "cert.log";
     pub const ACCESS_LOG_FILE: &'static str = "access.log";
     pub const DB_DIR: &'static str = "db";
     pub const ACCESS_DB_FILE: &'static str = "access.db";
@@ -58,6 +59,10 @@ impl IdentityProfile {
 
     pub fn access_log_path(&self) -> PathBuf {
         self.logs_dir().join(Self::ACCESS_LOG_FILE)
+    }
+
+    pub fn cert_log_path(&self) -> PathBuf {
+        self.logs_dir().join(Self::CERT_LOG_FILE)
     }
 
     pub fn access_db_path(&self) -> PathBuf {
@@ -146,5 +151,19 @@ mod tests {
             error,
             IdentityProfileFromPathError::InvalidName { .. }
         ));
+    }
+
+    #[test]
+    fn cert_log_path_uses_the_profile_logs_directory() {
+        let profile = IdentityProfile::try_from(Path::new("/tmp/reimu.pilot")).unwrap();
+
+        assert_eq!(
+            profile.cert_log_path(),
+            PathBuf::from("/tmp/reimu.pilot/logs/cert.log")
+        );
+        assert_eq!(
+            profile.access_log_path(),
+            PathBuf::from("/tmp/reimu.pilot/logs/access.log")
+        );
     }
 }

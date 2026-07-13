@@ -24,6 +24,7 @@ This repository is a Cargo workspace for the DHttp SDK crates and native binding
 | `dhttp-identity` | `identity/` | DHttp name validation, identity certificates, subject-key metadata, and signing/verification helpers.          |
 | `dhttp-home`     | `home/`     | Local DHttp home directory, identity profiles, settings, and certificate/key loading.                          |
 | `dhttp-access`   | `access/`   | Access-control expressions, matchers, HTTP integration, optional SQLite persistence, and CLI helpers.          |
+| `dhttp-log`      | `log/`      | Typed certificate and HTTP access records with bounded compact ASCII formatting and writer adapters.          |
 | `dhttp-api`      | `api/`      | Native Node.js (`@genmeta/dhttp`) and Python (`dhttp`) bindings for the endpoint facade.                       |
 
 Lower-level crates can be used independently, but application code should normally start with the `dhttp` endpoint facade.
@@ -123,6 +124,7 @@ cargo test -p dhttp
 cargo test -p dhttp-identity
 cargo test -p dhttp-home
 cargo test -p dhttp-access --all-features
+cargo test -p dhttp-log --all-targets
 ```
 
 Binding builds live under `api/`:

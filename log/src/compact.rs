@@ -24,6 +24,10 @@ pub enum FormatElementError {
     /// Appending the element would make the physical record too large.
     #[snafu(display("element exceeds maximum record length of {max_len} bytes"))]
     TooLong { max_len: usize },
+
+    /// The HTTP version has no canonical compact representation.
+    #[snafu(display("unsupported HTTP version {version:?}"))]
+    UnsupportedHttpVersion { version: http::Version },
 }
 
 /// The open extension point for formatting a typed value under convention `C`.
