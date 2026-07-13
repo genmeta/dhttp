@@ -6,6 +6,15 @@ use crate::{FormatElement, FormatElementError, compact::ElementWriter};
 pub const MAX_RECORD_LEN: usize = 64 * 1024;
 
 /// A complete physical log record ready for delivery.
+///
+/// Every value of this type satisfies these physical invariants:
+///
+/// - its length is at most [`MAX_RECORD_LEN`] (64 KiB), including the final line feed;
+/// - every byte is ASCII;
+/// - no carriage return or line feed appears before the record delimiter;
+/// - exactly one line feed terminates the record.
+///
+/// Construction is private to [`RecordBuilder::finish`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormattedRecord(Box<[u8]>);
 
@@ -95,7 +104,10 @@ impl RecordBuilder {
         result.context(format_error::ElementSnafu)
     }
 
-    /// Finalizes the record by appending exactly one line feed.
+    /// Finalizes a validated [`FormattedRecord`] by appending exactly one line feed.
+    ///
+    /// The returned physical record is ASCII, has no embedded carriage returns or line feeds,
+    /// and is at most [`MAX_RECORD_LEN`] bytes including its single final line feed.
     pub fn finish(mut self) -> Result<FormattedRecord, FormatError> {
         self.ensure_content_fits(0)?;
         self.bytes.push(b'\n');
@@ -145,12 +157,9 @@ impl RecordBuilder {
         Ok(())
     }
 
-    pub(crate) fn append_trusted(
-        &mut self,
-        value: &'static [u8],
-    ) -> Result<(), FormatElementError> {
-        self.ensure_element_fits(value.len())?;
-        self.bytes.extend_from_slice(value);
+    pub(crate) fn append_quote_delimiter(&mut self) -> Result<(), FormatElementError> {
+        self.ensure_element_fits(1)?;
+        self.bytes.push(b'"');
         Ok(())
     }
 

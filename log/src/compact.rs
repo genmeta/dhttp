@@ -9,6 +9,10 @@ use crate::record::RecordBuilder;
 #[derive(Debug, Snafu)]
 #[snafu(module, visibility(pub(crate)))]
 pub enum FormatElementError {
+    /// A quoted wrapper was invoked while an outer quoted wrapper was active.
+    #[snafu(display("nested quoted element presentation is not supported"))]
+    NestedQuoted,
+
     /// Plain output contains an embedded physical record delimiter.
     #[snafu(display("element contains embedded record delimiter"))]
     RecordDelimiter { source: crate::RecordDelimiterError },
@@ -64,7 +68,11 @@ impl ElementWriter<'_> {
     where
         E: FormatElement<C>,
     {
-        self.builder.append_trusted(b"\"")?;
+        if self.mode == PresentationMode::Quoted {
+            return format_element_error::NestedQuotedSnafu.fail();
+        }
+
+        self.builder.append_quote_delimiter()?;
         value.format_element(
             convention,
             &mut ElementWriter {
@@ -72,7 +80,7 @@ impl ElementWriter<'_> {
                 mode: PresentationMode::Quoted,
             },
         )?;
-        self.builder.append_trusted(b"\"")
+        self.builder.append_quote_delimiter()
     }
 }
 

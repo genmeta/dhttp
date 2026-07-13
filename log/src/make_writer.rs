@@ -23,6 +23,9 @@ pub enum DeliverRecordError {
     Format { source: FormatError },
 
     /// The acquired external writer rejected the immediate write.
+    ///
+    /// This failure is not atomic: `write_all` may have delivered a prefix before returning the
+    /// source error. The adapter cannot roll that prefix back.
     #[snafu(display("failed to write domain log record"))]
     Write { source: io::Error },
 }
@@ -46,6 +49,13 @@ where
     M: for<'writer> MakeWriter<'writer> + ?Sized,
 {
     /// Filters, formats, acquires, and writes in that strict order.
+    ///
+    /// # Immediate write failures
+    ///
+    /// Delivery uses [`Write::write_all`]. A returned write error preserves its [`io::Error`]
+    /// source, but the external writer may already have accepted a prefix of the record. Callers
+    /// must not blindly retry the entire record after an error. This adapter provides no rollback,
+    /// flush, synchronization, or durability guarantee.
     pub fn deliver<R, P, F>(
         &self,
         record: &R,
