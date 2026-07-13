@@ -1,7 +1,7 @@
 //! HTTP access log records and their default formatter.
 
-pub mod formatter;
-pub mod record;
+mod formatter;
+mod record;
 
 pub use formatter::DefaultAccessFormatter;
 pub use record::{

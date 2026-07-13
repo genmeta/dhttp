@@ -1,4 +1,5 @@
 use std::{
+    error::Error as _,
     net::IpAddr,
     time::{Duration, SystemTime},
 };
@@ -8,8 +9,8 @@ use dhttp_log::{
     FormatRecord,
     access::{
         AccessCompletion, AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress,
-        DefaultAccessFormatter, OptionalReferer, OptionalUserAgent, RequestCompletedAt,
-        RequestElapsed,
+        DefaultAccessFormatter, InvalidAccessRequestTarget, OptionalReferer, OptionalUserAgent,
+        RequestCompletedAt, RequestElapsed,
     },
 };
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, Version, header};
@@ -122,6 +123,37 @@ fn request_header_allowlist_represents_missing_values() {
 }
 
 #[test]
+fn access_header_fields_escape_quotes_backslashes_and_non_ascii_octets() {
+    for &control in b"\0\x1f\x7f" {
+        assert!(
+            HeaderValue::from_bytes(&[control]).is_err(),
+            "HTTP HeaderValue unexpectedly accepted control byte {control:#04x}"
+        );
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::REFERER,
+        HeaderValue::from_bytes(b"https://example.test/\"\\\x80").unwrap(),
+    );
+    headers.insert(
+        header::USER_AGENT,
+        HeaderValue::from_bytes(b"Agent/1.0\t\"\\\xff").unwrap(),
+    );
+
+    let mut record = access_fixture();
+    record.referer = OptionalReferer::from(&headers);
+    record.user_agent = OptionalUserAgent::from(&headers);
+    let line = DefaultAccessFormatter.format_record(&record).unwrap();
+
+    assert!(
+        line.as_bytes().ends_with(
+            b" \"https://example.test/\\\"\\\\\\x80\" \"Agent/1.0\\x09\\\"\\\\\\xff\"\n"
+        )
+    );
+}
+
+#[test]
 fn access_target_preserves_asterisk_form() {
     let uri = Uri::from_static("*");
 
@@ -186,6 +218,42 @@ fn access_target_parser_accepts_only_asterisk_or_nonempty_absolute_path() {
             "accepted invalid target {rejected:?}"
         );
     }
+}
+
+#[test]
+fn access_target_parser_enforces_http_origin_path_bytes() {
+    for accepted in ["/absolute/path", "/escaped%20space", "/a:b/c", "*"] {
+        assert_eq!(
+            accepted.parse::<AccessRequestTarget>().unwrap().path(),
+            Some(accepted)
+        );
+    }
+
+    for rejected in [
+        "/with space",
+        "/nul\0byte",
+        "/tab\tbyte",
+        "/delete\u{7f}byte",
+        "/raw-é",
+        "/path?token=secret",
+        "/path#fragment",
+        "https://example.test/path",
+        "//example.test/path",
+    ] {
+        assert!(
+            rejected.parse::<AccessRequestTarget>().is_err(),
+            "accepted invalid HTTP origin path {rejected:?}"
+        );
+    }
+
+    let invalid_uri = "/with space"
+        .parse::<AccessRequestTarget>()
+        .expect_err("an unescaped space is not an HTTP path character");
+    assert!(invalid_uri.source().is_some());
+    assert!(matches!(
+        invalid_uri,
+        InvalidAccessRequestTarget::InvalidUri { .. }
+    ));
 }
 
 #[test]

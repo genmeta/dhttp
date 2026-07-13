@@ -92,6 +92,43 @@ fn certificate_from_leaf_der_hashes_exact_leaf_bytes() {
 }
 
 #[test]
+fn certificate_from_leaf_der_rejects_trailing_data() {
+    let mut leaf_with_junk = LEAF_DER.to_vec();
+    leaf_with_junk.extend_from_slice(b"junk");
+
+    let error = CertificateLogRecord::from_leaf_der(
+        CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        CertificateAction::Apply,
+        chain(),
+        &leaf_with_junk,
+    )
+    .expect_err("trailing bytes are not part of the leaf DER value");
+    assert!(matches!(
+        error,
+        dhttp_log::cert::CertificateLogRecordFromLeafDerError::TrailingData { len: 4 }
+    ));
+}
+
+#[test]
+fn certificate_from_leaf_der_rejects_concatenated_certificates() {
+    let mut concatenated = LEAF_DER.to_vec();
+    concatenated.extend_from_slice(LEAF_DER);
+
+    let error = CertificateLogRecord::from_leaf_der(
+        CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        CertificateAction::Apply,
+        chain(),
+        &concatenated,
+    )
+    .expect_err("a second certificate is trailing data, not part of the leaf");
+    assert!(matches!(
+        error,
+        dhttp_log::cert::CertificateLogRecordFromLeafDerError::TrailingData { len }
+            if len == LEAF_DER.len()
+    ));
+}
+
+#[test]
 fn certificate_issuer_prefers_first_valid_utf8_organization_then_common_name_then_missing() {
     let organization = record_from_leaf(LEAF_DER);
     assert_eq!(organization.issuer.value(), Some("Genmeta Tech Limited"));
@@ -212,6 +249,20 @@ fn certificate_action_and_usage_have_canonical_formatting() {
                 .any(|window| window == expected)
         );
     }
+}
+
+#[test]
+fn certificate_issuer_field_escapes_quote_control_non_ascii_and_backslash() {
+    let mut record = certificate_fixture();
+    record.issuer = OptionalCertificateIssuer::from(Some(CertificateIssuer::from("Org\"\u{1}é\\")));
+
+    let line = DefaultCertificateFormatter.format_record(&record).unwrap();
+
+    assert!(
+        line.as_bytes()
+            .windows(b"\"Org\\\"\\x01\\xc3\\xa9\\\\\"".len())
+            .any(|window| window == b"\"Org\\\"\\x01\\xc3\\xa9\\\\\"")
+    );
 }
 
 #[test]

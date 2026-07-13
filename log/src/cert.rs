@@ -1,7 +1,7 @@
 //! Certificate lifecycle log records and their default formatter.
 
-pub mod formatter;
-pub mod record;
+mod formatter;
+mod record;
 
 pub use formatter::DefaultCertificateFormatter;
 pub use record::{

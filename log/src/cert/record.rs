@@ -37,8 +37,11 @@ impl TryFrom<SystemTime> for CertificateRecordedAt {
 /// The certificate lifecycle operation that committed material.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertificateAction {
+    /// Initial certificate material was committed.
     Apply,
+    /// Existing certificate material was renewed.
     Renew,
+    /// Existing certificate material was replaced outside renewal.
     Replace,
 }
 
@@ -91,10 +94,15 @@ impl From<Option<CertificateIssuer>> for OptionalCertificateIssuer {
 /// The leaf certificate's recognized extended key usage category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertificateUsage {
+    /// Extended key usage permits TLS client authentication only.
     ClientOnly,
+    /// Extended key usage permits TLS server authentication only.
     ServerOnly,
+    /// Extended key usage permits both TLS client and server authentication.
     ClientAndServer,
+    /// The leaf has no extended key usage restriction.
     Unrestricted,
+    /// Extended key usage is present without client or server authentication.
     Other,
 }
 
@@ -137,12 +145,19 @@ impl From<[u8; 32]> for Sha256Fingerprint {
 /// One certificate lifecycle log record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateLogRecord {
+    /// Wall-clock time captured after certificate material was committed.
     pub recorded_at: CertificateRecordedAt,
+    /// Lifecycle operation that committed the material.
     pub action: CertificateAction,
+    /// First valid UTF-8 issuer organization, common name, or missing value.
     pub issuer: OptionalCertificateIssuer,
+    /// Leaf extended-key-usage category.
     pub usage: CertificateUsage,
+    /// Existing DHTTP certificate chain identity.
     pub chain: CertificateChainKey,
+    /// Leaf certificate not-after time.
     pub expires_at: CertificateExpiry,
+    /// SHA-256 digest of the exact leaf DER bytes.
     pub fingerprint: Sha256Fingerprint,
 }
 
@@ -155,6 +170,10 @@ pub enum CertificateLogRecordFromLeafDerError {
     ParseCertificate {
         source: x509_parser::nom::Err<x509_parser::error::X509Error>,
     },
+
+    /// Bytes remained after the single leaf certificate DER value.
+    #[snafu(display("leaf certificate DER has {len} trailing bytes"))]
+    TrailingData { len: usize },
 
     /// The extended key usage extension could not be interpreted uniquely.
     #[snafu(display("failed to parse leaf certificate extended key usage"))]
@@ -175,8 +194,14 @@ impl CertificateLogRecord {
         chain: CertificateChainKey,
         leaf_der: &[u8],
     ) -> Result<Self, CertificateLogRecordFromLeafDerError> {
-        let (_remaining, certificate) = X509Certificate::from_der(leaf_der)
+        let (remaining, certificate) = X509Certificate::from_der(leaf_der)
             .context(certificate_log_record_from_leaf_der_error::ParseCertificateSnafu)?;
+        if !remaining.is_empty() {
+            return certificate_log_record_from_leaf_der_error::TrailingDataSnafu {
+                len: remaining.len(),
+            }
+            .fail();
+        }
         let issuer = first_valid_issuer(&certificate);
         let usage = certificate
             .extended_key_usage()

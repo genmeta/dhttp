@@ -5,8 +5,11 @@ use std::{
 };
 
 use chrono::{DateTime, FixedOffset};
-use http::{HeaderMap, Method, StatusCode, Uri, Version, header};
-use snafu::Snafu;
+use http::{
+    HeaderMap, Method, StatusCode, Uri, Version, header,
+    uri::{InvalidUri, PathAndQuery},
+};
+use snafu::{ResultExt, Snafu};
 
 use crate::{SystemTimeConversionError, datetime_from_system_time};
 
@@ -39,7 +42,9 @@ impl TryFrom<SystemTime> for RequestCompletedAt {
 /// The remote IP address available to the HTTP server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientAddress {
+    /// No client IP address was available at the HTTP boundary.
     Unknown,
+    /// The request's client IP address, without a transport port.
     Ip(IpAddr),
 }
 
@@ -77,20 +82,33 @@ impl From<Uri> for AccessRequestTarget {
 }
 
 /// A request target that is not a path/asterisk log domain.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Snafu)]
+#[derive(Debug, Snafu)]
+#[snafu(module)]
 pub enum InvalidAccessRequestTarget {
+    /// The target has no bytes and therefore cannot be an origin path.
     #[snafu(display("access request target is empty"))]
     Empty,
-    #[snafu(display("access request target contains a record delimiter"))]
-    RecordDelimiter,
+    /// The target includes a query, which access records deliberately discard.
     #[snafu(display("access request target contains a query"))]
     Query,
+    /// The target includes a URI fragment, which is not sent in an HTTP request target.
     #[snafu(display("access request target contains a fragment"))]
     Fragment,
+    /// The target has network-path authority syntax rather than origin-path syntax.
     #[snafu(display("access request target contains an authority"))]
     Authority,
+    /// The target is neither the asterisk form nor an absolute origin path.
     #[snafu(display("access request target is not an absolute path or asterisk"))]
     NotAbsolutePath,
+    /// The path contains raw non-ASCII text instead of percent-encoded octets.
+    #[snafu(display("access request target contains a non-ASCII path character"))]
+    NonAscii,
+    /// The path contains an ASCII control byte, including DEL.
+    #[snafu(display("access request target contains an ASCII control character"))]
+    ControlCharacter,
+    /// The HTTP URI parser rejected the path bytes.
+    #[snafu(display("access request target is not a valid HTTP path"))]
+    InvalidUri { source: InvalidUri },
 }
 
 impl FromStr for AccessRequestTarget {
@@ -100,8 +118,8 @@ impl FromStr for AccessRequestTarget {
         if value.is_empty() {
             return Err(InvalidAccessRequestTarget::Empty);
         }
-        if value.contains(['\r', '\n']) {
-            return Err(InvalidAccessRequestTarget::RecordDelimiter);
+        if value == "*" {
+            return Ok(Self(Some(value.to_owned())));
         }
         if value.contains('?') {
             return Err(InvalidAccessRequestTarget::Query);
@@ -112,8 +130,21 @@ impl FromStr for AccessRequestTarget {
         if value.starts_with("//") {
             return Err(InvalidAccessRequestTarget::Authority);
         }
-        if value != "*" && !value.starts_with('/') {
+        if !value.starts_with('/') {
             return Err(InvalidAccessRequestTarget::NotAbsolutePath);
+        }
+
+        let path = value
+            .parse::<PathAndQuery>()
+            .context(invalid_access_request_target::InvalidUriSnafu)?;
+        debug_assert_eq!(path.path(), value);
+        debug_assert!(path.query().is_none());
+
+        if !value.is_ascii() {
+            return Err(InvalidAccessRequestTarget::NonAscii);
+        }
+        if value.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(InvalidAccessRequestTarget::ControlCharacter);
         }
         Ok(Self(Some(value.to_owned())))
     }
@@ -124,6 +155,7 @@ impl FromStr for AccessRequestTarget {
 pub struct BodyBytesEmitted(u64);
 
 impl BodyBytesEmitted {
+    /// No DATA bytes were emitted.
     pub const ZERO: Self = Self(0);
 
     /// Returns the exact emitted byte count.
@@ -211,23 +243,37 @@ impl From<Duration> for RequestElapsed {
 /// How response-body observation completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccessCompletion {
+    /// The response body reached its normal end-of-stream.
     Complete,
+    /// Polling the response body returned an error.
     BodyError,
+    /// The response body was dropped before normal completion.
     Aborted,
 }
 
 /// One HTTP access log record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessLogRecord {
+    /// Wall-clock time captured when response observation finalized.
     pub completed_at: RequestCompletedAt,
+    /// Client IP known at the HTTP boundary, without a transport port.
     pub client: ClientAddress,
+    /// Typed HTTP request method.
     pub method: Method,
+    /// Path-only or asterisk request target, with query and authority omitted.
     pub target: AccessRequestTarget,
+    /// Typed HTTP protocol version.
     pub version: Version,
+    /// Typed HTTP response status.
     pub status: StatusCode,
+    /// DATA bytes actually emitted to the body consumer.
     pub body_bytes: BodyBytesEmitted,
+    /// Allowlisted Referer header bytes, if present.
     pub referer: OptionalReferer,
+    /// Allowlisted User-Agent header bytes, if present.
     pub user_agent: OptionalUserAgent,
+    /// Monotonic duration from request entry through finalization.
     pub elapsed: RequestElapsed,
+    /// Response-body completion category.
     pub completion: AccessCompletion,
 }
