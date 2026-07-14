@@ -1,26 +1,14 @@
-use std::{
-    error::Error as _,
-    net::IpAddr,
-    time::{Duration, SystemTime},
-};
+use std::{error::Error as _, net::IpAddr};
 
-use chrono::{FixedOffset, TimeZone};
-use dhttp_log::{
-    FormatRecord,
-    access::{
-        AccessCompletion, AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress,
-        DefaultAccessFormatter, InvalidAccessRequestTarget, OptionalReferer, OptionalUserAgent,
-        RequestCompletedAt, RequestElapsed,
-    },
+use chrono::{DateTime, FixedOffset};
+use dhttp_log::access::{
+    AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress, DefaultAccessFormatter,
+    InvalidAccessRequestTarget, OptionalReferer, OptionalUserAgent,
 };
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, Version, header};
 
-fn completed_at() -> RequestCompletedAt {
-    let datetime = FixedOffset::east_opt(8 * 60 * 60)
-        .unwrap()
-        .with_ymd_and_hms(2026, 7, 13, 16, 20, 31)
-        .unwrap();
-    RequestCompletedAt::new(datetime)
+fn completed_at() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339("2026-07-13T16:20:31+08:00").unwrap()
 }
 
 fn access_fixture() -> AccessLogRecord {
@@ -38,14 +26,12 @@ fn access_fixture() -> AccessLogRecord {
         completed_at: completed_at(),
         client: ClientAddress::from("192.0.2.10".parse::<IpAddr>().unwrap()),
         method: Method::GET,
-        target: "/assets/a.css?token=secret".parse::<Uri>().unwrap().into(),
+        target: "/assets/a.css".parse().unwrap(),
         version: Version::HTTP_3,
         status: StatusCode::OK,
         body_bytes: BodyBytesEmitted::from(1432_u64),
         referer: OptionalReferer::from(&headers),
         user_agent: OptionalUserAgent::from(&headers),
-        elapsed: RequestElapsed::from(Duration::from_millis(125)),
-        completion: AccessCompletion::Complete,
     }
 }
 
@@ -57,10 +43,8 @@ fn access_target_keeps_only_uri_path() {
 }
 
 #[test]
-fn default_access_line_is_combined_ascii_without_query() {
-    let line = DefaultAccessFormatter
-        .format_record(&access_fixture())
-        .unwrap();
+fn default_access_format_is_combined_without_reserved_columns() {
+    let line = DefaultAccessFormatter::format(&access_fixture()).unwrap();
 
     assert_eq!(
         line.as_bytes(),
@@ -93,7 +77,7 @@ fn request_header_values_are_built_from_the_named_allowlist_only() {
     let mut record = access_fixture();
     record.referer = referer;
     record.user_agent = user_agent;
-    let line = DefaultAccessFormatter.format_record(&record).unwrap();
+    let line = DefaultAccessFormatter::format(&record).unwrap();
     for secret in [
         b"access-secret".as_slice(),
         b"cookie-secret",
@@ -118,7 +102,7 @@ fn request_header_allowlist_represents_missing_values() {
     let mut record = access_fixture();
     record.referer = OptionalReferer::from(&headers);
     record.user_agent = OptionalUserAgent::from(&headers);
-    let line = DefaultAccessFormatter.format_record(&record).unwrap();
+    let line = DefaultAccessFormatter::format(&record).unwrap();
     assert!(line.as_bytes().ends_with(b" \"-\" \"-\"\n"));
 }
 
@@ -144,7 +128,7 @@ fn access_header_fields_escape_quotes_backslashes_and_non_ascii_octets() {
     let mut record = access_fixture();
     record.referer = OptionalReferer::from(&headers);
     record.user_agent = OptionalUserAgent::from(&headers);
-    let line = DefaultAccessFormatter.format_record(&record).unwrap();
+    let line = DefaultAccessFormatter::format(&record).unwrap();
 
     assert!(
         line.as_bytes().ends_with(
@@ -176,7 +160,7 @@ fn access_target_omits_authority_form_without_leaking_authority() {
     let mut record = access_fixture();
     record.method = Method::CONNECT;
     record.target = target;
-    let line = DefaultAccessFormatter.format_record(&record).unwrap();
+    let line = DefaultAccessFormatter::format(&record).unwrap();
 
     assert!(
         line.as_bytes()
@@ -269,7 +253,7 @@ fn default_access_formatter_uses_canonical_http_versions() {
     for (version, expected) in cases {
         let mut record = access_fixture();
         record.version = version;
-        let line = DefaultAccessFormatter.format_record(&record).unwrap();
+        let line = DefaultAccessFormatter::format(&record).unwrap();
         assert!(
             line.as_bytes()
                 .windows(expected.len())
@@ -291,51 +275,4 @@ fn body_bytes_emitted_supports_zero_and_checked_accumulation() {
         9
     );
     assert!(BodyBytesEmitted::from(u64::MAX).checked_add(1).is_none());
-}
-
-#[test]
-fn request_completed_at_try_from_system_time() {
-    let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_001);
-
-    let completed_at = RequestCompletedAt::try_from(system_time).unwrap();
-
-    assert_eq!(completed_at.as_datetime().timestamp(), 1_700_000_001);
-    assert_eq!(completed_at.as_datetime().offset().local_minus_utc(), 0);
-
-    let before_epoch =
-        RequestCompletedAt::try_from(SystemTime::UNIX_EPOCH - Duration::from_millis(1)).unwrap();
-    assert_eq!(before_epoch.as_datetime().timestamp(), -1);
-    assert_eq!(before_epoch.as_datetime().timestamp_subsec_millis(), 999);
-}
-
-#[test]
-fn request_elapsed_from_duration() {
-    let duration = Duration::from_millis(1_234);
-
-    let elapsed = RequestElapsed::from(duration);
-
-    assert_eq!(elapsed.as_duration(), duration);
-}
-
-#[test]
-fn access_elapsed_and_completion_do_not_change_v1_default_line() {
-    let baseline = DefaultAccessFormatter
-        .format_record(&access_fixture())
-        .unwrap();
-    for completion in [
-        AccessCompletion::Complete,
-        AccessCompletion::BodyError,
-        AccessCompletion::Aborted,
-    ] {
-        let mut record = access_fixture();
-        record.elapsed = RequestElapsed::from(Duration::from_secs(99));
-        record.completion = completion;
-        assert_eq!(
-            DefaultAccessFormatter
-                .format_record(&record)
-                .unwrap()
-                .as_bytes(),
-            baseline.as_bytes()
-        );
-    }
 }

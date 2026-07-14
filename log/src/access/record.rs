@@ -1,8 +1,4 @@
-use std::{
-    net::IpAddr,
-    str::FromStr,
-    time::{Duration, SystemTime},
-};
+use std::{net::IpAddr, str::FromStr};
 
 use chrono::{DateTime, FixedOffset};
 use http::{
@@ -10,34 +6,6 @@ use http::{
     uri::{InvalidUri, PathAndQuery},
 };
 use snafu::{ResultExt, Snafu};
-
-use crate::{SystemTimeConversionError, datetime_from_system_time};
-
-/// The wall-clock time at which a request completed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RequestCompletedAt(DateTime<FixedOffset>);
-
-impl RequestCompletedAt {
-    /// Constructs a deterministic timestamp from an already precise date-time.
-    #[must_use]
-    pub fn new(value: DateTime<FixedOffset>) -> Self {
-        Self(value)
-    }
-
-    /// Returns the precise completion date-time.
-    #[must_use]
-    pub fn as_datetime(&self) -> &DateTime<FixedOffset> {
-        &self.0
-    }
-}
-
-impl TryFrom<SystemTime> for RequestCompletedAt {
-    type Error = SystemTimeConversionError;
-
-    fn try_from(value: SystemTime) -> Result<Self, Self::Error> {
-        datetime_from_system_time(value).map(Self)
-    }
-}
 
 /// The remote IP address available to the HTTP server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,40 +190,11 @@ impl From<&HeaderMap> for OptionalUserAgent {
     }
 }
 
-/// The monotonic elapsed duration from request entry through completion.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RequestElapsed(Duration);
-
-impl RequestElapsed {
-    /// Returns the exact monotonic duration.
-    #[must_use]
-    pub fn as_duration(self) -> Duration {
-        self.0
-    }
-}
-
-impl From<Duration> for RequestElapsed {
-    fn from(value: Duration) -> Self {
-        Self(value)
-    }
-}
-
-/// How response-body observation completed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AccessCompletion {
-    /// The response body reached its normal end-of-stream.
-    Complete,
-    /// Polling the response body returned an error.
-    BodyError,
-    /// The response body was dropped before normal completion.
-    Aborted,
-}
-
 /// One HTTP access log record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessLogRecord {
     /// Wall-clock time captured when response observation finalized.
-    pub completed_at: RequestCompletedAt,
+    pub completed_at: DateTime<FixedOffset>,
     /// Client IP known at the HTTP boundary, without a transport port.
     pub client: ClientAddress,
     /// Typed HTTP request method.
@@ -272,8 +211,4 @@ pub struct AccessLogRecord {
     pub referer: OptionalReferer,
     /// Allowlisted User-Agent header bytes, if present.
     pub user_agent: OptionalUserAgent,
-    /// Monotonic duration from request entry through finalization.
-    pub elapsed: RequestElapsed,
-    /// Response-body completion category.
-    pub completion: AccessCompletion,
 }

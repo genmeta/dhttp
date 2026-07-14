@@ -5,7 +5,6 @@ mod record;
 
 pub use formatter::DefaultAccessFormatter;
 pub use record::{
-    AccessCompletion, AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress,
-    InvalidAccessRequestTarget, OptionalReferer, OptionalUserAgent, RequestCompletedAt,
-    RequestElapsed,
+    AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress,
+    InvalidAccessRequestTarget, OptionalReferer, OptionalUserAgent,
 };

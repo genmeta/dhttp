@@ -5,10 +5,11 @@ use crate::{
     },
     record::RecordBuilder,
 };
+use chrono::{DateTime, FixedOffset};
 
 use super::record::{
     AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress, OptionalReferer,
-    OptionalUserAgent, RequestCompletedAt,
+    OptionalUserAgent,
 };
 
 /// The compact V1 combined access-log formatter.
@@ -53,13 +54,13 @@ impl FormatElement<CompactConvention> for MissingField {
     }
 }
 
-impl FormatElement<CompactConvention> for RequestCompletedAt {
+impl FormatElement<CompactConvention> for DateTime<FixedOffset> {
     fn format_element(
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
     ) -> Result<(), FormatError> {
-        ClfTimestamp(*self.as_datetime()).format_element(convention, output)
+        ClfTimestamp(*self).format_element(convention, output)
     }
 }
 
