@@ -8,21 +8,9 @@ use snafu::Snafu;
 pub mod access;
 pub mod cert;
 mod compact;
-mod filter;
-mod format;
-mod make_writer;
 mod record;
 
-pub use compact::{
-    ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, FormatElementError,
-    Optional, Quoted, SecondsMillis,
-};
-pub use filter::{AllowAll, FilterRecord};
-pub use format::FormatRecord;
-pub use make_writer::{DeliverRecordError, DeliveryOutcome, MakeWriterSink};
-pub use record::{
-    FormatError, FormattedRecord, MAX_RECORD_LEN, RecordBuilder, RecordDelimiterError,
-};
+pub use record::{FormatError, FormattedRecord, MAX_RECORD_LEN};
 
 /// A checked wall-clock conversion failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Snafu)]

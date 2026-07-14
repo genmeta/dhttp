@@ -1,8 +1,9 @@
 use dhttp_identity::certificate::CertificateChainKey;
 
 use crate::{
-    ClfTimestamp, CompactConvention, ElementWriter, FormatElement, FormatElementError, FormatError,
-    FormatRecord, FormattedRecord, Optional, Quoted, RecordBuilder,
+    FormatError, FormattedRecord,
+    compact::{ClfTimestamp, CompactConvention, ElementWriter, FormatElement, Optional, Quoted},
+    record::RecordBuilder,
 };
 
 use super::record::{
@@ -14,8 +15,9 @@ use super::record::{
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DefaultCertificateFormatter;
 
-impl FormatRecord<CertificateLogRecord> for DefaultCertificateFormatter {
-    fn format_record(&self, record: &CertificateLogRecord) -> Result<FormattedRecord, FormatError> {
+impl DefaultCertificateFormatter {
+    /// Formats one certificate record using the built-in compact V1 representation.
+    pub fn format(record: &CertificateLogRecord) -> Result<FormattedRecord, FormatError> {
         let convention = CompactConvention::default();
         let mut builder = RecordBuilder::new();
         builder.element(&convention, &record.recorded_at)?;
@@ -40,7 +42,7 @@ impl FormatElement<CompactConvention> for CertificateRecordedAt {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         ClfTimestamp(*self.as_datetime()).format_element(convention, output)
     }
 }
@@ -50,7 +52,7 @@ impl FormatElement<CompactConvention> for CertificateAction {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(match self {
             Self::Apply => b"APPLY",
             Self::Renew => b"RENEW",
@@ -64,7 +66,7 @@ impl FormatElement<CompactConvention> for CertificateIssuer {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.as_str().as_bytes())
     }
 }
@@ -74,7 +76,7 @@ impl FormatElement<CompactConvention> for OptionalCertificateIssuer {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         Optional(
             self.issuer()
                 .map(|issuer| Quoted(CertificateIssuerText(issuer))),
@@ -88,7 +90,7 @@ impl FormatElement<CompactConvention> for CertificateUsage {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         let usage = CertificateUsageText(match self {
             Self::ClientOnly => b"client only",
             Self::ServerOnly => b"server only",
@@ -109,7 +111,7 @@ impl FormatElement<CompactConvention> for CertificateIssuerText<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0.as_str().as_bytes())
     }
 }
@@ -119,7 +121,7 @@ impl FormatElement<CompactConvention> for CertificateUsageText {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0)
     }
 }
@@ -129,7 +131,7 @@ impl FormatElement<CompactConvention> for CertificateChainKey {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.to_string().as_bytes())
     }
 }
@@ -139,7 +141,7 @@ impl FormatElement<CompactConvention> for CertificateExpiry {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         ClfTimestamp(*self.as_datetime()).format_element(convention, output)
     }
 }
@@ -149,7 +151,7 @@ impl FormatElement<CompactConvention> for Sha256Fingerprint {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         let mut encoded = [0_u8; 71];
         encoded[..7].copy_from_slice(b"sha256:");
         for (index, byte) in self.as_bytes().iter().copied().enumerate() {
@@ -167,7 +169,7 @@ impl FormatElement<CompactConvention> for FingerprintText<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0)
     }
 }

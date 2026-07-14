@@ -1,11 +1,8 @@
-use std::time::Duration;
-
-use chrono::{FixedOffset, TimeZone};
-use dhttp_log::{
-    ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, FormatElementError,
-    FormatError, MAX_RECORD_LEN, Optional, Quoted, RecordBuilder, RecordDelimiterError,
-    SecondsMillis,
+use super::{
+    ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, Optional, Quoted,
 };
+use crate::{FormatError, MAX_RECORD_LEN, record::RecordBuilder};
+use chrono::{FixedOffset, TimeZone};
 
 struct RawBytes<'a>(&'a [u8]);
 
@@ -14,12 +11,12 @@ impl FormatElement<CompactConvention> for RawBytes<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0)
     }
 }
 
-fn one_element<E>(element: &E) -> Result<Vec<u8>, dhttp_log::FormatError>
+fn one_element<E>(element: &E) -> Result<Vec<u8>, FormatError>
 where
     E: FormatElement<CompactConvention>,
 {
@@ -37,26 +34,19 @@ fn finish_adds_exactly_one_delimiter_and_rejects_embedded_newlines() {
     let mut builder = RecordBuilder::new();
     assert!(matches!(
         builder.literal(b"value\n"),
-        Err(FormatError::RecordDelimiter {
-            source: RecordDelimiterError::LineFeed,
-        })
+        Err(FormatError::LineFeed)
     ));
 }
 
 #[test]
 fn embedded_carriage_return_or_line_feed_is_rejected() {
     for (bytes, delimiter) in [
-        (
-            b"bad\rrecord".as_slice(),
-            RecordDelimiterError::CarriageReturn,
-        ),
-        (b"bad\nrecord".as_slice(), RecordDelimiterError::LineFeed),
+        (b"bad\rrecord".as_slice(), FormatError::CarriageReturn),
+        (b"bad\nrecord".as_slice(), FormatError::LineFeed),
     ] {
         assert!(matches!(
             one_element(&RawBytes(bytes)),
-            Err(FormatError::Element {
-                source: FormatElementError::RecordDelimiter { source },
-            }) if source == delimiter
+            Err(error) if error == delimiter
         ));
     }
 }
@@ -110,9 +100,7 @@ fn nested_quoted_is_rejected_without_leaving_partial_bytes() {
 
     assert!(matches!(
         builder.element(&convention, &Quoted(Quoted(RawBytes(b"nested")))),
-        Err(FormatError::Element {
-            source: FormatElementError::NestedQuoted,
-        })
+        Err(FormatError::NestedQuoted)
     ));
 
     builder
@@ -132,7 +120,7 @@ impl FormatElement<CompactConvention> for RequestLine<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.method)?;
         output.bytes(b" ")?;
         output.bytes(self.target)?;
@@ -162,7 +150,7 @@ impl FormatElement<CompactConvention> for Sha256Fingerprint<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         const HEX: &[u8; 16] = b"0123456789abcdef";
 
         output.bytes(b"sha256:")?;
@@ -198,18 +186,6 @@ fn clf_timestamp_uses_english_month_and_numeric_offset() {
 #[test]
 fn decimal_formats_base_ten_integer() {
     assert_eq!(one_element(&Decimal(1432_u64)).unwrap(), b"1432\n");
-}
-
-#[test]
-fn seconds_millis_uses_integer_rounding() {
-    assert_eq!(
-        one_element(&SecondsMillis(Duration::from_nanos(1_234_400_000))).unwrap(),
-        b"1.234\n"
-    );
-    assert_eq!(
-        one_element(&SecondsMillis(Duration::from_nanos(1_234_500_000))).unwrap(),
-        b"1.235\n"
-    );
 }
 
 #[test]

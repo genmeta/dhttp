@@ -1,6 +1,9 @@
 use crate::{
-    ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, FormatElementError,
-    FormatError, FormatRecord, FormattedRecord, Optional, Quoted, RecordBuilder,
+    FormatError, FormattedRecord,
+    compact::{
+        ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, Optional, Quoted,
+    },
+    record::RecordBuilder,
 };
 
 use super::record::{
@@ -12,8 +15,9 @@ use super::record::{
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DefaultAccessFormatter;
 
-impl FormatRecord<AccessLogRecord> for DefaultAccessFormatter {
-    fn format_record(&self, record: &AccessLogRecord) -> Result<FormattedRecord, FormatError> {
+impl DefaultAccessFormatter {
+    /// Formats one access record using the built-in compact V1 representation.
+    pub fn format(record: &AccessLogRecord) -> Result<FormattedRecord, FormatError> {
         let convention = CompactConvention::default();
         let mut builder = RecordBuilder::new();
         builder.element(&convention, &record.client)?;
@@ -44,7 +48,7 @@ impl FormatElement<CompactConvention> for MissingField {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(b"-")
     }
 }
@@ -54,7 +58,7 @@ impl FormatElement<CompactConvention> for RequestCompletedAt {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         ClfTimestamp(*self.as_datetime()).format_element(convention, output)
     }
 }
@@ -64,7 +68,7 @@ impl FormatElement<CompactConvention> for ClientAddress {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         match self {
             Self::Unknown => output.bytes(b"-"),
             Self::Ip(address) => output.bytes(address.to_string().as_bytes()),
@@ -77,7 +81,7 @@ impl FormatElement<CompactConvention> for AccessRequestTarget {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         Optional(self.path().map(Text)).format_element(convention, output)
     }
 }
@@ -89,7 +93,7 @@ impl FormatElement<CompactConvention> for AccessRequestLine<'_> {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0.method.as_str().as_bytes())?;
         output.bytes(b" ")?;
         self.0.target.format_element(convention, output)?;
@@ -98,14 +102,14 @@ impl FormatElement<CompactConvention> for AccessRequestLine<'_> {
     }
 }
 
-fn http_version(version: http::Version) -> Result<&'static [u8], FormatElementError> {
+fn http_version(version: http::Version) -> Result<&'static [u8], FormatError> {
     match version {
         http::Version::HTTP_09 => Ok(b"HTTP/0.9"),
         http::Version::HTTP_10 => Ok(b"HTTP/1.0"),
         http::Version::HTTP_11 => Ok(b"HTTP/1.1"),
         http::Version::HTTP_2 => Ok(b"HTTP/2"),
         http::Version::HTTP_3 => Ok(b"HTTP/3"),
-        _ => Err(FormatElementError::UnsupportedHttpVersion { version }),
+        _ => Err(FormatError::UnsupportedHttpVersion { version }),
     }
 }
 
@@ -114,7 +118,7 @@ impl FormatElement<CompactConvention> for BodyBytesEmitted {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         Decimal(self.get()).format_element(convention, output)
     }
 }
@@ -124,7 +128,7 @@ impl FormatElement<CompactConvention> for OptionalReferer {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         Quoted(Optional(self.value().map(Bytes))).format_element(convention, output)
     }
 }
@@ -134,7 +138,7 @@ impl FormatElement<CompactConvention> for OptionalUserAgent {
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         Quoted(Optional(self.value().map(Bytes))).format_element(convention, output)
     }
 }
@@ -146,7 +150,7 @@ impl FormatElement<CompactConvention> for Text<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0.as_bytes())
     }
 }
@@ -158,7 +162,7 @@ impl FormatElement<CompactConvention> for Bytes<'_> {
         &self,
         _convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatElementError> {
+    ) -> Result<(), FormatError> {
         output.bytes(self.0)
     }
 }

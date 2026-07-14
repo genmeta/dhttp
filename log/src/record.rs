@@ -1,6 +1,6 @@
-use snafu::{ResultExt, Snafu};
+use snafu::Snafu;
 
-use crate::{FormatElement, FormatElementError, compact::ElementWriter};
+use crate::compact::{ElementWriter, FormatElement};
 
 /// Maximum physical record size, including its final line feed.
 pub const MAX_RECORD_LEN: usize = 64 * 1024;
@@ -32,33 +32,28 @@ impl AsRef<[u8]> for FormattedRecord {
     }
 }
 
-/// The physical record delimiter found inside record content.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Snafu)]
-pub enum RecordDelimiterError {
-    /// A carriage return (`CR`) appeared inside record content.
+/// A failure while assembling a complete physical record.
+#[derive(Debug, Eq, PartialEq, Snafu)]
+pub enum FormatError {
+    /// A quoted formatter was nested inside another quoted formatter.
+    #[snafu(display("nested quoted element presentation is not supported"))]
+    NestedQuoted,
+
+    /// A carriage return appeared before the record delimiter.
     #[snafu(display("embedded carriage return record delimiter"))]
     CarriageReturn,
 
-    /// A line feed (`LF`) appeared inside record content.
+    /// A line feed appeared before the record delimiter.
     #[snafu(display("embedded line feed record delimiter"))]
     LineFeed,
-}
 
-/// A failure while assembling a complete physical record.
-#[derive(Debug, Snafu)]
-#[snafu(module)]
-pub enum FormatError {
-    /// A dynamic element could not be formatted safely.
-    #[snafu(display("failed to format record element"))]
-    Element { source: FormatElementError },
+    /// Plain output contains an unsafe control or non-ASCII byte.
+    #[snafu(display("record contains invalid byte {byte:#04x}"))]
+    InvalidByte { byte: u8 },
 
-    /// A static literal contains an embedded physical record delimiter.
-    #[snafu(display("record literal contains embedded record delimiter"))]
-    RecordDelimiter { source: RecordDelimiterError },
-
-    /// A static literal contains a byte that cannot appear inside a record.
-    #[snafu(display("record literal contains invalid byte {byte:#04x}"))]
-    InvalidLiteral { byte: u8 },
+    /// The HTTP version has no canonical compact representation.
+    #[snafu(display("unsupported HTTP version {version:?}"))]
+    UnsupportedHttpVersion { version: http::Version },
 
     /// The physical record would exceed [`MAX_RECORD_LEN`].
     #[snafu(display("record exceeds maximum length of {max_len} bytes"))]
@@ -67,7 +62,7 @@ pub enum FormatError {
 
 /// Builds one bounded physical record from static literals and typed elements.
 #[derive(Debug, Default)]
-pub struct RecordBuilder {
+pub(crate) struct RecordBuilder {
     bytes: Vec<u8>,
 }
 
@@ -81,9 +76,9 @@ impl RecordBuilder {
     /// Appends a source-code literal separator or template fragment.
     pub fn literal(&mut self, value: &'static [u8]) -> Result<(), FormatError> {
         for &byte in value {
-            reject_record_delimiter(byte).context(format_error::RecordDelimiterSnafu)?;
+            reject_record_delimiter(byte)?;
             if !is_record_content_byte(byte) {
-                return format_error::InvalidLiteralSnafu { byte }.fail();
+                return Err(FormatError::InvalidByte { byte });
             }
         }
         self.ensure_content_fits(value.len())?;
@@ -101,7 +96,7 @@ impl RecordBuilder {
         if result.is_err() {
             self.bytes.truncate(checkpoint);
         }
-        result.context(format_error::ElementSnafu)
+        result
     }
 
     /// Finalizes a validated [`FormattedRecord`] by appending exactly one line feed.
@@ -114,12 +109,11 @@ impl RecordBuilder {
         Ok(FormattedRecord(self.bytes.into_boxed_slice()))
     }
 
-    pub(crate) fn append_plain(&mut self, value: &[u8]) -> Result<(), FormatElementError> {
+    pub(crate) fn append_plain(&mut self, value: &[u8]) -> Result<(), FormatError> {
         for &byte in value {
-            reject_record_delimiter(byte)
-                .context(crate::compact::format_element_error::RecordDelimiterSnafu)?;
+            reject_record_delimiter(byte)?;
             if !is_record_content_byte(byte) {
-                return Err(FormatElementError::InvalidByte { byte });
+                return Err(FormatError::InvalidByte { byte });
             }
         }
         self.ensure_element_fits(value.len())?;
@@ -127,18 +121,16 @@ impl RecordBuilder {
         Ok(())
     }
 
-    pub(crate) fn append_quoted(&mut self, value: &[u8]) -> Result<(), FormatElementError> {
+    pub(crate) fn append_quoted(&mut self, value: &[u8]) -> Result<(), FormatError> {
         let additional = value.iter().try_fold(0_usize, |length, byte| {
             let encoded_len = match byte {
                 b'"' | b'\\' => 2,
                 byte if byte.is_ascii_control() || !byte.is_ascii() => 4,
                 _ => 1,
             };
-            length
-                .checked_add(encoded_len)
-                .ok_or(crate::compact::FormatElementError::TooLong {
-                    max_len: MAX_RECORD_LEN,
-                })
+            length.checked_add(encoded_len).ok_or(FormatError::TooLong {
+                max_len: MAX_RECORD_LEN,
+            })
         })?;
         self.ensure_element_fits(additional)?;
 
@@ -157,7 +149,7 @@ impl RecordBuilder {
         Ok(())
     }
 
-    pub(crate) fn append_quote_delimiter(&mut self) -> Result<(), FormatElementError> {
+    pub(crate) fn append_quote_delimiter(&mut self) -> Result<(), FormatError> {
         self.ensure_element_fits(1)?;
         self.bytes.push(b'"');
         Ok(())
@@ -170,22 +162,21 @@ impl RecordBuilder {
             .checked_add(additional)
             .is_none_or(|length| length >= MAX_RECORD_LEN)
         {
-            return format_error::TooLongSnafu {
+            return Err(FormatError::TooLong {
                 max_len: MAX_RECORD_LEN,
-            }
-            .fail();
+            });
         }
         Ok(())
     }
 
-    fn ensure_element_fits(&self, additional: usize) -> Result<(), FormatElementError> {
+    fn ensure_element_fits(&self, additional: usize) -> Result<(), FormatError> {
         if self
             .bytes
             .len()
             .checked_add(additional)
             .is_none_or(|length| length >= MAX_RECORD_LEN)
         {
-            return Err(FormatElementError::TooLong {
+            return Err(FormatError::TooLong {
                 max_len: MAX_RECORD_LEN,
             });
         }
@@ -197,10 +188,10 @@ fn is_record_content_byte(byte: u8) -> bool {
     byte.is_ascii() && !byte.is_ascii_control()
 }
 
-fn reject_record_delimiter(byte: u8) -> Result<(), RecordDelimiterError> {
+fn reject_record_delimiter(byte: u8) -> Result<(), FormatError> {
     match byte {
-        b'\r' => Err(RecordDelimiterError::CarriageReturn),
-        b'\n' => Err(RecordDelimiterError::LineFeed),
+        b'\r' => Err(FormatError::CarriageReturn),
+        b'\n' => Err(FormatError::LineFeed),
         _ => Ok(()),
     }
 }
