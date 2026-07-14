@@ -16,6 +16,8 @@ access-http = ["dhttp-access/http"]
 access-orm = ["dhttp-access/orm"]
 access-migration = ["access-orm", "dhttp-access/migration"]
 access-peg-trace = ["dhttp-access/peg-trace"]
+# Enables network-interface change monitoring in the DHTTP network stack.
+netwatcher = ["ddns/netwatcher", "h3x/netwatcher"]
 
 [dependencies]
 bon = { workspace = true }
