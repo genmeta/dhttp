@@ -112,9 +112,7 @@ pub enum ListIdentityProfilesError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
-pub enum ListIdentityProfilesStrictError {
-    #[snafu(display("failed to list identity profiles in directory {}", path.display()))]
-    ReadDir { path: PathBuf, source: io::Error },
+pub enum IdentityProfileCandidateError {
     #[snafu(display("failed to inspect identity profile entry {}", path.display()))]
     EntryMetadata { path: PathBuf, source: io::Error },
     #[snafu(display("invalid identity profile directory {}", path.display()))]
@@ -390,15 +388,19 @@ impl DhttpHome {
         })
     }
 
-    /// List every profile directory using a deterministic, fail-closed layout check.
+    /// List identity-profile candidates in deterministic native path order.
     ///
-    /// Unlike [`Self::identity_profile_names`], this operation returns exact
-    /// [`IdentityProfile`] paths and reports the first invalid directory or SSL
-    /// layout in native path order.
-    pub async fn list_identity_profiles_strict(
+    /// Directory enumeration failures abort discovery. Each candidate's metadata,
+    /// name, and SSL-layout failure remains attached to that candidate so a bad
+    /// sibling cannot hide valid profiles.
+    pub async fn identity_profile_candidates(
         &self,
-    ) -> Result<Box<[IdentityProfile]>, ListIdentityProfilesStrictError> {
-        use list_identity_profiles_strict_error::*;
+    ) -> Result<
+        Box<[Result<IdentityProfile, IdentityProfileCandidateError>]>,
+        ListIdentityProfilesError,
+    > {
+        use identity_profile_candidate_error::*;
+        use list_identity_profiles_error::ReadDirSnafu;
 
         let home_path = self.as_path();
         let mut read_dir = fs::read_dir(home_path)
@@ -414,59 +416,76 @@ impl DhttpHome {
         }
         paths.sort();
 
-        let mut profiles = Vec::new();
+        let mut candidates = Vec::new();
         for path in paths {
-            let metadata = fs::metadata(&path)
-                .await
-                .context(EntryMetadataSnafu { path: &path })?;
+            let metadata = match fs::metadata(&path).await {
+                Ok(metadata) => metadata,
+                Err(source) => {
+                    candidates.push(Err(EntryMetadataSnafu { path }.into_error(source)));
+                    continue;
+                }
+            };
             if !metadata.is_dir() {
                 continue;
             }
 
-            let profile = IdentityProfile::try_from(path.clone())
-                .context(InvalidProfileSnafu { path: path.clone() })?;
+            let profile = match IdentityProfile::try_from(path.clone()) {
+                Ok(profile) => profile,
+                Err(source) => {
+                    candidates.push(Err(InvalidProfileSnafu { path }.into_error(source)));
+                    continue;
+                }
+            };
             let ssl_path = profile.ssl_dir();
 
             match fs::symlink_metadata(&ssl_path).await {
                 Ok(_) => {}
                 Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                    return MissingSslDirectorySnafu {
-                        profile,
-                        path: ssl_path,
-                    }
-                    .fail();
+                    candidates.push(
+                        MissingSslDirectorySnafu {
+                            profile,
+                            path: ssl_path,
+                        }
+                        .fail(),
+                    );
+                    continue;
                 }
                 Err(source) => {
-                    return Err(SslMetadataSnafu {
+                    candidates.push(Err(SslMetadataSnafu {
                         profile,
                         path: ssl_path,
                     }
-                    .into_error(source));
+                    .into_error(source)));
+                    continue;
                 }
             }
 
-            let ssl_metadata = fs::metadata(&ssl_path).await.context(SslMetadataSnafu {
-                profile: profile.clone(),
-                path: ssl_path.clone(),
-            })?;
+            let ssl_metadata = match fs::metadata(&ssl_path).await {
+                Ok(metadata) => metadata,
+                Err(source) => {
+                    candidates.push(Err(SslMetadataSnafu {
+                        profile,
+                        path: ssl_path,
+                    }
+                    .into_error(source)));
+                    continue;
+                }
+            };
             if !ssl_metadata.is_dir() {
-                return SslNotDirectorySnafu {
-                    profile,
-                    path: ssl_path,
-                }
-                .fail();
+                candidates.push(
+                    SslNotDirectorySnafu {
+                        profile,
+                        path: ssl_path,
+                    }
+                    .fail(),
+                );
+                continue;
             }
 
-            profiles.push(profile);
+            candidates.push(Ok(profile));
         }
 
-        profiles.sort_by(|left, right| {
-            left.name()
-                .as_full()
-                .cmp(right.name().as_full())
-                .then_with(|| left.path().cmp(right.path()))
-        });
-        Ok(profiles.into_boxed_slice())
+        Ok(candidates.into_boxed_slice())
     }
 
     pub async fn identity_profile_exists_exactly(&self, name: DhttpName<'_>) -> bool {
@@ -602,135 +621,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_profiles_return_exact_profiles_in_name_order() {
-        let temp = TempDir::new("strict-order");
-        let second = create_profile(temp.path(), "youmu.pilot");
-        let first = create_profile(temp.path(), "reimu.pilot");
+    async fn bad_candidate_does_not_hide_valid_sibling() {
+        let temp = TempDir::new("candidate-sibling-isolation");
+        fs::create_dir_all(temp.path().join("123")).unwrap();
+        create_profile(temp.path(), "z.good.dhttp.net");
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let profiles = home.list_identity_profiles_strict().await.unwrap();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
-        assert_eq!(profiles.len(), 2);
-        assert_eq!(profiles[0].name().as_full(), "reimu.pilot.dhttp.net");
-        assert_eq!(profiles[0].path(), first);
-        assert_eq!(profiles[1].name().as_full(), "youmu.pilot.dhttp.net");
-        assert_eq!(profiles[1].path(), second);
-    }
-
-    #[tokio::test]
-    async fn strict_profiles_equal_names_tie_break_by_exact_path() {
-        let temp = TempDir::new("strict-equal-name-path");
-        let partial = create_profile(temp.path(), "reimu.pilot");
-        let full = create_profile(temp.path(), "reimu.pilot.dhttp.net");
-        let home = DhttpHome::new(temp.path().to_path_buf());
-
-        let profiles = home.list_identity_profiles_strict().await.unwrap();
-
-        let mut expected = [partial, full];
-        expected.sort();
-        assert_eq!(profiles.len(), 2);
-        assert_eq!(profiles[0].name(), profiles[1].name());
-        assert_eq!(profiles[0].path(), expected[0]);
-        assert_eq!(profiles[1].path(), expected[1]);
-    }
-
-    #[tokio::test]
-    async fn strict_profiles_equal_name_order_is_independent_of_creation_order() {
-        async fn ordered_paths(temp: &TempDir, names: [&str; 2]) -> Vec<PathBuf> {
-            for name in names {
-                create_profile(temp.path(), name);
-            }
-            DhttpHome::new(temp.path().to_path_buf())
-                .list_identity_profiles_strict()
-                .await
-                .unwrap()
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates
                 .iter()
-                .map(|profile| profile.path().to_path_buf())
-                .collect()
-        }
-
-        let first = TempDir::new("strict-equal-name-first");
-        let second = TempDir::new("strict-equal-name-second");
-        let first_paths = ordered_paths(&first, ["reimu.pilot", "reimu.pilot.dhttp.net"]).await;
-        let second_paths = ordered_paths(&second, ["reimu.pilot.dhttp.net", "reimu.pilot"]).await;
-
-        let first_names: Vec<_> = first_paths
-            .iter()
-            .map(|path| path.file_name().unwrap().to_owned())
-            .collect();
-        let second_names: Vec<_> = second_paths
-            .iter()
-            .map(|path| path.file_name().unwrap().to_owned())
-            .collect();
-        assert_eq!(first_names, second_names);
+                .filter(|candidate| candidate.is_ok())
+                .count(),
+            1
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.is_err())
+                .count(),
+            1
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate
+                .as_ref()
+                .is_ok_and(|profile| profile.name().as_full() == "z.good.dhttp.net")
+        }));
     }
 
     #[tokio::test]
-    async fn strict_profiles_multiple_invalid_entries_report_stable_first_path() {
-        let temp = TempDir::new("strict-invalid-order");
-        fs::create_dir_all(temp.path().join("200")).unwrap();
-        fs::create_dir_all(temp.path().join("100")).unwrap();
+    async fn candidates_are_sorted_by_native_path_before_validation() {
+        let temp = TempDir::new("candidate-native-order");
+        create_profile(temp.path(), "z.example.dhttp.net");
+        create_profile(temp.path(), "a.example.dhttp.net");
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
+        let names: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.as_ref().unwrap().name().as_full())
+            .collect();
 
-        match error {
-            ListIdentityProfilesStrictError::InvalidProfile { path, .. } => {
-                assert_eq!(path, temp.path().join("100"));
-            }
-            other => panic!("expected stable invalid-profile error, got {other:?}"),
-        }
+        assert_eq!(names, ["a.example.dhttp.net", "z.example.dhttp.net"]);
     }
 
     #[tokio::test]
-    async fn strict_profiles_ignore_regular_home_files() {
-        let temp = TempDir::new("strict-ignore-files");
+    async fn candidates_ignore_regular_home_files() {
+        let temp = TempDir::new("candidate-ignore-files");
         fs::write(temp.path().join("settings.toml"), b"[default]\n").unwrap();
         let profile = create_profile(temp.path(), "reimu.pilot");
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let profiles = home.list_identity_profiles_strict().await.unwrap();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].path(), profile);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].as_ref().unwrap().path(), profile);
     }
 
     #[tokio::test]
-    async fn strict_profiles_reject_invalid_profile_directory_name() {
-        let temp = TempDir::new("strict-invalid-name");
+    async fn invalid_profile_name_is_one_candidate_error() {
+        let temp = TempDir::new("candidate-invalid-name");
         let path = temp.path().join("123");
         fs::create_dir_all(&path).unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
         assert!(matches!(
-            error,
-            ListIdentityProfilesStrictError::InvalidProfile {
+            &candidates[0],
+            Err(IdentityProfileCandidateError::InvalidProfile {
                 path: error_path,
                 source: crate::identity::IdentityProfileFromPathError::InvalidName { .. },
-            } if error_path == path
+            }) if *error_path == path
         ));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn strict_profiles_preserve_profile_entry_metadata_error() {
+    async fn candidate_preserves_profile_entry_metadata_error() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("strict-entry-metadata");
+        let temp = TempDir::new("candidate-entry-metadata");
         let path = temp.path().join("loop.pilot");
         symlink("loop.pilot", &path).unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
-        match error {
-            ListIdentityProfilesStrictError::EntryMetadata {
+        match &candidates[0] {
+            Err(IdentityProfileCandidateError::EntryMetadata {
                 path: error_path,
                 source,
-            } => {
-                assert_eq!(error_path, path);
+            }) => {
+                assert_eq!(*error_path, path);
                 assert!(source.raw_os_error().is_some());
             }
             other => panic!("expected entry metadata error, got {other:?}"),
@@ -738,92 +723,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_profiles_reject_missing_ssl_directory() {
-        let temp = TempDir::new("strict-missing-ssl");
+    async fn missing_ssl_directory_is_one_candidate_error() {
+        let temp = TempDir::new("candidate-missing-ssl");
         let path = temp.path().join("reimu.pilot");
         fs::create_dir_all(&path).unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
-        match error {
-            ListIdentityProfilesStrictError::MissingSslDirectory {
-                profile,
-                path: ssl_path,
-            } => {
-                assert_eq!(profile.path(), path);
-                assert_eq!(ssl_path, path.join(SSL_DIR_NAME));
-            }
-            other => panic!("expected missing ssl error, got {other:?}"),
-        }
+        assert!(matches!(
+            &candidates[0],
+            Err(IdentityProfileCandidateError::MissingSslDirectory { profile, path: ssl_path })
+                if profile.path() == path && *ssl_path == path.join(SSL_DIR_NAME)
+        ));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn strict_profiles_broken_ssl_symlink_is_ssl_metadata_error_not_missing() {
+    async fn broken_ssl_symlink_is_metadata_error_not_missing() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("strict-broken-ssl");
+        let temp = TempDir::new("candidate-broken-ssl");
         let profile_path = temp.path().join("reimu.pilot");
         fs::create_dir_all(&profile_path).unwrap();
         let ssl_path = profile_path.join(SSL_DIR_NAME);
         symlink("missing-target", &ssl_path).unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
         assert!(matches!(
-            error,
-            ListIdentityProfilesStrictError::SslMetadata {
-                profile,
-                path,
-                ..
-            } if profile.path() == profile_path && path == ssl_path
+            &candidates[0],
+            Err(IdentityProfileCandidateError::SslMetadata { profile, path, .. })
+                if profile.path() == profile_path && *path == ssl_path
         ));
     }
 
     #[tokio::test]
-    async fn strict_profiles_reject_ssl_path_that_is_not_a_directory() {
-        let temp = TempDir::new("strict-ssl-file");
+    async fn ssl_path_that_is_not_directory_is_one_candidate_error() {
+        let temp = TempDir::new("candidate-ssl-file");
         let profile_path = temp.path().join("reimu.pilot");
         fs::create_dir_all(&profile_path).unwrap();
         let ssl_path = profile_path.join(SSL_DIR_NAME);
         fs::write(&ssl_path, b"not a directory").unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
         assert!(matches!(
-            error,
-            ListIdentityProfilesStrictError::SslNotDirectory {
-                profile,
-                path,
-            } if profile.path() == profile_path && path == ssl_path
+            &candidates[0],
+            Err(IdentityProfileCandidateError::SslNotDirectory { profile, path })
+                if profile.path() == profile_path && *path == ssl_path
         ));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn strict_profiles_preserve_ssl_metadata_error() {
+    async fn candidate_preserves_ssl_metadata_error() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("strict-ssl-metadata");
+        let temp = TempDir::new("candidate-ssl-metadata");
         let profile_path = temp.path().join("reimu.pilot");
         fs::create_dir_all(&profile_path).unwrap();
         let ssl_path = profile_path.join(SSL_DIR_NAME);
         symlink(SSL_DIR_NAME, &ssl_path).unwrap();
         let home = DhttpHome::new(temp.path().to_path_buf());
 
-        let error = home.list_identity_profiles_strict().await.unwrap_err();
+        let candidates = home.identity_profile_candidates().await.unwrap();
 
-        match error {
-            ListIdentityProfilesStrictError::SslMetadata {
+        match &candidates[0] {
+            Err(IdentityProfileCandidateError::SslMetadata {
                 profile,
                 path,
                 source,
-            } => {
+            }) => {
                 assert_eq!(profile.path(), profile_path);
-                assert_eq!(path, ssl_path);
+                assert_eq!(*path, ssl_path);
                 assert!(source.raw_os_error().is_some());
             }
             other => panic!("expected ssl metadata error, got {other:?}"),
