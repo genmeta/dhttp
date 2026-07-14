@@ -112,13 +112,10 @@ pub enum SaveIdentityError {
     Create { path: PathBuf, source: io::Error },
     #[snafu(display("failed to write to file at {}", path.display()))]
     Write { path: PathBuf, source: io::Error },
-    #[snafu(display(
-        "failed to commit identity material at {}: {source}",
-        path.display()
-    ))]
+    #[snafu(display("failed to commit identity material at {}", path.display()))]
     Commit { path: PathBuf, source: io::Error },
     #[snafu(display(
-        "failed to restore old identity material from {} to {}: {source}",
+        "failed to restore old identity material from {} to {}",
         from.display(),
         to.display()
     ))]
@@ -1003,7 +1000,16 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("injected commit failure"));
+        assert!(
+            !error.to_string().contains("injected commit failure"),
+            "the semantic error layer must not repeat its source: {error}"
+        );
+        assert!(
+            snafu::Report::from_error(&error)
+                .to_string()
+                .contains("injected commit failure"),
+            "the full error report must retain the source chain"
+        );
         assert_eq!(
             tokio::fs::read(profile.ssl_dir().join(CERT_FILE_NAME))
                 .await
