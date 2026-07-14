@@ -1,15 +1,11 @@
-use crate::{
-    FormatError, FormattedRecord,
-    compact::{
-        ClfTimestamp, CompactConvention, Decimal, ElementWriter, FormatElement, Optional, Quoted,
-    },
-    record::RecordBuilder,
-};
-use chrono::{DateTime, FixedOffset};
-
 use super::record::{
     AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress, OptionalReferer,
     OptionalUserAgent,
+};
+use crate::{
+    FormatError, FormattedRecord,
+    compact::{CompactConvention, Decimal, ElementWriter, FormatElement, Optional, Quoted},
+    record::RecordBuilder,
 };
 
 /// The compact V1 combined access-log formatter.
@@ -51,16 +47,6 @@ impl FormatElement<CompactConvention> for MissingField {
         output: &mut ElementWriter<'_>,
     ) -> Result<(), FormatError> {
         output.bytes(b"-")
-    }
-}
-
-impl FormatElement<CompactConvention> for DateTime<FixedOffset> {
-    fn format_element(
-        &self,
-        convention: &CompactConvention,
-        output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatError> {
-        ClfTimestamp(*self).format_element(convention, output)
     }
 }
 

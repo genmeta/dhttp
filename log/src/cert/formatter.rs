@@ -2,13 +2,12 @@ use dhttp_identity::certificate::CertificateChainKey;
 
 use crate::{
     FormatError, FormattedRecord,
-    compact::{ClfTimestamp, CompactConvention, ElementWriter, FormatElement, Optional, Quoted},
+    compact::{CompactConvention, ElementWriter, FormatElement, Optional, Quoted},
     record::RecordBuilder,
 };
 
 use super::record::{
-    CertificateAction, CertificateExpiry, CertificateIssuer, CertificateLogRecord,
-    CertificateRecordedAt, CertificateUsage, OptionalCertificateIssuer, Sha256Fingerprint,
+    CertificateAction, CertificateIssuer, CertificateLogRecord, CertificateUsage, Sha256Fingerprint,
 };
 
 /// The compact V1 certificate lifecycle formatter.
@@ -37,16 +36,6 @@ impl DefaultCertificateFormatter {
     }
 }
 
-impl FormatElement<CompactConvention> for CertificateRecordedAt {
-    fn format_element(
-        &self,
-        convention: &CompactConvention,
-        output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatError> {
-        ClfTimestamp(*self.as_datetime()).format_element(convention, output)
-    }
-}
-
 impl FormatElement<CompactConvention> for CertificateAction {
     fn format_element(
         &self,
@@ -71,14 +60,14 @@ impl FormatElement<CompactConvention> for CertificateIssuer {
     }
 }
 
-impl FormatElement<CompactConvention> for OptionalCertificateIssuer {
+impl FormatElement<CompactConvention> for Option<CertificateIssuer> {
     fn format_element(
         &self,
         convention: &CompactConvention,
         output: &mut ElementWriter<'_>,
     ) -> Result<(), FormatError> {
         Optional(
-            self.issuer()
+            self.as_ref()
                 .map(|issuer| Quoted(CertificateIssuerText(issuer))),
         )
         .format_element(convention, output)
@@ -133,16 +122,6 @@ impl FormatElement<CompactConvention> for CertificateChainKey {
         output: &mut ElementWriter<'_>,
     ) -> Result<(), FormatError> {
         output.bytes(self.to_string().as_bytes())
-    }
-}
-
-impl FormatElement<CompactConvention> for CertificateExpiry {
-    fn format_element(
-        &self,
-        convention: &CompactConvention,
-        output: &mut ElementWriter<'_>,
-    ) -> Result<(), FormatError> {
-        ClfTimestamp(*self.as_datetime()).format_element(convention, output)
     }
 }
 

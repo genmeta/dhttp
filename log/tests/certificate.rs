@@ -1,14 +1,8 @@
-use std::time::{Duration, SystemTime};
-
 use chrono::{FixedOffset, TimeZone};
 use dhttp_identity::certificate::{CertificateChainKey, CertificateChainKind, CertificateSequence};
-use dhttp_log::{
-    ClfTimestamp, CompactConvention, FormatRecord, RecordBuilder,
-    cert::{
-        CertificateAction, CertificateExpiry, CertificateIssuer, CertificateLogRecord,
-        CertificateRecordedAt, CertificateUsage, DefaultCertificateFormatter,
-        OptionalCertificateIssuer, Sha256Fingerprint,
-    },
+use dhttp_log::cert::{
+    CertificateAction, CertificateIssuer, CertificateLogRecord, CertificateUsage,
+    DefaultCertificateFormatter, Sha256Fingerprint,
 };
 use sha2::{Digest, Sha256};
 
@@ -38,14 +32,12 @@ fn chain() -> CertificateChainKey {
 
 fn certificate_fixture() -> CertificateLogRecord {
     CertificateLogRecord {
-        recorded_at: CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        recorded_at: timestamp(0, 2026, 7, 13, 8, 20, 31),
         action: CertificateAction::Apply,
-        issuer: OptionalCertificateIssuer::from(Some(CertificateIssuer::from(
-            "Genmeta Tech Limited",
-        ))),
+        issuer: Some(CertificateIssuer::from("Genmeta Tech Limited")),
         usage: CertificateUsage::ClientOnly,
         chain: chain(),
-        expires_at: CertificateExpiry::new(timestamp(0, 2027, 7, 13, 8, 20, 30)),
+        expires_at: timestamp(0, 2027, 7, 13, 8, 20, 30),
         fingerprint: Sha256Fingerprint::from([0_u8; 32]),
     }
 }
@@ -61,7 +53,7 @@ fn replace_first(bytes: &mut [u8], needle: &[u8], replacement: &[u8]) {
 
 fn record_from_leaf(leaf_der: &[u8]) -> CertificateLogRecord {
     CertificateLogRecord::from_leaf_der(
-        CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        timestamp(0, 2026, 7, 13, 8, 20, 31),
         CertificateAction::Apply,
         chain(),
         leaf_der,
@@ -70,10 +62,27 @@ fn record_from_leaf(leaf_der: &[u8]) -> CertificateLogRecord {
 }
 
 #[test]
+fn certificate_record_uses_standard_timestamps_and_builtin_formatter() {
+    let recorded_at = chrono::DateTime::parse_from_rfc3339("2026-07-13T08:20:31+00:00").unwrap();
+    let record = CertificateLogRecord::from_leaf_der(
+        recorded_at,
+        CertificateAction::Apply,
+        chain(),
+        LEAF_DER,
+    )
+    .unwrap();
+    let formatted = DefaultCertificateFormatter::format(&record).unwrap();
+    assert!(
+        formatted
+            .as_bytes()
+            .starts_with(b"[13/Jul/2026:08:20:31 +0000] APPLY ")
+    );
+    assert!(formatted.as_bytes().ends_with(b"\n"));
+}
+
+#[test]
 fn default_certificate_line_formats_sha256_fingerprint_and_existing_chain_key() {
-    let line = DefaultCertificateFormatter
-        .format_record(&certificate_fixture())
-        .unwrap();
+    let line = DefaultCertificateFormatter::format(&certificate_fixture()).unwrap();
 
     assert_eq!(
         line.as_bytes(),
@@ -88,7 +97,7 @@ fn certificate_from_leaf_der_hashes_exact_leaf_bytes() {
 
     assert_eq!(record.fingerprint, Sha256Fingerprint::from(expected));
     assert_eq!(record.fingerprint.as_bytes(), &expected);
-    assert_eq!(record.expires_at.as_datetime().timestamp(), 1_815_502_014);
+    assert_eq!(record.expires_at.timestamp(), 1_815_502_014);
 }
 
 #[test]
@@ -97,7 +106,7 @@ fn certificate_from_leaf_der_rejects_trailing_data() {
     leaf_with_junk.extend_from_slice(b"junk");
 
     let error = CertificateLogRecord::from_leaf_der(
-        CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        timestamp(0, 2026, 7, 13, 8, 20, 31),
         CertificateAction::Apply,
         chain(),
         &leaf_with_junk,
@@ -115,7 +124,7 @@ fn certificate_from_leaf_der_rejects_concatenated_certificates() {
     concatenated.extend_from_slice(LEAF_DER);
 
     let error = CertificateLogRecord::from_leaf_der(
-        CertificateRecordedAt::new(timestamp(0, 2026, 7, 13, 8, 20, 31)),
+        timestamp(0, 2026, 7, 13, 8, 20, 31),
         CertificateAction::Apply,
         chain(),
         &concatenated,
@@ -131,7 +140,10 @@ fn certificate_from_leaf_der_rejects_concatenated_certificates() {
 #[test]
 fn certificate_issuer_prefers_first_valid_utf8_organization_then_common_name_then_missing() {
     let organization = record_from_leaf(LEAF_DER);
-    assert_eq!(organization.issuer.value(), Some("Genmeta Tech Limited"));
+    assert_eq!(
+        organization.issuer.as_ref().map(CertificateIssuer::as_str),
+        Some("Genmeta Tech Limited")
+    );
 
     let mut common_name_der = LEAF_DER.to_vec();
     replace_first(
@@ -140,7 +152,10 @@ fn certificate_issuer_prefers_first_valid_utf8_organization_then_common_name_the
         &[0x06, 0x03, 0x55, 0x04, 0x7f],
     );
     let common_name = record_from_leaf(&common_name_der);
-    assert_eq!(common_name.issuer.value(), Some("leaf.example.dhttp.net"));
+    assert_eq!(
+        common_name.issuer.as_ref().map(CertificateIssuer::as_str),
+        Some("leaf.example.dhttp.net")
+    );
 
     replace_first(
         &mut common_name_der,
@@ -148,7 +163,7 @@ fn certificate_issuer_prefers_first_valid_utf8_organization_then_common_name_the
         &[0x06, 0x03, 0x55, 0x04, 0x7e],
     );
     let missing = record_from_leaf(&common_name_der);
-    assert_eq!(missing.issuer.value(), None);
+    assert_eq!(missing.issuer.as_ref().map(CertificateIssuer::as_str), None);
 }
 
 #[test]
@@ -162,7 +177,10 @@ fn certificate_issuer_skips_invalid_utf8_organization() {
 
     let record = record_from_leaf(&leaf_der);
 
-    assert_eq!(record.issuer.value(), Some("leaf.example.dhttp.net"));
+    assert_eq!(
+        record.issuer.as_ref().map(CertificateIssuer::as_str),
+        Some("leaf.example.dhttp.net")
+    );
 }
 
 #[test]
@@ -242,7 +260,7 @@ fn certificate_action_and_usage_have_canonical_formatting() {
         let mut record = certificate_fixture();
         record.action = action;
         record.usage = usage;
-        let line = DefaultCertificateFormatter.format_record(&record).unwrap();
+        let line = DefaultCertificateFormatter::format(&record).unwrap();
         assert!(
             line.as_bytes()
                 .windows(expected.len())
@@ -254,9 +272,9 @@ fn certificate_action_and_usage_have_canonical_formatting() {
 #[test]
 fn certificate_issuer_field_escapes_quote_control_non_ascii_and_backslash() {
     let mut record = certificate_fixture();
-    record.issuer = OptionalCertificateIssuer::from(Some(CertificateIssuer::from("Org\"\u{1}é\\")));
+    record.issuer = Some(CertificateIssuer::from("Org\"\u{1}é\\"));
 
-    let line = DefaultCertificateFormatter.format_record(&record).unwrap();
+    let line = DefaultCertificateFormatter::format(&record).unwrap();
 
     assert!(
         line.as_bytes()
@@ -266,47 +284,13 @@ fn certificate_issuer_field_escapes_quote_control_non_ascii_and_backslash() {
 }
 
 #[test]
-fn existing_certificate_chain_key_formats_directly_as_an_element() {
-    let convention = CompactConvention::default();
-    let mut builder = RecordBuilder::new();
-
-    builder.element(&convention, &chain()).unwrap();
-
-    assert_eq!(builder.finish().unwrap().as_bytes(), b"primary:0\n");
-}
-
-#[test]
-fn certificate_recorded_at_try_from_system_time() {
-    let system_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-
-    let recorded_at = CertificateRecordedAt::try_from(system_time).unwrap();
-
-    assert_eq!(recorded_at.as_datetime().timestamp(), 1_700_000_000);
-    assert_eq!(recorded_at.as_datetime().offset().local_minus_utc(), 0);
-}
-
-#[test]
-fn certificate_and_access_domains_share_the_clf_timestamp_element() {
+fn certificate_and_access_formats_share_clf_timestamp_output() {
     let value = timestamp(8 * 60 * 60, 2026, 7, 13, 16, 20, 31);
-    let mut builder = RecordBuilder::new();
-
-    builder
-        .element(&CompactConvention::default(), &ClfTimestamp(value))
-        .unwrap();
-
-    assert_eq!(
-        builder.finish().unwrap().as_bytes(),
-        b"[13/Jul/2026:16:20:31 +0800]\n"
-    );
-
     let mut certificate = certificate_fixture();
-    certificate.recorded_at = CertificateRecordedAt::new(value);
-    let certificate_line = DefaultCertificateFormatter
-        .format_record(&certificate)
-        .unwrap();
-    let access_line = dhttp_log::access::DefaultAccessFormatter
-        .format_record(&access_record_at(value))
-        .unwrap();
+    certificate.recorded_at = value;
+    let certificate_line = DefaultCertificateFormatter::format(&certificate).unwrap();
+    let access_line =
+        dhttp_log::access::DefaultAccessFormatter::format(&access_record_at(value)).unwrap();
     let expected = b"[13/Jul/2026:16:20:31 +0800]";
     assert!(
         certificate_line
@@ -326,14 +310,14 @@ fn access_record_at(
     completed_at: chrono::DateTime<FixedOffset>,
 ) -> dhttp_log::access::AccessLogRecord {
     use dhttp_log::access::{
-        AccessCompletion, AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress,
-        OptionalReferer, OptionalUserAgent, RequestCompletedAt, RequestElapsed,
+        AccessLogRecord, AccessRequestTarget, BodyBytesEmitted, ClientAddress, OptionalReferer,
+        OptionalUserAgent,
     };
     use http::{HeaderMap, Method, StatusCode, Version};
 
     let headers = HeaderMap::new();
     AccessLogRecord {
-        completed_at: RequestCompletedAt::new(completed_at),
+        completed_at,
         client: ClientAddress::Unknown,
         method: Method::GET,
         target: "/".parse::<AccessRequestTarget>().unwrap(),
@@ -342,7 +326,5 @@ fn access_record_at(
         body_bytes: BodyBytesEmitted::ZERO,
         referer: OptionalReferer::from(&headers),
         user_agent: OptionalUserAgent::from(&headers),
-        elapsed: RequestElapsed::from(Duration::ZERO),
-        completion: AccessCompletion::Complete,
     }
 }

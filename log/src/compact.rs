@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use chrono::{DateTime, TimeZone};
+use chrono::{DateTime, FixedOffset, TimeZone};
 
 use crate::{FormatError, record::RecordBuilder};
 
@@ -108,6 +108,16 @@ where
 /// Formats a timestamp in Common Log Format notation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ClfTimestamp<T>(pub T);
+
+impl FormatElement<CompactConvention> for DateTime<FixedOffset> {
+    fn format_element(
+        &self,
+        convention: &CompactConvention,
+        output: &mut ElementWriter<'_>,
+    ) -> Result<(), FormatError> {
+        ClfTimestamp(*self).format_element(convention, output)
+    }
+}
 
 impl<Tz> FormatElement<CompactConvention> for ClfTimestamp<DateTime<Tz>>
 where

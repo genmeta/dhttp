@@ -5,7 +5,6 @@ mod record;
 
 pub use formatter::DefaultCertificateFormatter;
 pub use record::{
-    CertificateAction, CertificateExpiry, CertificateIssuer, CertificateLogRecord,
-    CertificateLogRecordFromLeafDerError, CertificateRecordedAt, CertificateUsage,
-    OptionalCertificateIssuer, Sha256Fingerprint,
+    CertificateAction, CertificateIssuer, CertificateLogRecord,
+    CertificateLogRecordFromLeafDerError, CertificateUsage, Sha256Fingerprint,
 };

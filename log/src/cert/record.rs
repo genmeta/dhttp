@@ -1,38 +1,8 @@
-use std::time::SystemTime;
-
 use chrono::{DateTime, FixedOffset, Utc};
 use dhttp_identity::certificate::CertificateChainKey;
 use sha2::{Digest, Sha256};
 use snafu::{OptionExt, ResultExt, Snafu};
 use x509_parser::{certificate::X509Certificate, prelude::FromDer};
-
-use crate::{SystemTimeConversionError, datetime_from_system_time};
-
-/// The wall-clock time at which a certificate lifecycle event was recorded.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificateRecordedAt(DateTime<FixedOffset>);
-
-impl CertificateRecordedAt {
-    /// Constructs a deterministic timestamp from an already precise date-time.
-    #[must_use]
-    pub fn new(value: DateTime<FixedOffset>) -> Self {
-        Self(value)
-    }
-
-    /// Returns the precise recorded date-time.
-    #[must_use]
-    pub fn as_datetime(&self) -> &DateTime<FixedOffset> {
-        &self.0
-    }
-}
-
-impl TryFrom<SystemTime> for CertificateRecordedAt {
-    type Error = SystemTimeConversionError;
-
-    fn try_from(value: SystemTime) -> Result<Self, Self::Error> {
-        datetime_from_system_time(value).map(Self)
-    }
-}
 
 /// The certificate lifecycle operation that committed material.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,28 +39,6 @@ impl From<String> for CertificateIssuer {
     }
 }
 
-/// An issuer selected from the leaf certificate, or an explicit missing value.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct OptionalCertificateIssuer(Option<CertificateIssuer>);
-
-impl OptionalCertificateIssuer {
-    /// Returns the selected issuer text when one was present and valid UTF-8.
-    #[must_use]
-    pub fn value(&self) -> Option<&str> {
-        self.0.as_ref().map(CertificateIssuer::as_str)
-    }
-
-    pub(crate) fn issuer(&self) -> Option<&CertificateIssuer> {
-        self.0.as_ref()
-    }
-}
-
-impl From<Option<CertificateIssuer>> for OptionalCertificateIssuer {
-    fn from(value: Option<CertificateIssuer>) -> Self {
-        Self(value)
-    }
-}
-
 /// The leaf certificate's recognized extended key usage category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertificateUsage {
@@ -104,24 +52,6 @@ pub enum CertificateUsage {
     Unrestricted,
     /// Extended key usage is present without client or server authentication.
     Other,
-}
-
-/// The leaf certificate's not-after timestamp.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificateExpiry(DateTime<FixedOffset>);
-
-impl CertificateExpiry {
-    /// Constructs an expiry from an already precise date-time.
-    #[must_use]
-    pub fn new(value: DateTime<FixedOffset>) -> Self {
-        Self(value)
-    }
-
-    /// Returns the precise expiry date-time.
-    #[must_use]
-    pub fn as_datetime(&self) -> &DateTime<FixedOffset> {
-        &self.0
-    }
 }
 
 /// A SHA-256 digest of the exact leaf DER bytes.
@@ -146,17 +76,17 @@ impl From<[u8; 32]> for Sha256Fingerprint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateLogRecord {
     /// Wall-clock time captured after certificate material was committed.
-    pub recorded_at: CertificateRecordedAt,
+    pub recorded_at: DateTime<FixedOffset>,
     /// Lifecycle operation that committed the material.
     pub action: CertificateAction,
     /// First valid UTF-8 issuer organization, common name, or missing value.
-    pub issuer: OptionalCertificateIssuer,
+    pub issuer: Option<CertificateIssuer>,
     /// Leaf extended-key-usage category.
     pub usage: CertificateUsage,
     /// Existing DHTTP certificate chain identity.
     pub chain: CertificateChainKey,
     /// Leaf certificate not-after time.
-    pub expires_at: CertificateExpiry,
+    pub expires_at: DateTime<FixedOffset>,
     /// SHA-256 digest of the exact leaf DER bytes.
     pub fingerprint: Sha256Fingerprint,
 }
@@ -189,7 +119,7 @@ pub enum CertificateLogRecordFromLeafDerError {
 impl CertificateLogRecord {
     /// Derives issuer, usage, expiry, and SHA-256 from the exact leaf DER bytes.
     pub fn from_leaf_der(
-        recorded_at: CertificateRecordedAt,
+        recorded_at: DateTime<FixedOffset>,
         action: CertificateAction,
         chain: CertificateChainKey,
         leaf_der: &[u8],
@@ -224,10 +154,10 @@ impl CertificateLogRecord {
         Ok(Self {
             recorded_at,
             action,
-            issuer: OptionalCertificateIssuer::from(issuer),
+            issuer,
             usage,
             chain,
-            expires_at: CertificateExpiry::new(expires_at),
+            expires_at,
             fingerprint,
         })
     }
