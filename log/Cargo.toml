@@ -1,7 +1,7 @@
 [package]
 name = "dhttp-log"
 description = "Typed DHTTP domain log records and formatting"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
