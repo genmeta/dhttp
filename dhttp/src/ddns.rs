@@ -293,7 +293,10 @@ async fn endpoint_dns_from_quic(
                     .await,
                 );
                 resolver_builder = resolver_builder.candidate_resolver(mdns.clone());
-                publishers.push(publishers::Publisher::mdns(mdns));
+                publishers.push(publishers::Publisher::mdns(
+                    mdns,
+                    Arc::new(endpoint.clone()),
+                ));
             }
             DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {
                 resolver_builder = resolver_builder.system();
@@ -670,6 +673,57 @@ mod tests {
             "DeferredResolver(Resolvers(counting resolver))"
         );
         assert!(publishers.iter().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn named_mdns_endpoint_builds_identity_owned_publisher() {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+        fn assert_dynamic_authority<T: h3x::quic::DynWithLocalAuthority>() {}
+        assert_dynamic_authority::<QuicEndpoint>();
+
+        fn publication_loop(
+            name: dhttp_identity::name::Name<'static>,
+            publishers: publishers::Publishers,
+            source: publishers::EndpointBindingAddresses,
+        ) -> publishers::EndpointPublicationLoop<publishers::EndpointBindingAddresses> {
+            publishers::EndpointPublicationLoop::new(name, publishers, source)
+        }
+
+        let identity = Arc::new(crate::dquic::Identity::new(
+            "client.example.com.dhttp.net".parse().unwrap(),
+            vec![CertificateDer::from(
+                include_bytes!("../../identity/tests/fixtures/valid.der").to_vec(),
+            )],
+            PrivateKeyDer::Pkcs8(b"dummy".to_vec().into()),
+        ));
+        let mut plan = DhttpDnsPlan::new();
+        plan.push_dns(resolvers::DnsScheme::Mdns);
+
+        let (endpoint, publishers) = quic_endpoint_builder_with_dns(
+            |resolver| async move {
+                crate::dquic::QuicEndpoint::builder()
+                    .identity(identity)
+                    .resolver(resolver)
+                    .build()
+                    .await
+            },
+            &plan,
+        )
+        .build()
+        .await
+        .expect("named mDNS endpoint should build");
+
+        assert_eq!(publishers.iter().count(), 1);
+        let source = publishers::EndpointBindingAddresses::new(
+            endpoint.network().clone(),
+            endpoint.bind_patterns().clone(),
+        );
+        let _loop = publication_loop(
+            "client.example.com.dhttp.net".parse().unwrap(),
+            publishers,
+            source,
+        );
     }
 
     #[tokio::test]
