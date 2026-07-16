@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dhttp", "identity", "home", "api", "access", "log"]
 
 [workspace.package]
-version = "0.6.0-beta.1"
+version = "0.6.0-beta.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # identity types with h3x/ddns in the formal release graph.
 dhttp-identity = "0.3.0-beta.1"
 dhttp-home = { path = "home", version = "0.5.0-beta.1" }
-ddns = { package = "dyns", version = "0.7.0-beta.1", features = [
+ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
     "resolvers",
     "publishers",
     "h3",
@@ -54,6 +54,6 @@ ddns = { package = "dyns", version = "0.7.0-beta.1", features = [
 h3x = { version = "0.6.0-beta.4", features = [
     "dquic",
 ] }
-dhttp = { path = "dhttp", version = "0.6.0-beta.1" }
+dhttp = { path = "dhttp", version = "0.6.0-beta.2" }
 dhttp-access = { path = "access", version = "0.4.0-beta.1" }
 dhttp-log = { path = "log", version = "0.1.0-beta.1" }
