@@ -37,8 +37,17 @@ Add the published crate to your Cargo manifest:
 
 ```toml
 [dependencies]
-dhttp = "0.2.0"
+dhttp = "0.6.0-beta.5"
 ```
+
+Automatic monitoring of local network-interface changes is opt-in:
+
+```toml
+[dependencies]
+dhttp = { version = "0.6.0-beta.5", features = ["netwatcher"] }
+```
+
+The feature activates dquic's interface watcher; it is not part of dhttp's default feature set.
 
 ### Build an endpoint
 
