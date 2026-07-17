@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn facade_declares_access_feature_forwarding() {
+    fn facade_declares_feature_forwarding() {
         let manifest = include_str!("../Cargo.toml");
 
         for feature in [
@@ -60,6 +60,7 @@ mod tests {
             "access-orm = [\"dhttp-access/orm\"]",
             "access-migration = [\"access-orm\", \"dhttp-access/migration\"]",
             "access-peg-trace = [\"dhttp-access/peg-trace\"]",
+            "netwatcher = [\"dquic/netwatcher\"]",
         ] {
             assert!(
                 manifest.contains(feature),

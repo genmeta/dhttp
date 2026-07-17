@@ -43,6 +43,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # identity types with h3x/ddns in the formal release graph.
 dhttp-identity = "0.3.0-beta.1"
 dhttp-home = { path = "home", version = "0.5.0-beta.1" }
+dquic = { version = "0.7.0-beta.4", default-features = false }
 ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
     "resolvers",
     "publishers",

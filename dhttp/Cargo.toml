@@ -16,6 +16,8 @@ access-http = ["dhttp-access/http"]
 access-orm = ["dhttp-access/orm"]
 access-migration = ["access-orm", "dhttp-access/migration"]
 access-peg-trace = ["dhttp-access/peg-trace"]
+# Enables automatic monitoring of local network-interface changes.
+netwatcher = ["dquic/netwatcher"]
 
 [dependencies]
 bon = { workspace = true }
@@ -32,6 +34,7 @@ dhttp-identity = { workspace = true }
 dhttp-home = { workspace = true }
 dhttp-access = { workspace = true }
 dhttp-log = { workspace = true }
+dquic = { workspace = true }
 ddns = { workspace = true }
 h3x = { workspace = true }
 
