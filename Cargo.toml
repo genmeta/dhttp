@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dhttp", "identity", "home", "api", "access", "log"]
 
 [workspace.package]
-version = "0.6.0-beta.4"
+version = "0.6.0-beta.5"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
@@ -55,6 +55,6 @@ ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
 h3x = { version = "0.6.0-beta.4", features = [
     "dquic",
 ] }
-dhttp = { path = "dhttp", version = "0.6.0-beta.4" }
+dhttp = { path = "dhttp", version = "0.6.0-beta.5" }
 dhttp-access = { path = "access", version = "0.4.0-beta.2" }
 dhttp-log = { path = "log", version = "0.1.0-beta.1" }
