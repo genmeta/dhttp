@@ -52,7 +52,7 @@ ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
     "mdns",
     "dquic-network",
 ] }
-h3x = { path = "../h3x", version = "0.6.0-beta.4", features = [
+h3x = { git = "https://github.com/genmeta/h3x.git", branch = "fix/ha-http3-reliability", version = "0.6.0-beta.4", features = [
     "dquic",
 ] }
 dhttp = { path = "dhttp", version = "0.6.0-beta.5" }
@@ -60,4 +60,4 @@ dhttp-access = { path = "access", version = "0.4.0-beta.2" }
 dhttp-log = { path = "log", version = "0.1.0-beta.1" }
 
 [patch.crates-io]
-h3x = { path = "../h3x" }
+h3x = { git = "https://github.com/genmeta/h3x.git", branch = "fix/ha-http3-reliability" }
