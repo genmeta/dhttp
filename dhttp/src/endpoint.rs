@@ -1115,8 +1115,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_default_network_stun_resolver_keeps_h3_resolver_alive_through_weak_edge() {
-        let endpoint = Endpoint::builder().build().await.unwrap();
+    async fn dhttp_stun_server_keeps_h3_resolver_alive_through_weak_edge() {
+        let network = DhttpNetwork::builder()
+            .stun_server(Some(Arc::from("node.dhttp.net")))
+            .build()
+            .await
+            .unwrap();
+        let endpoint = Endpoint::builder().network(network).build().await.unwrap();
         let stun_resolver = endpoint.network().network().quic().stun_resolver();
         let deferred_any: &dyn Any = stun_resolver.as_ref();
         let deferred = deferred_any
@@ -1133,41 +1138,6 @@ mod tests {
             let resolver_any: &dyn Any = resolver.as_ref();
             resolver_any.is::<H3Resolver<QuicEndpoint>>()
         }));
-    }
-
-    #[tokio::test]
-    async fn h3_only_endpoint_stun_resolver_uses_h3_final_resolver_not_system_final_resolver() {
-        let endpoint = Endpoint::builder()
-            .dns(DnsScheme::H3)
-            .build()
-            .await
-            .unwrap();
-        let stun_resolver = endpoint.network().network().quic().stun_resolver();
-        let deferred_any: &dyn Any = stun_resolver.as_ref();
-        let deferred = deferred_any
-            .downcast_ref::<DeferredStunResolver>()
-            .expect("h3-only endpoint-owned network uses deferred STUN resolver");
-        let weak_resolver = deferred
-            .get()
-            .expect("deferred STUN resolver is initialized");
-        let actual = weak_resolver
-            .upgrade()
-            .expect("DhttpNetwork keeps the STUN resolver target alive");
-        let resolver_names = actual
-            .iter()
-            .map(|resolver| resolver.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(
-            resolver_names
-                .iter()
-                .any(|name| name.starts_with("H3 DNS Resolver("))
-        );
-        assert!(
-            !resolver_names
-                .iter()
-                .any(|name| name == "System DNS Resolver")
-        );
     }
 
     #[tokio::test]

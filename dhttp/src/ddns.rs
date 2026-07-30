@@ -22,6 +22,8 @@ pub type ArcResolver = Arc<dyn Resolve + Send + Sync>;
 /// Publisher trait object used by DHTTP DNS construction.
 pub type ArcPublisher = Arc<dyn Publish + Send + Sync>;
 
+const DHTTP_DNS_SUFFIX: &str = "dhttp.net";
+
 #[derive(Clone)]
 enum DhttpDnsOp {
     Dns(resolvers::DnsScheme),
@@ -188,8 +190,15 @@ where
     let deferred_stun_resolver = Arc::new(DeferredStunResolver::new());
     let stun_resolver: ArcResolver = deferred_stun_resolver.clone();
     let network = builder(stun_resolver);
-    let final_resolver =
-        network_stun_resolver_from_plan(dns_plan, network.clone(), bind, h3_dns_server).await?;
+    let stun_server = network.quic().stun_server();
+    let final_resolver = network_stun_resolver_from_plan(
+        dns_plan,
+        network.clone(),
+        bind,
+        h3_dns_server,
+        stun_server.as_deref(),
+    )
+    .await?;
 
     DhttpNetwork::from_deferred_stun_resolver(network, deferred_stun_resolver, final_resolver)
         .context(build_dhttp_network_with_dns_error::DeferredStunResolverSnafu)
@@ -223,9 +232,11 @@ async fn network_stun_resolver_from_plan(
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
     h3_dns_server: Arc<str>,
+    stun_server: Option<&str>,
 ) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
     let operations = dns_plan.effective_ops();
-    let h3_resolver = if uses_h3(&operations) {
+    let use_h3 = uses_h3(&operations) && stun_server.is_some_and(uses_h3_dns);
+    let h3_resolver = if use_h3 {
         let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone()).await?;
         let h3_quic =
             dedicated_network_h3_client_quic(network.clone(), bind.clone(), h3_underlay).await;
@@ -261,6 +272,14 @@ async fn network_stun_resolver_from_plan(
             }
             DhttpDnsOp::Publisher(_) => {}
         }
+    }
+
+    if uses_h3(&operations)
+        && !use_h3
+        && !has_custom_resolver(&operations)
+        && !has_system_dns(&operations)
+    {
+        builder = builder.system();
     }
 
     network_resolver_chain(builder.build())
@@ -510,6 +529,33 @@ fn uses_h3(operations: &[DhttpDnsOp]) -> bool {
         .any(|operation| matches!(operation, DhttpDnsOp::Dns(resolvers::DnsScheme::H3)))
 }
 
+fn uses_h3_dns(name: &str) -> bool {
+    let host = match name.rsplit_once(':') {
+        Some((host, digits))
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            host
+        }
+        _ => name,
+    };
+    let host = host.strip_suffix('.').unwrap_or(host);
+
+    if rustls::pki_types::DnsName::try_from(host).is_err() {
+        return false;
+    }
+
+    if host.eq_ignore_ascii_case(DHTTP_DNS_SUFFIX) {
+        return true;
+    }
+
+    let Some(suffix_start) = host.len().checked_sub(DHTTP_DNS_SUFFIX.len()) else {
+        return false;
+    };
+    suffix_start > 0
+        && host.as_bytes().get(suffix_start - 1) == Some(&b'.')
+        && host.as_bytes()[suffix_start..].eq_ignore_ascii_case(DHTTP_DNS_SUFFIX.as_bytes())
+}
+
 fn has_custom_resolver(operations: &[DhttpDnsOp]) -> bool {
     operations
         .iter()
@@ -575,6 +621,32 @@ mod tests {
         ) -> PublishFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             async move { Ok(()) }.boxed()
+        }
+    }
+
+    #[test]
+    fn h3_dns_is_limited_to_dhttp_names() {
+        for name in [
+            "dhttp.net",
+            "DHTTP.NET.",
+            "node.dhttp.net",
+            "deep.node.dhttp.net:443",
+            "deep.node.dhttp.net.:7",
+        ] {
+            assert!(uses_h3_dns(name), "expected H3 DNS for {name}");
+        }
+
+        for name in [
+            "nat.genmeta.net:20004",
+            "ddns.genmeta.net:443",
+            "notdhttp.net",
+            "dhttp.net.example",
+            "127.0.0.1:443",
+            "[::1]:443",
+            "dhttp.net:service",
+            "bad..name.dhttp.net",
+        ] {
+            assert!(!uses_h3_dns(name), "unexpected H3 DNS for {name}");
         }
     }
 
