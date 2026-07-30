@@ -341,7 +341,7 @@ async fn endpoint_dns_from_quic(
             }
             DhttpDnsOp::Dns(resolvers::DnsScheme::Http) => {
                 let http = Arc::new(
-                    resolvers::HttpResolver::new(resolvers::DHTTP_HTTP_DNS_SERVER)
+                    resolvers::HttpResolver::new(crate::endpoint::BOOTSTRAP_URL)
                         .expect("BUG: DHTTP HTTP DNS server is a valid URL"),
                 );
                 resolver_builder = resolver_builder.candidate_resolver(http.clone());

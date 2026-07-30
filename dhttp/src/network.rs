@@ -108,8 +108,8 @@ impl DhttpNetwork {
         #[builder(default = Arc::new(QuicRouter::new()))] quic_router: Arc<QuicRouter>,
         #[builder(default = Arc::new(LocalEndpoints::new()))] local_endpoints: Arc<LocalEndpoints>,
     ) -> Result<Self, BuildDhttpNetworkWithDnsError> {
-        let stun_server =
-            stun_server.unwrap_or_else(|| Some(Arc::<str>::from(crate::endpoint::STUN_SERVER)));
+        let stun_server = stun_server
+            .unwrap_or_else(|| Some(Arc::<str>::from(crate::endpoint::BOOTSTRAP_AUTHORITY)));
 
         if let Some(stun_resolver) = stun_resolver {
             let network = Network::builder()
@@ -226,7 +226,7 @@ mod tests {
 
         assert_eq!(
             dhttp_network.network().quic().stun_server().as_deref(),
-            Some(crate::endpoint::STUN_SERVER)
+            Some(crate::endpoint::BOOTSTRAP_AUTHORITY)
         );
     }
 
