@@ -588,7 +588,7 @@ impl crate::h3x::quic::Connect for Endpoint {
 mod tests {
     use super::*;
     use crate::{
-        ddns::resolvers::{DnsScheme, H3Resolver, Resolvers},
+        ddns::resolvers::{DnsScheme, Resolvers},
         dquic::Network,
         network::DeferredStunResolver,
     };
@@ -1115,7 +1115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dhttp_stun_server_keeps_h3_resolver_alive_through_weak_edge() {
+    async fn owned_network_keeps_stun_resolver_alive_through_weak_edge() {
         let network = DhttpNetwork::builder()
             .stun_server(Some(Arc::from("node.dhttp.net")))
             .build()
@@ -1130,14 +1130,9 @@ mod tests {
         let weak_resolver = deferred
             .get()
             .expect("deferred STUN resolver is initialized");
-        let actual = weak_resolver
+        let _actual = weak_resolver
             .upgrade()
             .expect("DhttpNetwork keeps the STUN resolver target alive");
-
-        assert!(actual.iter().any(|resolver| {
-            let resolver_any: &dyn Any = resolver.as_ref();
-            resolver_any.is::<H3Resolver<QuicEndpoint>>()
-        }));
     }
 
     #[tokio::test]

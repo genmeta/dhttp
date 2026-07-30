@@ -1,6 +1,6 @@
 //! Re-export of the ddns crate APIs used by DHTTP.
 
-use std::{future::Future, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 
 use snafu::ResultExt;
 
@@ -112,6 +112,29 @@ impl DhttpDnsPlan {
 type DeferredEndpointResolver = resolvers::deferred::DeferredResolver<resolvers::Resolvers>;
 type EndpointH3Client = Arc<H3Endpoint<EndpointH3Connector, crate::dquic::connection::Connection>>;
 
+#[derive(Debug)]
+struct StunResolverRouter {
+    dhttp: ArcResolvers,
+    external: ArcResolvers,
+}
+
+impl fmt::Display for StunResolverRouter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("STUN DNS Router")
+    }
+}
+
+impl Resolve for StunResolverRouter {
+    fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
+        let resolvers = if uses_h3_dns(name) {
+            &self.dhttp
+        } else {
+            &self.external
+        };
+        Resolve::lookup(resolvers.as_ref(), name)
+    }
+}
+
 #[derive(Clone)]
 struct EndpointH3Clients {
     resolver: EndpointH3Client,
@@ -190,15 +213,8 @@ where
     let deferred_stun_resolver = Arc::new(DeferredStunResolver::new());
     let stun_resolver: ArcResolver = deferred_stun_resolver.clone();
     let network = builder(stun_resolver);
-    let stun_server = network.quic().stun_server();
-    let final_resolver = network_stun_resolver_from_plan(
-        dns_plan,
-        network.clone(),
-        bind,
-        h3_dns_server,
-        stun_server.as_deref(),
-    )
-    .await?;
+    let final_resolver =
+        network_stun_resolver_from_plan(dns_plan, network.clone(), bind, h3_dns_server).await?;
 
     DhttpNetwork::from_deferred_stun_resolver(network, deferred_stun_resolver, final_resolver)
         .context(build_dhttp_network_with_dns_error::DeferredStunResolverSnafu)
@@ -232,20 +248,22 @@ async fn network_stun_resolver_from_plan(
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
     h3_dns_server: Arc<str>,
-    stun_server: Option<&str>,
 ) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
     let operations = dns_plan.effective_ops();
-    let use_h3 = uses_h3(&operations) && stun_server.is_some_and(uses_h3_dns);
-    let h3_resolver = if use_h3 {
+    let (h3_resolver, external_resolvers) = if uses_h3(&operations) {
         let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone()).await?;
         let h3_quic =
-            dedicated_network_h3_client_quic(network.clone(), bind.clone(), h3_underlay).await;
-        Some(Arc::new(h3_resolver_for_network(
-            h3_dns_server.as_ref(),
-            h3_quic,
-        )?))
+            dedicated_network_h3_client_quic(network.clone(), bind.clone(), h3_underlay.clone())
+                .await;
+        (
+            Some(Arc::new(h3_resolver_for_network(
+                h3_dns_server.as_ref(),
+                h3_quic,
+            )?)),
+            Some(h3_underlay),
+        )
     } else {
-        None
+        (None, None)
     };
 
     let mut builder = resolvers::Resolvers::builder();
@@ -274,15 +292,16 @@ async fn network_stun_resolver_from_plan(
         }
     }
 
-    if uses_h3(&operations)
-        && !use_h3
-        && !has_custom_resolver(&operations)
-        && !has_system_dns(&operations)
-    {
-        builder = builder.system();
-    }
+    let dhttp_resolvers = network_resolver_chain(builder.build())?;
+    let Some(external_resolvers) = external_resolvers else {
+        return Ok(dhttp_resolvers);
+    };
 
-    network_resolver_chain(builder.build())
+    let router: ArcResolver = Arc::new(StunResolverRouter {
+        dhttp: dhttp_resolvers,
+        external: external_resolvers,
+    });
+    network_resolver_chain(resolvers::Resolvers::new().with(router))
 }
 
 async fn endpoint_dns_from_quic(
@@ -426,10 +445,10 @@ async fn network_h3_underlay(
     operations: &[DhttpDnsOp],
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
-) -> Result<ArcResolver, BuildDhttpNetworkWithDnsError> {
+) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
     let resolvers = non_h3_resolvers(operations, network, bind).await;
 
-    network_arc_resolver_chain(resolvers)
+    network_resolver_chain(resolvers)
 }
 
 async fn non_h3_resolvers(
@@ -506,16 +525,6 @@ fn endpoint_arc_resolver_chain(
 fn network_resolver_chain(
     resolvers: resolvers::Resolvers,
 ) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
-    if resolvers.iter().next().is_none() {
-        build_dhttp_network_with_dns_error::EmptyResolverSnafu.fail()
-    } else {
-        Ok(Arc::new(resolvers))
-    }
-}
-
-fn network_arc_resolver_chain(
-    resolvers: resolvers::Resolvers,
-) -> Result<ArcResolver, BuildDhttpNetworkWithDnsError> {
     if resolvers.iter().next().is_none() {
         build_dhttp_network_with_dns_error::EmptyResolverSnafu.fail()
     } else {
@@ -648,6 +657,33 @@ mod tests {
         ] {
             assert!(!uses_h3_dns(name), "unexpected H3 DNS for {name}");
         }
+    }
+
+    #[tokio::test]
+    async fn stun_resolver_router_selects_branch_from_lookup_name() {
+        let dhttp_calls = Arc::new(AtomicUsize::new(0));
+        let external_calls = Arc::new(AtomicUsize::new(0));
+        let dhttp = Arc::new(resolvers::Resolvers::new().with(Arc::new(CountingResolver {
+            calls: dhttp_calls.clone(),
+        })));
+        let external = Arc::new(resolvers::Resolvers::new().with(Arc::new(CountingResolver {
+            calls: external_calls.clone(),
+        })));
+        let router = StunResolverRouter { dhttp, external };
+
+        let _dhttp_records = router
+            .lookup("node.dhttp.net:443")
+            .await
+            .expect("dhttp STUN name should use dhttp resolvers");
+        assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(external_calls.load(Ordering::SeqCst), 0);
+
+        let _external_records = router
+            .lookup("nat.genmeta.net:20004")
+            .await
+            .expect("external STUN name should use external resolvers");
+        assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(external_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
