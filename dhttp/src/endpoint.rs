@@ -88,12 +88,11 @@ pub enum CreateEndpointPublicationLoopError {
     AnonymousEndpoint,
 }
 
-/// Default STUN bootstrap name for NAT traversal.
-///
-/// DDNS resolution of this name returns the actual socket addresses and ports
-/// from endpoint `E` records; the bootstrap value itself is a logical lookup
-/// name, not a raw `host:port` transport authority.
-pub const STUN_SERVER: &str = crate::bootstrap::DHTTP_STUN_SERVER;
+/// Default bootstrap service URL.
+pub const BOOTSTRAP_URL: &str = crate::bootstrap::DHTTP_BOOTSTRAP_URL;
+
+/// Bootstrap authority passed to the NAT traversal layer.
+pub(crate) const BOOTSTRAP_AUTHORITY: &str = crate::bootstrap::DHTTP_BOOTSTRAP_AUTHORITY;
 
 fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
     if bind.is_empty() {
@@ -616,16 +615,17 @@ mod tests {
     }
 
     #[test]
-    fn stun_server_comes_from_compile_time_environment() {
-        if let Some(expected) = option_env!("DHTTP_STUN_SERVER") {
-            assert_eq!(STUN_SERVER, expected);
+    fn bootstrap_url_comes_from_compile_time_environment() {
+        if let Some(expected) = option_env!("DHTTP_BOOTSTRAP_URL") {
+            assert_eq!(BOOTSTRAP_URL, expected);
         }
     }
 
     #[test]
-    fn stun_server_placeholder_is_plain_name_when_compile_time_env_is_absent() {
-        if option_env!("DHTTP_STUN_SERVER").is_none() {
-            assert_eq!(STUN_SERVER, "stun.dhttp.example.net");
+    fn bootstrap_production_default_is_used_when_compile_time_env_is_absent() {
+        if option_env!("DHTTP_BOOTSTRAP_URL").is_none() {
+            assert_eq!(BOOTSTRAP_URL, "https://bootstrap.genmeta.net:20002");
+            assert_eq!(BOOTSTRAP_AUTHORITY, "bootstrap.genmeta.net:20002");
         }
     }
 
