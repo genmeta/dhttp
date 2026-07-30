@@ -315,6 +315,7 @@ mod tests {
     async fn h3_only_network_stun_resolver_uses_h3_without_system_final_resolver() {
         let dhttp_network = DhttpNetwork::builder()
             .dns(DnsScheme::H3)
+            .stun_server(Some(Arc::from("node.dhttp.net")))
             .build()
             .await
             .expect("h3-only network should build");
@@ -342,6 +343,43 @@ mod tests {
         );
         assert!(
             !resolver_names
+                .iter()
+                .any(|name| name == "System DNS Resolver")
+        );
+    }
+
+    #[tokio::test]
+    async fn h3_only_external_stun_server_uses_system_final_resolver() {
+        let dhttp_network = DhttpNetwork::builder()
+            .dns(DnsScheme::H3)
+            .stun_server(Some(Arc::from("nat.genmeta.net:20004")))
+            .build()
+            .await
+            .expect("external STUN server should build with system DNS fallback");
+
+        let stun_resolver = dhttp_network.network().quic().stun_resolver();
+        let any: &dyn std::any::Any = stun_resolver.as_ref();
+        let deferred = any
+            .downcast_ref::<DeferredStunResolver>()
+            .expect("h3-only network stun resolver is deferred");
+        let weak_resolver = deferred
+            .get()
+            .expect("deferred STUN resolver is initialized");
+        let actual = weak_resolver
+            .upgrade()
+            .expect("DhttpNetwork keeps the STUN resolver target alive");
+        let resolver_names = actual
+            .iter()
+            .map(|resolver| resolver.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(
+            !resolver_names
+                .iter()
+                .any(|name| name.starts_with("H3 DNS Resolver("))
+        );
+        assert!(
+            resolver_names
                 .iter()
                 .any(|name| name == "System DNS Resolver")
         );
