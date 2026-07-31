@@ -407,6 +407,10 @@ impl DhttpHome {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 resolve_identity_profile_error::WildcardNotFoundSnafu { path: profile_path }.fail()
             }
+            #[cfg(windows)]
+            Err(error) if error.kind() == io::ErrorKind::InvalidFilename => {
+                resolve_identity_profile_error::WildcardNotFoundSnafu { path: profile_path }.fail()
+            }
             Err(error) => {
                 Err(error).context(resolve_identity_profile_error::WildcardMetadataSnafu {
                     path: profile_path,
@@ -449,13 +453,14 @@ impl DhttpHome {
                 let Some(e) = read_dir.next_entry().await.context(ReadDirSnafu { path })? else {
                     return Ok(None);
                 };
-                if let (entry_path, name) = (e.path(), e.file_name())
-                    && e.file_type()
-                        .await
-                        .context(ReadFtySnafu {
-                            path: entry_path.clone(),
-                        })?
-                        .is_dir()
+                let entry_path = e.path();
+                let name = e.file_name();
+                if e.file_type()
+                    .await
+                    .context(ReadFtySnafu {
+                        path: entry_path.clone(),
+                    })?
+                    .is_dir()
                     && let Ok(name) = name.to_string_lossy().as_ref().parse::<DhttpName>()
                     && fs::metadata(entry_path.join(SSL_DIR_NAME)).await.is_ok()
                 {
@@ -929,18 +934,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_key_reports_key_metadata_path() {
+    async fn missing_key_reports_key_path() {
         let temp = TempDir::new("missing-key");
         let profile = IdentityProfile::try_from(temp.path().join("reimu.pilot")).unwrap();
 
         let error = profile.load_key().await.unwrap_err();
 
-        match error {
-            LoadKeyError::Metadata { path, .. } => {
-                assert_eq!(path, profile.ssl_dir().join(KEY_FILE_NAME));
-            }
-            other => panic!("expected key metadata error, got {other:?}"),
-        }
+        #[cfg(unix)]
+        assert!(matches!(
+            error,
+            LoadKeyError::Metadata { path, .. } if path == profile.ssl_dir().join(KEY_FILE_NAME)
+        ));
+        #[cfg(not(unix))]
+        assert!(matches!(
+            error,
+            LoadKeyError::Read { path, .. } if path == profile.ssl_dir().join(KEY_FILE_NAME)
+        ));
     }
 
     #[tokio::test]

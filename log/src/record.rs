@@ -14,7 +14,7 @@ pub const MAX_RECORD_LEN: usize = 64 * 1024;
 /// - no carriage return or line feed appears before the record delimiter;
 /// - exactly one line feed terminates the record.
 ///
-/// Construction is private to [`RecordBuilder::finish`].
+/// Construction is private to `RecordBuilder::finish`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormattedRecord(Box<[u8]>);
 
