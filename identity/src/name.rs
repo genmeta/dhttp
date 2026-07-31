@@ -338,7 +338,7 @@ pub enum InvalidName {
 // Name<'a> — DNS name, always lowercase
 // ============================================================================
 
-/// A DNS name stored as either a borrowed `&str` or an owned [`BytesStr`].
+/// A DNS name stored as either a borrowed `&str` or an owned byte-backed string.
 ///
 /// All names are normalised to ASCII lowercase. The type implements
 /// [`Borrow<str>`] so that it can be used as a key in `HashMap` / `DashMap`
