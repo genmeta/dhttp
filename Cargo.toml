@@ -43,8 +43,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # identity types with h3x/ddns in the formal release graph.
 dhttp-identity = "0.3.0-beta.1"
 dhttp-home = { path = "home", version = "0.5.0-beta.1" }
-dquic = { version = "0.7.0-beta.4", default-features = false }
-ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
+dquic = { git = "https://github.com/genmeta/dquic.git", branch = "main", default-features = false }
+ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", branch = "fix/ddns-bootstrap", features = [
     "resolvers",
     "publishers",
     "h3",
@@ -52,12 +52,9 @@ ddns = { package = "dyns", version = "0.7.0-beta.2", features = [
     "mdns",
     "dquic-network",
 ] }
-h3x = { git = "https://github.com/genmeta/h3x.git", branch = "fix/ha-http3-reliability", version = "0.6.0-beta.4", features = [
+h3x = { git = "https://github.com/genmeta/h3x.git", branch = "fix/h3x-reliability", features = [
     "dquic",
 ] }
 dhttp = { path = "dhttp", version = "0.6.0-beta.5" }
 dhttp-access = { path = "access", version = "0.4.0-beta.2" }
 dhttp-log = { path = "log", version = "0.1.0-beta.1" }
-
-[patch.crates-io]
-h3x = { git = "https://github.com/genmeta/h3x.git", branch = "fix/ha-http3-reliability" }
