@@ -11,6 +11,6 @@ readme = "../README.md"
 chrono.workspace = true
 dhttp-identity.workspace = true
 http.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 snafu.workspace = true
 x509-parser.workspace = true
