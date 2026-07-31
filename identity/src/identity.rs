@@ -405,7 +405,7 @@ mod tests {
     use rustls::sign::{Signer, SigningKey};
     use rustls::{SignatureAlgorithm, SignatureScheme};
 
-    use crate::certificate::CertificateChainKind;
+    use crate::certificate::CertificateUsage;
     use crate::identity::{Identity, LocalAuthorityCertificateExt, RemoteAuthorityCertificateExt};
     use crate::name::Name;
 
@@ -572,7 +572,7 @@ mod tests {
         let dhttp = identity
             .dhttp_subject_key_identifier()
             .expect("extract dhttp ski");
-        assert_eq!(dhttp.chain().kind(), CertificateChainKind::Primary);
+        assert_eq!(dhttp.chain().usage(), CertificateUsage::ClientOnly);
         assert_eq!(dhttp.chain().sequence().get(), 0);
     }
 

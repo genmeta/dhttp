@@ -78,23 +78,23 @@ impl TryFrom<u64> for CertificateSequence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CertificateChainKind {
-    Primary,
-    Secondary,
+pub enum CertificateUsage {
+    ClientOnly,
+    ClientAndServer,
 }
 
-impl CertificateChainKind {
+impl CertificateUsage {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Primary => "primary",
-            Self::Secondary => "secondary",
+            Self::ClientOnly => "client",
+            Self::ClientAndServer => "client and server",
         }
     }
 
     pub fn kind_flag(self) -> &'static str {
         match self {
-            Self::Primary => "0",
-            Self::Secondary => "1",
+            Self::ClientOnly => "0",
+            Self::ClientAndServer => "1",
         }
     }
 }
@@ -140,26 +140,26 @@ impl fmt::Display for OwnerHash {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CertificateChainKey {
     sequence: CertificateSequence,
-    kind: CertificateChainKind,
+    usage: CertificateUsage,
 }
 
 impl CertificateChainKey {
-    pub fn new(sequence: CertificateSequence, kind: CertificateChainKind) -> Self {
-        Self { sequence, kind }
+    pub fn new(sequence: CertificateSequence, usage: CertificateUsage) -> Self {
+        Self { sequence, usage }
     }
 
     pub fn sequence(&self) -> CertificateSequence {
         self.sequence
     }
 
-    pub fn kind(&self) -> CertificateChainKind {
-        self.kind
+    pub fn usage(&self) -> CertificateUsage {
+        self.usage
     }
 }
 
 impl fmt::Display for CertificateChainKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.kind.as_str(), self.sequence.get())
+        write!(f, "{}:{}", self.usage.as_str(), self.sequence.get())
     }
 }
 
@@ -219,23 +219,23 @@ impl FromStr for DhttpSubjectKeyIdentifier {
             return invalid_dhttp_subject_key_identifier::FieldCountSnafu.fail();
         }
         let sequence = fields[0];
-        let kind = fields[1];
+        let usage = fields[1];
         let owner_hash = fields[2];
         let sequence = sequence
             .parse::<u64>()
             .context(invalid_dhttp_subject_key_identifier::SequenceSnafu)?;
         let sequence = CertificateSequence::try_from(sequence)
             .context(invalid_dhttp_subject_key_identifier::SequenceRangeSnafu)?;
-        let kind = match kind {
-            "0" => CertificateChainKind::Primary,
-            "1" => CertificateChainKind::Secondary,
+        let usage = match usage {
+            "0" => CertificateUsage::ClientOnly,
+            "1" => CertificateUsage::ClientAndServer,
             _ => return invalid_dhttp_subject_key_identifier::KindFlagSnafu.fail(),
         };
         let owner_hash = OwnerHash::try_from(owner_hash)
             .context(invalid_dhttp_subject_key_identifier::OwnerHashSnafu)?;
 
         Ok(Self::new(
-            CertificateChainKey::new(sequence, kind),
+            CertificateChainKey::new(sequence, usage),
             owner_hash,
         ))
     }
@@ -247,7 +247,7 @@ impl fmt::Display for DhttpSubjectKeyIdentifier {
             f,
             "{}:{}:{}",
             self.chain.sequence().get(),
-            self.chain.kind().kind_flag(),
+            self.chain.usage().kind_flag(),
             self.owner_hash
         )
     }
@@ -298,15 +298,15 @@ mod tests {
     fn certificate_chain_key_displays_user_facing_label() {
         let primary = CertificateChainKey::new(
             CertificateSequence::try_from(0u32).unwrap(),
-            CertificateChainKind::Primary,
+            CertificateUsage::ClientAndServer,
         );
         let secondary = CertificateChainKey::new(
             CertificateSequence::try_from(2u32).unwrap(),
-            CertificateChainKind::Secondary,
+            CertificateUsage::ClientOnly,
         );
 
-        assert_eq!(primary.to_string(), "primary:0");
-        assert_eq!(secondary.to_string(), "secondary:2");
+        assert_eq!(primary.to_string(), "client and server:0");
+        assert_eq!(secondary.to_string(), "client:2");
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(ski.chain().sequence().get(), 7);
-        assert_eq!(ski.chain().kind(), CertificateChainKind::Secondary);
+        assert_eq!(ski.chain().usage(), CertificateUsage::ClientAndServer);
         assert_eq!(ski.owner_hash().as_str(), OWNER_HASH);
         assert_eq!(ski.to_string(), format!("7:1:{OWNER_HASH}"));
     }
