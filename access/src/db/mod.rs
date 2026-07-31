@@ -265,7 +265,7 @@ mod tests {
             .unwrap();
 
         let tables: Vec<String> = db
-            .query_all(Statement::from_string(
+            .query_all_raw(Statement::from_string(
                 sea_orm::DatabaseBackend::Sqlite,
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name".to_string(),
             ))
