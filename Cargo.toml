@@ -28,7 +28,7 @@ bon = "3"
 http = "1"
 serde_json = "1"
 sea-orm-migration = { version = "1", features = ["runtime-tokio-rustls"] }
-sea-orm = { version = "1", features = ["runtime-tokio-rustls"] }
+sea-orm = { version = "2", features = ["runtime-tokio-rustls"] }
 regex = "1"
 regex-automata = "0.4"
 peg = "0.8"
