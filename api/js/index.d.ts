@@ -12,7 +12,7 @@ export type FetchHandler = (request: DhttpRequest) => Response | Promise<Respons
 export type RawHandler = (
   request: import("@genmeta/dhttp/raw").UnresolvedRequest,
 ) => void | Promise<void>;
-export type CertificateChainKind = "primary" | "secondary";
+export type CertificateChainKind = "client" | "client and server";
 
 export interface CertificateChainKey {
   sequence: number;

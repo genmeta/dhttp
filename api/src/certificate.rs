@@ -17,7 +17,7 @@ impl From<dhttp::certificate::DhttpSubjectKeyIdentifier> for DhttpSubjectKeyIden
             value: value.to_string(),
             chain: CertificateChainKey {
                 sequence: value.chain().sequence().get(),
-                kind: value.chain().kind().as_str().to_owned(),
+                kind: value.chain().usage().as_str().to_owned(),
             },
             owner_hash: value.owner_hash().as_str().to_owned(),
         }
