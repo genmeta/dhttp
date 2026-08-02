@@ -92,7 +92,7 @@ pub enum CreateEndpointPublicationLoopError {
 pub const BOOTSTRAP_URL: &str = crate::bootstrap::DHTTP_BOOTSTRAP_URL;
 
 /// Bootstrap authority passed to the NAT traversal layer.
-pub(crate) const BOOTSTRAP_AUTHORITY: &str = crate::bootstrap::DHTTP_BOOTSTRAP_AUTHORITY;
+pub const BOOTSTRAP_AUTHORITY: &str = crate::bootstrap::DHTTP_BOOTSTRAP_AUTHORITY;
 
 fn normalize_bind(bind: Arc<Vec<BindPattern>>) -> Arc<Vec<BindPattern>> {
     if bind.is_empty() {

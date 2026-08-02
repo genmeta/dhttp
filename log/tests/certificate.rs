@@ -1,5 +1,7 @@
 use chrono::{FixedOffset, TimeZone};
-use dhttp_identity::certificate::{CertificateChainKey, CertificateChainKind, CertificateSequence};
+use dhttp_identity::certificate::{
+    CertificateChainKey, CertificateSequence, CertificateUsage as IdentityCertificateUsage,
+};
 use dhttp_log::cert::{
     CertificateAction, CertificateIssuer, CertificateLogRecord, CertificateUsage,
     DefaultCertificateFormatter, Sha256Fingerprint,
@@ -26,7 +28,7 @@ fn timestamp(
 fn chain() -> CertificateChainKey {
     CertificateChainKey::new(
         CertificateSequence::try_from(0_u32).unwrap(),
-        CertificateChainKind::Primary,
+        IdentityCertificateUsage::ClientAndServer,
     )
 }
 
@@ -86,7 +88,7 @@ fn default_certificate_line_formats_sha256_fingerprint_and_existing_chain_key() 
 
     assert_eq!(
         line.as_bytes(),
-        b"[13/Jul/2026:08:20:31 +0000] APPLY \"Genmeta Tech Limited\" \"client only\" primary:0 [13/Jul/2027:08:20:30 +0000] \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"
+        b"[13/Jul/2026:08:20:31 +0000] APPLY \"Genmeta Tech Limited\" \"client only\" client and server:0 [13/Jul/2027:08:20:30 +0000] \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"
     );
 }
 
