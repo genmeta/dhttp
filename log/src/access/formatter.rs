@@ -15,9 +15,30 @@ pub struct DefaultAccessFormatter;
 impl DefaultAccessFormatter {
     /// Formats one access record using the built-in compact V1 representation.
     pub fn format(record: &AccessLogRecord) -> Result<FormattedRecord, FormatError> {
+        Self::format_with_client(record, FormattedClient::Address)
+    }
+
+    /// Formats one access record using the authenticated client identity as the
+    /// remote host and omitting the transport address.
+    pub fn format_with_client_identity(
+        record: &AccessLogRecord,
+        client_identity: Option<&str>,
+    ) -> Result<FormattedRecord, FormatError> {
+        Self::format_with_client(record, FormattedClient::Identity(client_identity))
+    }
+
+    fn format_with_client(
+        record: &AccessLogRecord,
+        client: FormattedClient<'_>,
+    ) -> Result<FormattedRecord, FormatError> {
         let convention = CompactConvention::default();
         let mut builder = RecordBuilder::new();
-        builder.element(&convention, &record.client)?;
+        match client {
+            FormattedClient::Address => builder.element(&convention, &record.client)?,
+            FormattedClient::Identity(identity) => {
+                builder.element(&convention, &Optional(identity.map(Text)))?;
+            }
+        }
         builder.literal(b" ")?;
         builder.element(&convention, &MissingField)?;
         builder.literal(b" ")?;
@@ -36,6 +57,11 @@ impl DefaultAccessFormatter {
         builder.element(&convention, &record.user_agent)?;
         builder.finish()
     }
+}
+
+enum FormattedClient<'a> {
+    Address,
+    Identity(Option<&'a str>),
 }
 
 struct MissingField;
