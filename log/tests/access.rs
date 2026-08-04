@@ -54,6 +54,27 @@ fn default_access_format_is_combined_without_reserved_columns() {
 }
 
 #[test]
+fn authenticated_client_identity_replaces_the_transport_address() {
+    let line =
+        DefaultAccessFormatter::format_with_client_identity(&access_fixture(), Some("reimu.pilot"))
+            .unwrap();
+
+    assert_eq!(
+        line.as_bytes(),
+        b"reimu.pilot - - [13/Jul/2026:16:20:31 +0800] \"GET /assets/a.css HTTP/3\" 200 1432 \"https://example.test/\" \"ExampleAgent/1.0\"\n"
+    );
+}
+
+#[test]
+fn identity_format_omits_the_transport_address_for_anonymous_clients() {
+    let line =
+        DefaultAccessFormatter::format_with_client_identity(&access_fixture(), None).unwrap();
+
+    assert!(line.as_bytes().starts_with(b"- - - ["));
+    assert!(!line.as_bytes().starts_with(b"192.0.2.10"));
+}
+
+#[test]
 fn request_header_values_are_built_from_the_named_allowlist_only() {
     let mut headers = HeaderMap::new();
     headers.insert(header::REFERER, HeaderValue::from_static("https://safe/"));
