@@ -93,8 +93,8 @@ impl CertificateUsage {
 
     pub fn kind_flag(self) -> &'static str {
         match self {
-            Self::ClientOnly => "0",
-            Self::ClientAndServer => "1",
+            Self::ClientOnly => "1",
+            Self::ClientAndServer => "0",
         }
     }
 }
@@ -227,8 +227,8 @@ impl FromStr for DhttpSubjectKeyIdentifier {
         let sequence = CertificateSequence::try_from(sequence)
             .context(invalid_dhttp_subject_key_identifier::SequenceRangeSnafu)?;
         let usage = match usage {
-            "0" => CertificateUsage::ClientOnly,
-            "1" => CertificateUsage::ClientAndServer,
+            "0" => CertificateUsage::ClientAndServer,
+            "1" => CertificateUsage::ClientOnly,
             _ => return invalid_dhttp_subject_key_identifier::KindFlagSnafu.fail(),
         };
         let owner_hash = OwnerHash::try_from(owner_hash)
@@ -310,6 +310,12 @@ mod tests {
     }
 
     #[test]
+    fn certificate_usage_preserves_certserver_kind_flags() {
+        assert_eq!(CertificateUsage::ClientAndServer.kind_flag(), "0");
+        assert_eq!(CertificateUsage::ClientOnly.kind_flag(), "1");
+    }
+
+    #[test]
     fn rejects_out_of_range_subject_key_identifier_sequence() {
         let error = format!("{}:0:{OWNER_HASH}", i32::MAX as u64 + 1)
             .parse::<DhttpSubjectKeyIdentifier>()
@@ -324,14 +330,14 @@ mod tests {
     #[test]
     fn parses_canonical_dhttp_subject_key_identifier() {
         let ski = DhttpSubjectKeyIdentifier::try_from_subject_key_identifier_bytes(
-            format!("7:1:{OWNER_HASH}").as_bytes(),
+            format!("7:0:{OWNER_HASH}").as_bytes(),
         )
         .unwrap();
 
         assert_eq!(ski.chain().sequence().get(), 7);
         assert_eq!(ski.chain().usage(), CertificateUsage::ClientAndServer);
         assert_eq!(ski.owner_hash().as_str(), OWNER_HASH);
-        assert_eq!(ski.to_string(), format!("7:1:{OWNER_HASH}"));
+        assert_eq!(ski.to_string(), format!("7:0:{OWNER_HASH}"));
     }
 
     #[test]

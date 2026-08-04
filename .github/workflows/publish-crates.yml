@@ -28,11 +28,21 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      # The identity-only tag bootstraps the stable dependency graph. Other
+      # workspace members intentionally reference crates published later.
       - name: Run clippy
+        if: github.ref_type != 'tag' || !endsWith(github.ref_name, '-dhttp-identity')
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test workspace
+        if: github.ref_type != 'tag' || !endsWith(github.ref_name, '-dhttp-identity')
         run: cargo test --workspace --all-features --all-targets
+
+      - name: Check dhttp-identity
+        if: github.ref_type == 'tag' && endsWith(github.ref_name, '-dhttp-identity')
+        run: |
+          cargo clippy --package dhttp-identity --all-targets --all-features -- -D warnings
+          cargo test --package dhttp-identity --all-features --all-targets
 
       - name: Authenticate to crates.io
         if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
@@ -64,7 +74,7 @@ jobs:
             )
           fi
 
-          cargo metadata --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
+          cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
           package_versions="$(
             PACKAGES="$(printf '%s\n' "${packages[@]}")" RUNNER_TEMP="$RUNNER_TEMP" python3 - <<'PY'
           import json
