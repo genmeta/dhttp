@@ -572,7 +572,7 @@ mod tests {
         let dhttp = identity
             .dhttp_subject_key_identifier()
             .expect("extract dhttp ski");
-        assert_eq!(dhttp.chain().usage(), CertificateUsage::ClientOnly);
+        assert_eq!(dhttp.chain().usage(), CertificateUsage::ClientAndServer);
         assert_eq!(dhttp.chain().sequence().get(), 0);
     }
 
