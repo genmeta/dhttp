@@ -31,15 +31,15 @@ jobs:
       # The identity-only tag bootstraps the stable dependency graph. Other
       # workspace members intentionally reference crates published later.
       - name: Run clippy
-        if: github.ref_type != 'tag' || !endsWith(github.ref_name, '-dhttp-identity')
+        if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test workspace
-        if: github.ref_type != 'tag' || !endsWith(github.ref_name, '-dhttp-identity')
+        if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
         run: cargo test --workspace --all-features --all-targets
 
       - name: Check dhttp-identity
-        if: github.ref_type == 'tag' && endsWith(github.ref_name, '-dhttp-identity')
+        if: ${{ endsWith(github.head_ref, '-dhttp-identity') || endsWith(github.ref_name, '-dhttp-identity') }}
         run: |
           cargo clippy --package dhttp-identity --all-targets --all-features -- -D warnings
           cargo test --package dhttp-identity --all-features --all-targets
@@ -53,6 +53,7 @@ jobs:
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          IDENTITY_ONLY: ${{ endsWith(github.head_ref, '-dhttp-identity') || endsWith(github.ref_name, '-dhttp-identity') }}
         run: |
           set -euo pipefail
 
@@ -62,7 +63,7 @@ jobs:
             mode=dry-run
           fi
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v*-dhttp-identity ]]; then
+          if [[ "${IDENTITY_ONLY}" == "true" ]]; then
             packages=(dhttp-identity)
           else
             packages=(

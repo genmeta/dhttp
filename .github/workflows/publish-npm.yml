@@ -11,6 +11,7 @@ on:
 
 jobs:
   build:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     strategy:
       fail-fast: false
       matrix:
