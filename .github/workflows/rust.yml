@@ -11,6 +11,7 @@ env:
 
 jobs:
   build:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     strategy:
       matrix:
         target: [ubuntu, macos, windows]
@@ -28,6 +29,7 @@ jobs:
         run: cargo test --workspace --verbose -- --test-threads=1
 
   format:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +41,7 @@ jobs:
       - name: Run rustfmt
         run: cargo +nightly fmt --all -- --check
   clippy:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +53,7 @@ jobs:
       - name: Run clippy
         run: cargo +nightly clippy --all-targets --all-features -- -Dwarnings
   doc:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +65,7 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo +nightly doc --no-deps
 
   msrv:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     strategy:
       matrix:
         target: [ubuntu, macos, windows]

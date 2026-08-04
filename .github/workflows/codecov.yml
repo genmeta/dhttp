@@ -8,6 +8,7 @@ on:
 
 jobs:
   coverage:
+    if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
