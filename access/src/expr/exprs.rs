@@ -148,7 +148,14 @@ impl Display for LocationRuleExprs {
         if let [Part::Expr(AtomicLocationRuleExpr::ClientName(pattern))] =
             self.polish.parts.as_slice()
         {
-            return write!(f, "{}", pattern.as_ref().as_str());
+            let pattern = pattern.as_ref().as_str();
+            if let Some(prefix) = pattern
+                .strip_suffix(".dhttp.net")
+                .filter(|prefix| !prefix.is_empty())
+            {
+                return write!(f, "{prefix}~");
+            }
+            return write!(f, "{pattern}");
         }
         write!(f, "{infix}")
     }

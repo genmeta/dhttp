@@ -515,12 +515,21 @@ mod tests {
             .parse::<LocationRuleExprs>()
             .expect("dhttp shorthand should parse");
 
-        assert_eq!(exprs.to_string(), "alice.dhttp.net");
+        assert_eq!(exprs.to_string(), "alice~");
         assert!(matches!(
             &location_invariant("alice~")[0],
             Expr(AtomicLocationRuleExpr::ClientName(pattern))
                 if pattern.as_ref().as_str() == "alice.dhttp.net"
         ));
+    }
+
+    #[test]
+    fn client_name_pattern_displays_shorthand_for_canonical_name() {
+        let exprs = "alice.dhttp.net"
+            .parse::<LocationRuleExprs>()
+            .expect("canonical dhttp name should parse");
+
+        assert_eq!(exprs.to_string(), "alice~");
     }
 
     #[test]
