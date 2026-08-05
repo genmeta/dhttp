@@ -45,6 +45,20 @@ pub struct MatchedLocationRules {
     pub rules: Vec<rule::Model>,
 }
 
+fn deduplicate_rules(rules: &mut Vec<rule::Model>) {
+    let mut unique = Vec::with_capacity(rules.len());
+    for candidate in rules.drain(..) {
+        let duplicate = unique.iter().any(|existing: &rule::Model| {
+            existing.action == candidate.action
+                && existing.exprs.polish() == candidate.exprs.polish()
+        });
+        if !duplicate {
+            unique.push(candidate);
+        }
+    }
+    *rules = unique;
+}
+
 impl Display for MatchedLocationRules {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self { location, rules } = self;
@@ -194,12 +208,13 @@ impl LocationService<'_> {
             })
             .context(list_rules_error::NoMatchedLocationSnafu)?;
 
-        let rules = rule::Entity::find()
+        let mut rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
             .all(&txn)
             .await
             .context(list_rules_error::LoadRulesSnafu)?;
+        deduplicate_rules(&mut rules);
 
         txn.commit().await.context(list_rules_error::CommitSnafu)?;
 
@@ -227,12 +242,13 @@ impl LocationService<'_> {
             })
             .context(list_rules_by_pattern_error::LocationNotExistSnafu)?;
 
-        let rules = rule::Entity::find()
+        let mut rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
             .all(&txn)
             .await
             .context(list_rules_by_pattern_error::LoadRulesSnafu)?;
+        deduplicate_rules(&mut rules);
 
         txn.commit()
             .await
@@ -293,6 +309,7 @@ impl LocationService<'_> {
             .into_iter()
             .zip(rules)
             .map(|(location, mut rules)| {
+                deduplicate_rules(&mut rules);
                 let pattern_with_time = PatternWithTime::new(
                     location.created_at.timestamp_micros(),
                     location.pattern.clone(),
@@ -472,6 +489,21 @@ impl LocationService<'_> {
         let location_id = Self::match_or_create_location_internal(&txn, location)
             .await
             .context(append_rule_error::MatchOrCreateLocationSnafu)?;
+
+        let existing_rules = rule::Entity::find()
+            .filter(rule::Column::LocationId.eq(location_id))
+            .filter(rule::Column::Action.eq(action))
+            .order_by_asc(rule::Column::CreatedAt)
+            .all(&txn)
+            .await
+            .context(append_rule_error::LoadExistingRulesSnafu)?;
+        if let Some(existing_rule) = existing_rules
+            .into_iter()
+            .find(|candidate| candidate.exprs.polish() == expr.polish())
+        {
+            txn.commit().await.context(append_rule_error::CommitSnafu)?;
+            return Ok(existing_rule);
+        }
 
         let now = chrono::Utc::now();
         let new_rule = rule::ActiveModel {

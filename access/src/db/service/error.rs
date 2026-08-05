@@ -135,6 +135,8 @@ pub enum AppendRuleError {
     BeginTransaction { source: DbErr },
     #[snafu(display("failed to match or create location rule set before appending rule"))]
     MatchOrCreateLocation { source: MatchOrCreateLocationError },
+    #[snafu(display("failed to load existing location rules before appending rule"))]
+    LoadExistingRules { source: DbErr },
     #[snafu(display("failed to insert location rule"))]
     InsertRule { source: DbErr },
     #[snafu(display("failed to load inserted location rule"))]
