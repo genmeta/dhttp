@@ -283,6 +283,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn appending_duplicate_rules_is_idempotent() {
+        let test_home = TestHome::new("duplicate-rules");
+        let home = test_home.home();
+        let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
+        let db = init_identity_access_database(&home, identity.borrow())
+            .await
+            .unwrap();
+        let service = LocationService::new(&db);
+
+        let first = service
+            .append_rule_with_id(
+                &"/api".parse().unwrap(),
+                RequestAction::Allow,
+                "alice.pilot~".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        let first_rules = service
+            .list_rules_by_pattern(&"/api".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(first_rules.rules.len(), 1);
+
+        let duplicate = service
+            .append_rule_with_id(
+                &"/api".parse().unwrap(),
+                RequestAction::Allow,
+                "alice.pilot.dhttp.net".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(duplicate.id, first.id);
+        let rules = service
+            .list_rules_by_pattern(&"/api".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(rules.rules.len(), 1);
+    }
+
+    #[tokio::test]
     async fn location_service_location_only_crud() {
         let test_home = TestHome::new("location-crud");
         let home = test_home.home();
