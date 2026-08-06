@@ -43,4 +43,5 @@ url = "2"
 
 [dev-dependencies]
 dhttp-access = { workspace = true, features = ["http", "orm"] }
+rcgen = "0.14"
 tokio = { workspace = true, features = ["macros", "rt"] }

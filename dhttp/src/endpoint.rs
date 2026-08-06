@@ -53,6 +53,34 @@ pub enum InvalidEndpointIdentityError {
     },
 }
 
+/// Result of replacing a live endpoint identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceIdentityOutcome {
+    Updated,
+    Unchanged,
+}
+
+/// Error returned when replacing a live endpoint identity.
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module(replace_identity_error))]
+pub enum ReplaceIdentityError {
+    #[snafu(display("invalid replacement identity"))]
+    InvalidIdentity {
+        source: InvalidEndpointIdentityError,
+    },
+    #[snafu(display("cannot replace the identity of an anonymous endpoint"))]
+    MissingCurrentIdentity,
+    #[snafu(display("replacement identity name changed from {current} to {replacement}"))]
+    NameChanged {
+        current: dhttp_identity::name::DhttpName<'static>,
+        replacement: dhttp_identity::name::DhttpName<'static>,
+    },
+    #[snafu(display("failed to replace the transport identity"))]
+    ReplaceTransport {
+        source: crate::dquic::ReplaceIdentityError,
+    },
+}
+
 #[derive(Debug, snafu::Snafu)]
 #[snafu(module(invalid_endpoint_parts_error))]
 pub enum InvalidEndpointPartsError {
@@ -323,6 +351,47 @@ impl Endpoint {
     /// Return the TLS identity used by this endpoint, if any.
     pub fn identity(&self) -> Option<Arc<Identity>> {
         self.inner.quic().identity()
+    }
+
+    /// Replace certificate and private-key material without rebuilding the endpoint.
+    ///
+    /// The DHTTP name must stay unchanged. Existing connections continue with
+    /// their negotiated credentials; new connections use the replacement.
+    pub async fn replace_identity(
+        &self,
+        identity: Arc<Identity>,
+    ) -> Result<ReplaceIdentityOutcome, ReplaceIdentityError> {
+        Self::validate_identity(Some(&identity))
+            .context(replace_identity_error::InvalidIdentitySnafu)?;
+        let current = self
+            .identity()
+            .ok_or(ReplaceIdentityError::MissingCurrentIdentity)?;
+        let current_name = Self::name_from_identity(&current)
+            .expect("BUG: dhttp endpoint identity must be a valid dhttp name");
+        let replacement_name =
+            Self::name_from_identity(&identity).expect("replacement identity was validated above");
+        if current_name != replacement_name {
+            return Err(ReplaceIdentityError::NameChanged {
+                current: current_name,
+                replacement: replacement_name,
+            });
+        }
+
+        let outcome = self
+            .inner
+            .quic()
+            .replace_identity(identity)
+            .await
+            .context(replace_identity_error::ReplaceTransportSnafu)?;
+        match outcome {
+            crate::dquic::ReplaceIdentityOutcome::Updated => {
+                self.inner.clear_pool();
+                Ok(ReplaceIdentityOutcome::Updated)
+            }
+            crate::dquic::ReplaceIdentityOutcome::Unchanged => {
+                Ok(ReplaceIdentityOutcome::Unchanged)
+            }
+        }
     }
 
     /// Return the DHttp name used by this endpoint, if any.
@@ -614,6 +683,25 @@ mod tests {
         )
     }
 
+    fn generated_dhttp_identity(name: &str, sequence: u64) -> Identity {
+        let key_pair = rcgen::KeyPair::generate().expect("generate test key");
+        let mut params =
+            rcgen::CertificateParams::new(vec![name.to_owned()]).expect("valid certificate name");
+        params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        params.key_identifier_method = rcgen::KeyIdMethod::PreSpecified(
+            format!(
+                "{sequence}:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into_bytes(),
+        );
+        let cert = params.self_signed(&key_pair).expect("self-sign test cert");
+        Identity::new(
+            name.parse().unwrap(),
+            vec![CertificateDer::from(cert.der().to_vec())],
+            PrivateKeyDer::try_from(key_pair.serialize_der()).expect("valid test private key"),
+        )
+    }
+
     #[test]
     fn bootstrap_url_comes_from_compile_time_environment() {
         if let Some(expected) = option_env!("DHTTP_BOOTSTRAP_URL") {
@@ -706,6 +794,91 @@ mod tests {
                 source: InvalidEndpointIdentityError::InvalidCertificateMetadata { .. }
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn replace_identity_updates_all_endpoint_clones() {
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(generated_dhttp_identity(
+                "rotate.example.dhttp.net",
+                0,
+            )))
+            .build()
+            .await
+            .expect("initial endpoint should build");
+        let cloned = endpoint.clone();
+        let old_key = endpoint.identity().unwrap().key().secret_der().to_vec();
+
+        let outcome = cloned
+            .replace_identity(Arc::new(generated_dhttp_identity(
+                "rotate.example.dhttp.net",
+                1,
+            )))
+            .await
+            .expect("same-name replacement should succeed");
+
+        assert_eq!(outcome, ReplaceIdentityOutcome::Updated);
+        assert_ne!(endpoint.identity().unwrap().key().secret_der(), old_key);
+    }
+
+    #[tokio::test]
+    async fn replace_identity_rejects_dhttp_name_change() {
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(generated_dhttp_identity(
+                "first.example.dhttp.net",
+                0,
+            )))
+            .build()
+            .await
+            .expect("initial endpoint should build");
+
+        let error = endpoint
+            .replace_identity(Arc::new(generated_dhttp_identity(
+                "second.example.dhttp.net",
+                1,
+            )))
+            .await
+            .expect_err("live replacement must preserve the dhttp name");
+
+        assert!(matches!(error, ReplaceIdentityError::NameChanged { .. }));
+        assert_eq!(
+            endpoint.name().unwrap().as_full(),
+            "first.example.dhttp.net"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_identity_keeps_current_material_when_key_does_not_match() {
+        let endpoint = Endpoint::builder()
+            .identity(Arc::new(generated_dhttp_identity(
+                "mismatch.example.dhttp.net",
+                0,
+            )))
+            .build()
+            .await
+            .expect("initial endpoint should build");
+        let original_key = endpoint.identity().unwrap().key().secret_der().to_vec();
+        let replacement_cert = generated_dhttp_identity("mismatch.example.dhttp.net", 1);
+        let other_key = generated_dhttp_identity("mismatch.example.dhttp.net", 2);
+        let mismatched = Identity::new(
+            replacement_cert.name().clone(),
+            replacement_cert.certs().to_vec(),
+            other_key.key().clone_key(),
+        );
+
+        let error = endpoint
+            .replace_identity(Arc::new(mismatched))
+            .await
+            .expect_err("certificate and private key must match");
+
+        assert!(matches!(
+            error,
+            ReplaceIdentityError::ReplaceTransport { .. }
+        ));
+        assert_eq!(
+            endpoint.identity().unwrap().key().secret_der(),
+            original_key
+        );
     }
 
     #[tokio::test]
