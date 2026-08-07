@@ -1,6 +1,7 @@
 pub use sea_orm_migration::prelude::*;
 
 mod m20250909_154000_create_table;
+mod m20260807_120000_unique_location_rules;
 
 pub struct Migrator;
 
@@ -12,6 +13,9 @@ impl MigratorTrait for Migrator {
     }
 
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m20250909_154000_create_table::Migration)]
+        vec![
+            Box::new(m20250909_154000_create_table::Migration),
+            Box::new(m20260807_120000_unique_location_rules::Migration),
+        ]
     }
 }

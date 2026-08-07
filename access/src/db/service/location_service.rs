@@ -10,7 +10,7 @@ use crate::{
     matcher::{LocationPatternMatcher, LocationRulesMatcher, PatternWithTime},
     pattern::{LocationPattern, LocationPatternKind},
 };
-use sea_orm::{prelude::*, *};
+use sea_orm::{prelude::*, sea_query::OnConflict, *};
 use snafu::{OptionExt, ResultExt};
 
 use crate::db::{entities::location::*, service::error::*};
@@ -48,15 +48,18 @@ pub struct MatchedLocationRules {
 fn deduplicate_rules(rules: &mut Vec<rule::Model>) {
     let mut unique = Vec::with_capacity(rules.len());
     for candidate in rules.drain(..) {
-        let duplicate = unique.iter().any(|existing: &rule::Model| {
-            existing.action == candidate.action
-                && existing.exprs.polish() == candidate.exprs.polish()
-        });
+        let duplicate = unique
+            .iter()
+            .any(|existing: &rule::Model| same_logical_rule(existing, &candidate));
         if !duplicate {
             unique.push(candidate);
         }
     }
     *rules = unique;
+}
+
+fn same_logical_rule(left: &rule::Model, right: &rule::Model) -> bool {
+    left.action == right.action && left.exprs.polish() == right.exprs.polish()
 }
 
 impl Display for MatchedLocationRules {
@@ -345,22 +348,21 @@ impl LocationService<'_> {
             .context(RuleSetNotExistSnafu)
             .context(remove_rules_error::RuleSnafu)?;
 
-        let rule_ids: Vec<i32> = rule::Entity::find()
+        let rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
-            .select_only()
-            .column(rule::Column::Id)
-            .into_tuple()
             .all(&txn)
             .await
-            .context(remove_rules_error::LoadRuleIdsSnafu)?;
+            .context(remove_rules_error::LoadRulesSnafu)?;
+        let mut visible_rules = rules.clone();
+        deduplicate_rules(&mut visible_rules);
 
-        let ids_to_delete = sequence
+        let selected_rules = sequence
             .into_iter()
             .map(|seq| {
-                rule_ids
+                visible_rules
                     .get(seq)
-                    .copied()
+                    .cloned()
                     .context(RuleNotExistSnafu { seq })
             })
             .try_fold(vec![], |mut set, id| {
@@ -370,6 +372,15 @@ impl LocationService<'_> {
                 })
             })
             .context(remove_rules_error::RuleSnafu)?;
+        let ids_to_delete: Vec<i32> = rules
+            .iter()
+            .filter(|candidate| {
+                selected_rules
+                    .iter()
+                    .any(|selected| same_logical_rule(candidate, selected))
+            })
+            .map(|rule| rule.id)
+            .collect();
 
         rule::Entity::delete_many()
             .filter(rule::Column::Id.is_in(ids_to_delete))
@@ -435,8 +446,23 @@ impl LocationService<'_> {
                 .context(remove_rules_by_ids_error::RuleSnafu);
         }
 
+        let mut rules = rule::Entity::find()
+            .filter(rule::Column::LocationId.eq(location_id))
+            .all(&txn)
+            .await
+            .context(remove_rules_by_ids_error::LoadRulesSnafu)?;
+        let ids_to_delete: Vec<i32> = rules
+            .drain(..)
+            .filter(|candidate| {
+                matched_rules
+                    .iter()
+                    .any(|selected| same_logical_rule(candidate, selected))
+            })
+            .map(|rule| rule.id)
+            .collect();
+
         rule::Entity::delete_many()
-            .filter(rule::Column::Id.is_in(requested_set.iter().copied()))
+            .filter(rule::Column::Id.is_in(ids_to_delete))
             .exec(&txn)
             .await
             .context(remove_rules_by_ids_error::DeleteRulesSnafu)?;
@@ -466,10 +492,24 @@ impl LocationService<'_> {
                     ..Default::default()
                 };
                 let res = location::Entity::insert(new_location)
+                    .on_conflict(OnConflict::new().do_nothing().to_owned())
+                    .try_insert()
                     .exec(txn)
                     .await
                     .context(match_or_create_location_error::InsertLocationSnafu)?;
-                Ok(res.last_insert_id)
+                match res {
+                    TryInsertResult::Inserted(res) => Ok(res.last_insert_id),
+                    TryInsertResult::Conflicted => location::Entity::find()
+                        .filter(location::Column::Pattern.eq(location.clone()))
+                        .select_only()
+                        .column(location::Column::Id)
+                        .into_tuple()
+                        .one(txn)
+                        .await
+                        .context(match_or_create_location_error::InsertLocationSnafu)?
+                        .context(match_or_create_location_error::LocationMissingSnafu),
+                    TryInsertResult::Empty => unreachable!("inserting one location is not empty"),
+                }
             }
         }
     }
@@ -497,9 +537,10 @@ impl LocationService<'_> {
             .all(&txn)
             .await
             .context(append_rule_error::LoadExistingRulesSnafu)?;
+        let expr_polish = expr.polish().clone();
         if let Some(existing_rule) = existing_rules
             .into_iter()
-            .find(|candidate| candidate.exprs.polish() == expr.polish())
+            .find(|candidate| candidate.exprs.polish() == &expr_polish)
         {
             txn.commit().await.context(append_rule_error::CommitSnafu)?;
             return Ok(existing_rule);
@@ -516,17 +557,33 @@ impl LocationService<'_> {
         };
 
         let result = rule::Entity::insert(new_rule)
+            .on_conflict(OnConflict::new().do_nothing().to_owned())
+            .try_insert()
             .exec(&txn)
             .await
             .context(append_rule_error::InsertRuleSnafu)?;
 
-        let inserted_rule = rule::Entity::find_by_id(result.last_insert_id)
-            .one(&txn)
-            .await
-            .context(append_rule_error::LoadInsertedRuleSnafu)?
-            .context(append_rule_error::InsertedRuleMissingSnafu {
-                id: result.last_insert_id,
-            })?;
+        let inserted_rule = match result {
+            TryInsertResult::Inserted(result) => {
+                let id = result.last_insert_id;
+                rule::Entity::find_by_id(id)
+                    .one(&txn)
+                    .await
+                    .context(append_rule_error::LoadInsertedRuleSnafu)?
+                    .context(append_rule_error::InsertedRuleMissingSnafu { id })?
+            }
+            TryInsertResult::Conflicted => rule::Entity::find()
+                .filter(rule::Column::LocationId.eq(location_id))
+                .filter(rule::Column::Action.eq(action))
+                .order_by_asc(rule::Column::CreatedAt)
+                .all(&txn)
+                .await
+                .context(append_rule_error::LoadExistingRulesSnafu)?
+                .into_iter()
+                .find(|candidate| candidate.exprs.polish() == &expr_polish)
+                .context(append_rule_error::ConflictingRuleMissingSnafu)?,
+            TryInsertResult::Empty => unreachable!("inserting one rule is not empty"),
+        };
 
         txn.commit().await.context(append_rule_error::CommitSnafu)?;
 
