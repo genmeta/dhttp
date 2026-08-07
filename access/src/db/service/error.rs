@@ -92,8 +92,8 @@ pub enum RemoveRulesError {
     BeginTransaction { source: DbErr },
     #[snafu(display("failed to locate location rule set before removing rules"))]
     MatchLocation { source: MatchLocationError },
-    #[snafu(display("failed to select location rule ids for removal"))]
-    LoadRuleIds { source: DbErr },
+    #[snafu(display("failed to select location rules for removal"))]
+    LoadRules { source: DbErr },
     #[snafu(display("location rule cannot be removed"))]
     Rule { source: RemoveRuleFailed },
     #[snafu(display("failed to delete location rules"))]
@@ -126,6 +126,8 @@ pub enum MatchOrCreateLocationError {
     MatchLocation { source: MatchLocationError },
     #[snafu(display("failed to insert location rule set"))]
     InsertLocation { source: DbErr },
+    #[snafu(display("location rule set disappeared after a conflicting insert"))]
+    LocationMissing,
 }
 
 #[derive(Debug, snafu::Snafu)]
@@ -143,6 +145,8 @@ pub enum AppendRuleError {
     LoadInsertedRule { source: DbErr },
     #[snafu(display("inserted location rule `{id}` could not be loaded"))]
     InsertedRuleMissing { id: i32 },
+    #[snafu(display("conflicting location rule could not be loaded"))]
+    ConflictingRuleMissing,
     #[snafu(display("failed to commit transaction after appending location rule"))]
     Commit { source: DbErr },
 }
