@@ -336,7 +336,7 @@ mod tests {
             .map(|resolver| resolver.to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(resolver_names, vec!["STUN DNS Router"]);
+        assert_eq!(resolver_names, vec!["DHTTP DNS Router"]);
     }
 
     #[tokio::test]
