@@ -111,13 +111,34 @@ impl IntoAuthority for &String {
     }
 }
 
+pub(crate) fn authority_with_default_port(
+    authority: Authority,
+    default_port: Option<u16>,
+) -> Result<Authority, IntoAuthorityError> {
+    if crate::ddns::uses_h3_dns(authority.host()) || authority.port_u16().is_some() {
+        return Ok(authority);
+    }
+
+    let Some(port) = default_port else {
+        return Ok(authority);
+    };
+    Authority::try_from(format!("{authority}:{port}")).context(into_authority_error::ParseSnafu)
+}
+
 impl IntoUri for Uri {
     fn into_uri(self, self_name: Option<&crate::name::DhttpName<'_>>) -> Result<Uri, IntoUriError> {
         let mut parts = self.into_parts();
         if let Some(authority) = parts.authority {
+            let authority = authority
+                .into_authority(self_name)
+                .context(into_uri_error::AuthoritySnafu)?;
+            let default_port = match parts.scheme.as_ref() {
+                Some(scheme) if scheme == &Scheme::HTTP => Some(80),
+                Some(scheme) if scheme == &Scheme::HTTPS => Some(443),
+                _ => None,
+            };
             parts.authority = Some(
-                authority
-                    .into_authority(self_name)
+                authority_with_default_port(authority, default_port)
                     .context(into_uri_error::AuthoritySnafu)?,
             );
         }
@@ -2016,7 +2037,7 @@ mod tests {
 
     #[test]
     fn into_uri_accepts_common_owned_and_borrowed_types() {
-        let expected: http::Uri = "https://example.com/api".parse().unwrap();
+        let expected: http::Uri = "https://example.com:443/api".parse().unwrap();
 
         assert_eq!("https://example.com/api".into_uri(None).unwrap(), expected);
         assert_eq!(

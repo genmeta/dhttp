@@ -15,7 +15,7 @@ use crate::dquic::{
 use crate::h3x::connection::ConnectionBuilder;
 use crate::h3x::dquic::H3Endpoint as DquicH3Endpoint;
 use crate::h3x::endpoint::H3Endpoint;
-use crate::message::{IntoAuthority, IntoAuthorityError, IntoUri};
+use crate::message::{IntoAuthority, IntoAuthorityError, IntoUri, authority_with_default_port};
 
 use http::Method;
 
@@ -573,6 +573,8 @@ impl Endpoint {
         let authority = authority
             .into_authority(name.as_ref())
             .context(connect_error::AuthoritySnafu)?;
+        let authority = authority_with_default_port(authority, Some(443))
+            .context(connect_error::AuthoritySnafu)?;
         self.inner
             .connect(authority)
             .await
@@ -700,6 +702,68 @@ mod tests {
             vec![CertificateDer::from(cert.der().to_vec())],
             PrivateKeyDer::try_from(key_pair.serialize_der()).expect("valid test private key"),
         )
+    }
+
+    #[test]
+    fn connection_authority_policy_matrix() {
+        for (input, expected) in [
+            ("sky.lee.dhttp.net", "sky.lee.dhttp.net"),
+            ("sky.lee.dhttp.net:2", "sky.lee.dhttp.net:2"),
+            ("sky.lee.dhttp.net:443", "sky.lee.dhttp.net:443"),
+            ("SKY.LEE.DHTTP.NET", "SKY.LEE.DHTTP.NET"),
+            ("sky.lee.dhttp.net.", "sky.lee.dhttp.net."),
+            ("example.com", "example.com:443"),
+            ("example.com:8443", "example.com:8443"),
+            ("sky.lee.dhttp.net.example", "sky.lee.dhttp.net.example:443"),
+            ("[2001:db8::1]", "[2001:db8::1]:443"),
+            ("[2001:db8::1]:8443", "[2001:db8::1]:8443"),
+        ] {
+            let authority: Authority = input.parse().unwrap();
+
+            assert_eq!(
+                authority_with_default_port(authority, Some(443))
+                    .unwrap()
+                    .as_str(),
+                expected,
+                "Authority input {input}"
+            );
+        }
+
+        for (uri, expected) in [
+            ("http://example.com/path", "example.com:80"),
+            ("https://example.com/path", "example.com:443"),
+            ("http://example.com:8080/path", "example.com:8080"),
+            ("https://example.com:8443/path", "example.com:8443"),
+            ("https://[2001:db8::1]/path", "[2001:db8::1]:443"),
+            ("http://sky.lee.dhttp.net/path", "sky.lee.dhttp.net"),
+            ("https://sky.lee.dhttp.net/path", "sky.lee.dhttp.net"),
+            ("https://sky.lee.dhttp.net:2/path", "sky.lee.dhttp.net:2"),
+            (
+                "https://sky.lee.dhttp.net:443/path",
+                "sky.lee.dhttp.net:443",
+            ),
+            ("custom://sky.lee.dhttp.net/path", "sky.lee.dhttp.net"),
+            ("custom://example.com:9443/path", "example.com:9443"),
+            ("custom://example.com/path", "example.com:443"),
+        ] {
+            let uri = uri.parse::<http::Uri>().unwrap().into_uri(None).unwrap();
+            let authority = uri.authority().expect("absolute test URI has authority");
+
+            assert_eq!(
+                authority_with_default_port(authority.clone(), Some(443))
+                    .unwrap()
+                    .as_str(),
+                expected,
+                "URI input {uri}"
+            );
+        }
+
+        let missing_authority = "/path"
+            .parse::<http::Uri>()
+            .unwrap()
+            .into_uri(None)
+            .unwrap();
+        assert!(missing_authority.authority().is_none());
     }
 
     #[test]

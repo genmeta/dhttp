@@ -553,7 +553,7 @@ fn uses_h3(operations: &[DhttpDnsOp]) -> bool {
         .any(|operation| matches!(operation, DhttpDnsOp::Dns(resolvers::DnsScheme::H3)))
 }
 
-fn uses_h3_dns(name: &str) -> bool {
+pub(crate) fn uses_h3_dns(name: &str) -> bool {
     let host = match name.rsplit_once(':') {
         Some((host, digits))
             if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) =>
@@ -654,7 +654,7 @@ mod tests {
             "dhttp.net",
             "DHTTP.NET.",
             "node.dhttp.net",
-            "deep.node.dhttp.net:443",
+            "deep.node.dhttp.net:2",
             "deep.node.dhttp.net.:7",
         ] {
             assert!(uses_h3_dns(name), "expected H3 DNS for {name}");
@@ -687,7 +687,7 @@ mod tests {
         let router = DhttpDnsRouter { dhttp, external };
 
         let _dhttp_records = router
-            .lookup("node.dhttp.net:443")
+            .lookup("node.dhttp.net")
             .await
             .expect("dhttp STUN name should use dhttp resolvers");
         assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
