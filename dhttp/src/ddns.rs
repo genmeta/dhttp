@@ -113,18 +113,18 @@ type DeferredEndpointResolver = resolvers::deferred::DeferredResolver<resolvers:
 type EndpointH3Client = Arc<H3Endpoint<EndpointH3Connector, crate::dquic::connection::Connection>>;
 
 #[derive(Debug)]
-struct StunResolverRouter {
+struct DhttpDnsRouter {
     dhttp: ArcResolvers,
     external: ArcResolvers,
 }
 
-impl fmt::Display for StunResolverRouter {
+impl fmt::Display for DhttpDnsRouter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("STUN DNS Router")
+        f.write_str("DHTTP DNS Router")
     }
 }
 
-impl Resolve for StunResolverRouter {
+impl Resolve for DhttpDnsRouter {
     fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
         let resolvers = if uses_h3_dns(name) {
             &self.dhttp
@@ -297,7 +297,7 @@ async fn network_stun_resolver_from_plan(
         return Ok(dhttp_resolvers);
     };
 
-    let router: ArcResolver = Arc::new(StunResolverRouter {
+    let router: ArcResolver = Arc::new(DhttpDnsRouter {
         dhttp: dhttp_resolvers,
         external: external_resolvers,
     });
@@ -375,6 +375,21 @@ async fn endpoint_dns_from_quic(
     }
 
     let resolvers = endpoint_resolver_chain(resolver_builder.build())?;
+    let resolvers = if uses_h3(&operations) {
+        let external = non_h3_resolvers(
+            &operations,
+            endpoint.network().clone(),
+            endpoint.bind_patterns().clone(),
+        )
+        .await;
+        let router: ArcResolver = Arc::new(DhttpDnsRouter {
+            dhttp: Arc::new(resolvers),
+            external: Arc::new(external),
+        });
+        endpoint_resolver_chain(resolvers::Resolvers::new().with(router))?
+    } else {
+        resolvers
+    };
     Ok((resolvers, publishers))
 }
 
@@ -669,7 +684,7 @@ mod tests {
         let external = Arc::new(resolvers::Resolvers::new().with(Arc::new(CountingResolver {
             calls: external_calls.clone(),
         })));
-        let router = StunResolverRouter { dhttp, external };
+        let router = DhttpDnsRouter { dhttp, external };
 
         let _dhttp_records = router
             .lookup("node.dhttp.net:443")

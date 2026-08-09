@@ -52,7 +52,7 @@ ddns = { package = "dyns", version = "0.7.0", features = [
     "mdns",
     "dquic-network",
 ] }
-h3x = { version = "0.6.1-beta.1", features = [
+h3x = { version = "0.6.0", features = [
     "dquic",
 ] }
 dhttp = { path = "dhttp", version = "0.6.1-beta.2" }
