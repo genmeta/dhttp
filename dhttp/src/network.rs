@@ -41,7 +41,7 @@ impl DhttpNetwork {
     }
 
     /// Return the mDNS driver shared by all views of this DHTTP network.
-    pub(crate) fn mdns_driver(&self) -> Arc<MdnsBindDriver> {
+    pub fn mdns_driver(&self) -> Arc<MdnsBindDriver> {
         self.mdns_driver.clone()
     }
 
