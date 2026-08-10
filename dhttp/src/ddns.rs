@@ -112,9 +112,13 @@ impl DhttpDnsPlan {
 type DeferredEndpointResolver = resolvers::deferred::DeferredResolver<resolvers::Resolvers>;
 type EndpointH3Client = Arc<H3Endpoint<EndpointH3Connector, crate::dquic::connection::Connection>>;
 
+/// Routes DHTTP endpoint names and external authorities to separate scopes.
 #[derive(Debug)]
 struct DhttpDnsRouter {
+    /// Contains only DHTTP-aware and explicitly supplied resolvers.
     dhttp: ArcResolvers,
+
+    /// Contains system, scoped mDNS, and explicitly supplied resolvers.
     external: ArcResolvers,
 }
 
@@ -126,12 +130,13 @@ impl fmt::Display for DhttpDnsRouter {
 
 impl Resolve for DhttpDnsRouter {
     fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
-        let resolvers = if uses_h3_dns(name) {
-            &self.dhttp
-        } else {
-            &self.external
-        };
-        Resolve::lookup(resolvers.as_ref(), name)
+        if is_dhttp_authority(name) {
+            return Resolve::lookup(self.dhttp.as_ref(), name);
+        }
+
+        let external = self.external.clone();
+        let authority = external_authority(name);
+        Box::pin(async move { Resolve::lookup(external.as_ref(), &authority).await })
     }
 }
 
@@ -213,11 +218,23 @@ where
     let deferred_stun_resolver = Arc::new(DeferredStunResolver::new());
     let stun_resolver: ArcResolver = deferred_stun_resolver.clone();
     let network = builder(stun_resolver);
-    let final_resolver =
-        network_stun_resolver_from_plan(dns_plan, network.clone(), bind, h3_dns_server).await?;
+    let mdns_driver = Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE));
+    let final_resolver = network_stun_resolver_from_plan(
+        dns_plan,
+        network.clone(),
+        bind,
+        h3_dns_server,
+        mdns_driver.clone(),
+    )
+    .await?;
 
-    DhttpNetwork::from_deferred_stun_resolver(network, deferred_stun_resolver, final_resolver)
-        .context(build_dhttp_network_with_dns_error::DeferredStunResolverSnafu)
+    DhttpNetwork::from_deferred_stun_resolver(
+        network,
+        deferred_stun_resolver,
+        final_resolver,
+        mdns_driver,
+    )
+    .context(build_dhttp_network_with_dns_error::DeferredStunResolverSnafu)
 }
 
 #[bon::builder(finish_fn = build)]
@@ -225,6 +242,8 @@ pub async fn quic_endpoint_builder_with_dns<F, Fut>(
     #[builder(start_fn)] builder: F,
     #[builder(start_fn)] dns_plan: &DhttpDnsPlan,
     #[builder(default = Arc::<str>::from(resolvers::DHTTP_H3_DNS_SERVER))] h3_dns_server: Arc<str>,
+    #[builder(default = Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)))]
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<(QuicEndpoint, publishers::Publishers), BuildQuicEndpointWithDnsError>
 where
     F: FnOnce(ArcResolver) -> Fut,
@@ -234,7 +253,7 @@ where
     let endpoint_resolver: ArcResolver = deferred_endpoint_resolver.clone();
     let endpoint = builder(endpoint_resolver).await;
     let (final_resolver, publishers) =
-        endpoint_dns_from_quic(dns_plan, &endpoint, h3_dns_server).await?;
+        endpoint_dns_from_quic(dns_plan, &endpoint, h3_dns_server, mdns_driver).await?;
 
     deferred_endpoint_resolver
         .set(final_resolver)
@@ -248,33 +267,50 @@ async fn network_stun_resolver_from_plan(
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
     h3_dns_server: Arc<str>,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
     let operations = dns_plan.effective_ops();
-    let (h3_resolver, external_resolvers) = if uses_h3(&operations) {
-        let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone()).await?;
+    let shared_mdns = if uses_mdns(&operations) {
+        Some(Arc::new(
+            mdns::MdnsResolvers::bind_with_driver(
+                network.clone(),
+                bind.clone(),
+                mdns_driver.clone(),
+            )
+            .await,
+        ))
+    } else {
+        None
+    };
+    let h3_resolver = if uses_h3(&operations) {
+        let h3_underlay = network_h3_underlay(
+            &operations,
+            network.clone(),
+            bind.clone(),
+            mdns_driver.clone(),
+        )
+        .await?;
         let h3_quic =
             dedicated_network_h3_client_quic(network.clone(), bind.clone(), h3_underlay.clone())
                 .await;
-        (
-            Some(Arc::new(h3_resolver_for_network(
-                h3_dns_server.as_ref(),
-                h3_quic,
-            )?)),
-            Some(h3_underlay),
-        )
+        Some(Arc::new(h3_resolver_for_network(
+            h3_dns_server.as_ref(),
+            h3_quic,
+        )?))
     } else {
-        (None, None)
+        None
     };
 
     let mut builder = resolvers::Resolvers::builder();
     for operation in &operations {
         match operation {
             DhttpDnsOp::Dns(resolvers::DnsScheme::Mdns) => {
-                builder = builder.mdns(network.clone(), bind.clone()).await;
+                let mdns = shared_mdns
+                    .clone()
+                    .expect("BUG: shared mDNS resolver exists when mDNS is configured");
+                builder = builder.candidate_resolver(mdns);
             }
-            DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {
-                builder = builder.system();
-            }
+            DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {}
             DhttpDnsOp::Dns(resolvers::DnsScheme::Http) => {
                 builder = builder
                     .http()
@@ -293,9 +329,8 @@ async fn network_stun_resolver_from_plan(
     }
 
     let dhttp_resolvers = network_resolver_chain(builder.build())?;
-    let Some(external_resolvers) = external_resolvers else {
-        return Ok(dhttp_resolvers);
-    };
+    let external_resolvers =
+        network_resolver_chain(external_resolvers_from_shared(&operations, shared_mdns))?;
 
     let router: ArcResolver = Arc::new(DhttpDnsRouter {
         dhttp: dhttp_resolvers,
@@ -308,10 +343,23 @@ async fn endpoint_dns_from_quic(
     dns_plan: &DhttpDnsPlan,
     endpoint: &QuicEndpoint,
     h3_dns_server: Arc<str>,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<(resolvers::Resolvers, publishers::Publishers), BuildQuicEndpointWithDnsError> {
     let operations = dns_plan.effective_ops();
     let endpoint_h3 = if uses_h3(&operations) {
-        Some(endpoint_h3_clients_from_quic(&operations, endpoint).await?)
+        Some(endpoint_h3_clients_from_quic(&operations, endpoint, mdns_driver.clone()).await?)
+    } else {
+        None
+    };
+    let shared_mdns = if uses_mdns(&operations) {
+        Some(Arc::new(
+            mdns::MdnsResolvers::bind_with_driver(
+                endpoint.network().clone(),
+                endpoint.bind_patterns().clone(),
+                mdns_driver.clone(),
+            )
+            .await,
+        ))
     } else {
         None
     };
@@ -322,23 +370,16 @@ async fn endpoint_dns_from_quic(
     for operation in &operations {
         match operation {
             DhttpDnsOp::Dns(resolvers::DnsScheme::Mdns) => {
-                let mdns = Arc::new(
-                    mdns::MdnsResolvers::bind(
-                        endpoint.network().clone(),
-                        endpoint.bind_patterns().clone(),
-                        resolvers::DHTTP_MDNS_SERVICE,
-                    )
-                    .await,
-                );
+                let mdns = shared_mdns
+                    .clone()
+                    .expect("BUG: shared mDNS resolver exists when mDNS is configured");
                 resolver_builder = resolver_builder.candidate_resolver(mdns.clone());
                 publishers.push(publishers::Publisher::mdns(
                     mdns,
                     Arc::new(endpoint.clone()),
                 ));
             }
-            DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {
-                resolver_builder = resolver_builder.system();
-            }
+            DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {}
             DhttpDnsOp::Dns(resolvers::DnsScheme::Http) => {
                 let http = Arc::new(
                     resolvers::HttpResolver::new(crate::endpoint::BOOTSTRAP_URL)
@@ -374,30 +415,22 @@ async fn endpoint_dns_from_quic(
         }
     }
 
-    let resolvers = endpoint_resolver_chain(resolver_builder.build())?;
-    let resolvers = if uses_h3(&operations) {
-        let external = non_h3_resolvers(
-            &operations,
-            endpoint.network().clone(),
-            endpoint.bind_patterns().clone(),
-        )
-        .await;
-        let router: ArcResolver = Arc::new(DhttpDnsRouter {
-            dhttp: Arc::new(resolvers),
-            external: Arc::new(external),
-        });
-        endpoint_resolver_chain(resolvers::Resolvers::new().with(router))?
-    } else {
-        resolvers
-    };
+    let dhttp = endpoint_resolver_chain(resolver_builder.build())?;
+    let external = external_resolvers_from_shared(&operations, shared_mdns);
+    let router: ArcResolver = Arc::new(DhttpDnsRouter {
+        dhttp: Arc::new(dhttp),
+        external: Arc::new(external),
+    });
+    let resolvers = endpoint_resolver_chain(resolvers::Resolvers::new().with(router))?;
     Ok((resolvers, publishers))
 }
 
 async fn endpoint_h3_clients_from_quic(
     operations: &[DhttpDnsOp],
     endpoint: &QuicEndpoint,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<EndpointH3Clients, BuildQuicEndpointWithDnsError> {
-    let h3_underlay = endpoint_h3_underlay(operations, endpoint).await?;
+    let h3_underlay = endpoint_h3_underlay(operations, endpoint, mdns_driver).await?;
     let resolver_quic = dedicated_h3_client_quic(endpoint, h3_underlay.clone()).await;
     let publisher_quic = dedicated_h3_client_quic(endpoint, h3_underlay).await;
 
@@ -445,11 +478,13 @@ async fn dedicated_network_h3_client_quic(
 async fn endpoint_h3_underlay(
     operations: &[DhttpDnsOp],
     endpoint: &QuicEndpoint,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<ArcResolver, BuildQuicEndpointWithDnsError> {
-    let resolvers = non_h3_resolvers(
+    let resolvers = external_resolvers(
         operations,
         endpoint.network().clone(),
         endpoint.bind_patterns().clone(),
+        mdns_driver,
     )
     .await;
 
@@ -460,41 +495,55 @@ async fn network_h3_underlay(
     operations: &[DhttpDnsOp],
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<ArcResolvers, BuildDhttpNetworkWithDnsError> {
-    let resolvers = non_h3_resolvers(operations, network, bind).await;
+    let resolvers = external_resolvers(operations, network, bind, mdns_driver).await;
 
     network_resolver_chain(resolvers)
 }
 
-async fn non_h3_resolvers(
+/// Build the external resolver scope used by bootstrap and normal authorities.
+async fn external_resolvers(
     operations: &[DhttpDnsOp],
     network: Arc<Network>,
     bind: Arc<Vec<BindPattern>>,
+    mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> resolvers::Resolvers {
-    let mut builder = resolvers::Resolvers::builder();
+    let shared_mdns = if uses_mdns(operations) {
+        Some(Arc::new(
+            mdns::MdnsResolvers::bind_with_driver(network, bind, mdns_driver).await,
+        ))
+    } else {
+        None
+    };
+    external_resolvers_from_shared(operations, shared_mdns)
+}
+
+/// Build an external resolver scope around an already-shared mDNS view.
+fn external_resolvers_from_shared(
+    operations: &[DhttpDnsOp],
+    shared_mdns: Option<Arc<mdns::MdnsResolvers>>,
+) -> resolvers::Resolvers {
+    let mut builder = resolvers::Resolvers::builder().system();
 
     for operation in operations {
         match operation {
             DhttpDnsOp::Dns(resolvers::DnsScheme::Mdns) => {
-                builder = builder.mdns(network.clone(), bind.clone()).await;
+                let mdns = shared_mdns
+                    .clone()
+                    .expect("BUG: shared mDNS resolver exists when mDNS is configured");
+                builder = builder.candidate_resolver(mdns);
             }
-            DhttpDnsOp::Dns(resolvers::DnsScheme::System) => {
-                builder = builder.system();
-            }
-            DhttpDnsOp::Dns(resolvers::DnsScheme::Http) => {
-                builder = builder
-                    .http()
-                    .expect("BUG: DHTTP HTTP DNS server is a valid URL");
-            }
-            DhttpDnsOp::Dns(resolvers::DnsScheme::H3) | DhttpDnsOp::Publisher(_) => {}
+            DhttpDnsOp::Dns(
+                resolvers::DnsScheme::System
+                | resolvers::DnsScheme::Http
+                | resolvers::DnsScheme::H3,
+            )
+            | DhttpDnsOp::Publisher(_) => {}
             DhttpDnsOp::Resolver(resolver) => {
                 builder = builder.resolver(resolver.clone());
             }
         }
-    }
-
-    if uses_h3(operations) && !has_custom_resolver(operations) && !has_system_dns(operations) {
-        builder = builder.system();
     }
 
     builder.build()
@@ -553,7 +602,15 @@ fn uses_h3(operations: &[DhttpDnsOp]) -> bool {
         .any(|operation| matches!(operation, DhttpDnsOp::Dns(resolvers::DnsScheme::H3)))
 }
 
-pub(crate) fn uses_h3_dns(name: &str) -> bool {
+/// Return whether the plan requires an mDNS resolver view.
+fn uses_mdns(operations: &[DhttpDnsOp]) -> bool {
+    operations
+        .iter()
+        .any(|operation| matches!(operation, DhttpDnsOp::Dns(resolvers::DnsScheme::Mdns)))
+}
+
+/// Classify a validated authority by host without interpreting its port as a sequence.
+fn is_dhttp_authority(name: &str) -> bool {
     let host = match name.rsplit_once(':') {
         Some((host, digits))
             if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) =>
@@ -580,16 +637,22 @@ pub(crate) fn uses_h3_dns(name: &str) -> bool {
         && host.as_bytes()[suffix_start..].eq_ignore_ascii_case(DHTTP_DNS_SUFFIX.as_bytes())
 }
 
-fn has_custom_resolver(operations: &[DhttpDnsOp]) -> bool {
-    operations
-        .iter()
-        .any(|operation| matches!(operation, DhttpDnsOp::Resolver(_)))
+/// Add port 443 to an external authority only when it has no explicit port.
+fn external_authority(name: &str) -> String {
+    let Ok(authority) = name.parse::<::http::uri::Authority>() else {
+        return name.to_owned();
+    };
+    if name.rsplit_once(':').is_some_and(|(host, digits)| {
+        !host.is_empty() && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+    }) {
+        return name.to_owned();
+    }
+
+    format!("{authority}:443")
 }
 
-fn has_system_dns(operations: &[DhttpDnsOp]) -> bool {
-    operations
-        .iter()
-        .any(|operation| matches!(operation, DhttpDnsOp::Dns(resolvers::DnsScheme::System)))
+pub(crate) fn uses_h3_dns(name: &str) -> bool {
+    is_dhttp_authority(name)
 }
 
 #[cfg(test)]
@@ -598,7 +661,7 @@ mod tests {
     use std::{
         fmt,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
     };
@@ -622,6 +685,27 @@ mod tests {
     impl Resolve for CountingResolver {
         fn lookup<'a>(&'a self, _name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(stream::empty().boxed()) }.boxed()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingResolver {
+        names: Mutex<Vec<String>>,
+    }
+
+    impl fmt::Display for RecordingResolver {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("recording resolver")
+        }
+    }
+
+    impl Resolve for RecordingResolver {
+        fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
+            self.names
+                .lock()
+                .expect("resolver names lock poisoned")
+                .push(name.to_owned());
             async move { Ok(stream::empty().boxed()) }.boxed()
         }
     }
@@ -699,6 +783,44 @@ mod tests {
             .expect("external STUN name should use external resolvers");
         assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
         assert_eq!(external_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn router_preserves_dhttp_authorities_and_defaults_external_ports() {
+        let dhttp = Arc::new(RecordingResolver::default());
+        let external = Arc::new(RecordingResolver::default());
+        let router = DhttpDnsRouter {
+            dhttp: Arc::new(resolvers::Resolvers::new().with(dhttp.clone())),
+            external: Arc::new(resolvers::Resolvers::new().with(external.clone())),
+        };
+
+        for name in ["node.dhttp.net", "node.dhttp.net:2"] {
+            let _records = router.lookup(name).await.expect("DHTTP lookup succeeds");
+        }
+        for name in [
+            "nat.genmeta.net",
+            "nat.genmeta.net:20004",
+            "nat.genmeta.net:65536",
+            "printer.local",
+            "[::1]",
+        ] {
+            let _records = router.lookup(name).await.expect("external lookup succeeds");
+        }
+
+        assert_eq!(
+            *dhttp.names.lock().expect("resolver names lock poisoned"),
+            ["node.dhttp.net", "node.dhttp.net:2"]
+        );
+        assert_eq!(
+            *external.names.lock().expect("resolver names lock poisoned"),
+            [
+                "nat.genmeta.net:443",
+                "nat.genmeta.net:20004",
+                "nat.genmeta.net:65536",
+                "printer.local:443",
+                "[::1]:443",
+            ]
+        );
     }
 
     #[test]
@@ -793,7 +915,7 @@ mod tests {
 
         assert_eq!(
             endpoint.resolver().to_string(),
-            "DeferredResolver(Resolvers(counting resolver))"
+            "DeferredResolver(Resolvers(DHTTP DNS Router))"
         );
         assert!(publishers.iter().next().is_none());
     }
@@ -857,9 +979,13 @@ mod tests {
         let source_client = (*source_quic.client_config_mut()).clone();
         let source_server = (*source_quic.server_config_mut()).clone();
 
-        let clients = endpoint_h3_clients_from_quic(&operations, &endpoint)
-            .await
-            .expect("h3 dns clients should build");
+        let clients = endpoint_h3_clients_from_quic(
+            &operations,
+            &endpoint,
+            Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)),
+        )
+        .await
+        .expect("h3 dns clients should build");
 
         assert!(
             !Arc::ptr_eq(&clients.resolver, &clients.publisher),
@@ -913,9 +1039,14 @@ mod tests {
                 .expect("wildcard bind pattern should parse"),
         ]);
         let operations = vec![DhttpDnsOp::Dns(resolvers::DnsScheme::H3)];
-        let h3_underlay = network_h3_underlay(&operations, network.clone(), bind.clone())
-            .await
-            .expect("network h3 underlay should build");
+        let h3_underlay = network_h3_underlay(
+            &operations,
+            network.clone(),
+            bind.clone(),
+            Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)),
+        )
+        .await
+        .expect("network h3 underlay should build");
 
         let mut quic = dedicated_network_h3_client_quic(network, bind, h3_underlay).await;
 

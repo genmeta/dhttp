@@ -3,6 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use crate::ddns::{
     ArcPublisher, ArcResolver, BuildDhttpNetworkWithDnsError, DhttpDnsPlan,
     dhttp_network_builder_with_dns,
+    mdns::MdnsBindDriver,
     publishers::PublishScope,
     resolvers::{DnsScheme, Resolvers, deferred::DeferredResolver, weak::WeakResolver},
 };
@@ -17,10 +18,19 @@ use crate::dquic::{
 pub(crate) type ArcResolvers = Arc<Resolvers>;
 pub(crate) type DeferredStunResolver = DeferredResolver<WeakResolver<Resolvers>>;
 
+/// Owns network resources shared by DHTTP endpoints.
 #[derive(Clone)]
 pub struct DhttpNetwork {
+    /// Underlying network used by QUIC, STUN, and interface reconciliation.
     network: Arc<Network>,
+
+    /// Shared backend that gives every endpoint the same mDNS binding identity.
+    mdns_driver: Arc<MdnsBindDriver>,
+
+    /// Placeholder retained while the network references its deferred resolver.
     _deferred_stun_resolver: Option<Arc<DeferredStunResolver>>,
+
+    /// Keeps the final deferred STUN resolver target alive.
     _stun_resolver: Option<ArcResolver>,
 }
 
@@ -30,15 +40,22 @@ impl DhttpNetwork {
         &self.network
     }
 
+    /// Return the mDNS driver shared by all views of this DHTTP network.
+    pub(crate) fn mdns_driver(&self) -> Arc<MdnsBindDriver> {
+        self.mdns_driver.clone()
+    }
+
     pub(crate) fn from_deferred_stun_resolver(
         network: Arc<Network>,
         deferred_stun_resolver: Arc<DeferredStunResolver>,
         stun_resolver: ArcResolvers,
+        mdns_driver: Arc<MdnsBindDriver>,
     ) -> Result<Self, crate::ddns::resolvers::deferred::SetDeferredResolverError> {
         deferred_stun_resolver.set(WeakResolver::new(Arc::downgrade(&stun_resolver)))?;
         let keepalive: ArcResolver = stun_resolver;
         Ok(Self {
             network,
+            mdns_driver,
             _deferred_stun_resolver: Some(deferred_stun_resolver),
             _stun_resolver: Some(keepalive),
         })
@@ -63,6 +80,9 @@ impl From<Arc<Network>> for DhttpNetwork {
     fn from(network: Arc<Network>) -> Self {
         Self {
             network,
+            mdns_driver: Arc::new(MdnsBindDriver::new(
+                crate::ddns::resolvers::DHTTP_MDNS_SERVICE,
+            )),
             _deferred_stun_resolver: None,
             _stun_resolver: None,
         }
@@ -123,6 +143,9 @@ impl DhttpNetwork {
                 .build();
             return Ok(Self {
                 network,
+                mdns_driver: Arc::new(MdnsBindDriver::new(
+                    crate::ddns::resolvers::DHTTP_MDNS_SERVICE,
+                )),
                 _deferred_stun_resolver: None,
                 _stun_resolver: Some(stun_resolver),
             });
