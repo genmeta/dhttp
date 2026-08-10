@@ -153,6 +153,8 @@ impl Endpoint {
         identity: Option<Arc<Identity>>,
         network: Option<DhttpNetwork>,
 
+        #[builder(default = Arc::<str>::from(crate::ddns::resolvers::DHTTP_H3_DNS_SERVER))]
+        h3_dns_server: Arc<str>,
         #[builder(default = crate::trust::default_client_quic_config())] client: ClientQuicConfig,
         #[builder(default = crate::trust::default_server_quic_config())] server: ServerQuicConfig,
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
@@ -167,6 +169,7 @@ impl Endpoint {
             None => DhttpNetwork::builder()
                 .dns_plan(dns_plan.clone())
                 .bind(bind.clone())
+                .h3_dns_server(h3_dns_server.clone())
                 .build()
                 .await
                 .context(build_endpoint_error::StunDnsSnafu)?,
@@ -193,6 +196,7 @@ impl Endpoint {
             },
             &dns_plan,
         )
+        .h3_dns_server(h3_dns_server)
         .mdns_driver(network.mdns_driver())
         .build()
         .await
@@ -1150,6 +1154,32 @@ mod tests {
             .expect("anonymous endpoint is valid");
 
         assert!(endpoint.dns_publishers().iter().next().is_some());
+    }
+
+    #[tokio::test]
+    async fn endpoint_builder_applies_custom_h3_dns_server() {
+        let network = DhttpNetwork::builder()
+            .resolver(Arc::new(MarkerResolver))
+            .build()
+            .await
+            .expect("network should build");
+
+        let Err(error) = Endpoint::builder()
+            .network(network)
+            .dns(DnsScheme::H3)
+            .h3_dns_server(Arc::<str>::from("://invalid"))
+            .build()
+            .await
+        else {
+            panic!("custom H3 DNS server must be validated by endpoint DNS");
+        };
+
+        assert!(matches!(
+            error,
+            BuildEndpointError::EndpointDns {
+                source: crate::ddns::BuildQuicEndpointWithDnsError::InvalidH3DnsServer { .. }
+            }
+        ));
     }
 
     #[tokio::test]
