@@ -129,14 +129,17 @@ impl fmt::Display for DhttpDnsRouter {
 }
 
 impl Resolve for DhttpDnsRouter {
-    fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
-        if is_dhttp_authority(name) {
-            return Resolve::lookup(self.dhttp.as_ref(), name);
+    fn lookup<'a>(
+        &'a self,
+        hostname: &'a str,
+        servname: &'a str,
+        family: Option<crate::dquic::qresolve::Family>,
+    ) -> crate::dquic::resolver::ResolveFuture<'a> {
+        if is_dhttp_authority(hostname) {
+            return Resolve::lookup(self.dhttp.as_ref(), hostname, servname, family);
         }
 
-        let external = self.external.clone();
-        let authority = external_authority(name);
-        Box::pin(async move { Resolve::lookup(external.as_ref(), &authority).await })
+        Resolve::lookup(self.external.as_ref(), hostname, servname, family)
     }
 }
 
@@ -638,19 +641,6 @@ fn is_dhttp_authority(name: &str) -> bool {
 }
 
 /// Add port 443 to an external authority only when it has no explicit port.
-fn external_authority(name: &str) -> String {
-    let Ok(authority) = name.parse::<::http::uri::Authority>() else {
-        return name.to_owned();
-    };
-    if name.rsplit_once(':').is_some_and(|(host, digits)| {
-        !host.is_empty() && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
-    }) {
-        return name.to_owned();
-    }
-
-    format!("{authority}:443")
-}
-
 pub(crate) fn uses_h3_dns(name: &str) -> bool {
     is_dhttp_authority(name)
 }
@@ -683,7 +673,12 @@ mod tests {
     }
 
     impl Resolve for CountingResolver {
-        fn lookup<'a>(&'a self, _name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
+        fn lookup<'a>(
+            &'a self,
+            _hostname: &'a str,
+            _servname: &'a str,
+            _family: Option<crate::dquic::qresolve::Family>,
+        ) -> crate::dquic::resolver::ResolveFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             async move { Ok(stream::empty().boxed()) }.boxed()
         }
@@ -691,7 +686,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingResolver {
-        names: Mutex<Vec<String>>,
+        lookups: Mutex<Vec<(String, String, Option<crate::dquic::qresolve::Family>)>>,
     }
 
     impl fmt::Display for RecordingResolver {
@@ -701,11 +696,16 @@ mod tests {
     }
 
     impl Resolve for RecordingResolver {
-        fn lookup<'a>(&'a self, name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
-            self.names
+        fn lookup<'a>(
+            &'a self,
+            hostname: &'a str,
+            servname: &'a str,
+            family: Option<crate::dquic::qresolve::Family>,
+        ) -> crate::dquic::resolver::ResolveFuture<'a> {
+            self.lookups
                 .lock()
                 .expect("resolver names lock poisoned")
-                .push(name.to_owned());
+                .push((hostname.to_owned(), servname.to_owned(), family));
             async move { Ok(stream::empty().boxed()) }.boxed()
         }
     }
@@ -771,14 +771,18 @@ mod tests {
         let router = DhttpDnsRouter { dhttp, external };
 
         let _dhttp_records = router
-            .lookup("node.dhttp.net")
+            .lookup("node.dhttp.net", "", None)
             .await
             .expect("dhttp STUN name should use dhttp resolvers");
         assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
         assert_eq!(external_calls.load(Ordering::SeqCst), 0);
 
         let _external_records = router
-            .lookup("nat.genmeta.net:20004")
+            .lookup(
+                "nat.genmeta.net",
+                "20004",
+                Some(crate::dquic::qresolve::Family::V4),
+            )
             .await
             .expect("external STUN name should use external resolvers");
         assert_eq!(dhttp_calls.load(Ordering::SeqCst), 1);
@@ -786,7 +790,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn router_preserves_dhttp_authorities_and_defaults_external_ports() {
+    async fn router_forwards_all_lookup_parameters_without_reinterpreting_service() {
         let dhttp = Arc::new(RecordingResolver::default());
         let external = Arc::new(RecordingResolver::default());
         let router = DhttpDnsRouter {
@@ -795,30 +799,50 @@ mod tests {
         };
 
         for name in ["node.dhttp.net", "node.dhttp.net:2"] {
-            let _records = router.lookup(name).await.expect("DHTTP lookup succeeds");
+            let _records = router
+                .lookup(name, "ignored", Some(crate::dquic::qresolve::Family::V6))
+                .await
+                .expect("DHTTP lookup succeeds");
         }
-        for name in [
-            "nat.genmeta.net",
-            "nat.genmeta.net:20004",
-            "nat.genmeta.net:65536",
-            "printer.local",
-            "[::1]",
+        for (hostname, servname) in [
+            ("nat.genmeta.net", ""),
+            ("nat.genmeta.net", "20004"),
+            ("nat.genmeta.net", "65536"),
+            ("printer.local", ""),
+            ("[::1]", ""),
         ] {
-            let _records = router.lookup(name).await.expect("external lookup succeeds");
+            let _records = router
+                .lookup(hostname, servname, None)
+                .await
+                .expect("external lookup succeeds");
         }
 
         assert_eq!(
-            *dhttp.names.lock().expect("resolver names lock poisoned"),
-            ["node.dhttp.net", "node.dhttp.net:2"]
+            *dhttp.lookups.lock().expect("resolver names lock poisoned"),
+            [
+                (
+                    "node.dhttp.net".to_owned(),
+                    "ignored".to_owned(),
+                    Some(crate::dquic::qresolve::Family::V6)
+                ),
+                (
+                    "node.dhttp.net:2".to_owned(),
+                    "ignored".to_owned(),
+                    Some(crate::dquic::qresolve::Family::V6)
+                ),
+            ]
         );
         assert_eq!(
-            *external.names.lock().expect("resolver names lock poisoned"),
+            *external
+                .lookups
+                .lock()
+                .expect("resolver names lock poisoned"),
             [
-                "nat.genmeta.net:443",
-                "nat.genmeta.net:20004",
-                "nat.genmeta.net:65536",
-                "printer.local:443",
-                "[::1]:443",
+                ("nat.genmeta.net".to_owned(), "".to_owned(), None),
+                ("nat.genmeta.net".to_owned(), "20004".to_owned(), None),
+                ("nat.genmeta.net".to_owned(), "65536".to_owned(), None),
+                ("printer.local".to_owned(), "".to_owned(), None),
+                ("[::1]".to_owned(), "".to_owned(), None),
             ]
         );
     }

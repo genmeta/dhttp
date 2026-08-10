@@ -223,7 +223,12 @@ mod tests {
     }
 
     impl Resolve for CountingResolver {
-        fn lookup<'a>(&'a self, _name: &'a str) -> crate::dquic::resolver::ResolveFuture<'a> {
+        fn lookup<'a>(
+            &'a self,
+            _hostname: &'a str,
+            _servname: &'a str,
+            _family: Option<crate::dquic::qresolve::Family>,
+        ) -> crate::dquic::resolver::ResolveFuture<'a> {
             use futures::{StreamExt, stream};
 
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -326,7 +331,7 @@ mod tests {
             .network()
             .quic()
             .stun_resolver()
-            .lookup("stun.example.test")
+            .lookup("stun.example.test", "", None)
             .await
             .expect("custom resolver should resolve STUN server");
 

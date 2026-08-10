@@ -1140,7 +1140,12 @@ mod tests {
     }
 
     impl crate::dquic::qresolve::Resolve for MarkerResolver {
-        fn lookup<'l>(&'l self, _name: &'l str) -> crate::dquic::qresolve::ResolveFuture<'l> {
+        fn lookup<'l>(
+            &'l self,
+            _hostname: &'l str,
+            _servname: &'l str,
+            _family: Option<crate::dquic::qresolve::Family>,
+        ) -> crate::dquic::qresolve::ResolveFuture<'l> {
             use futures::{FutureExt, StreamExt, stream};
             async { Ok(stream::empty().boxed()) }.boxed()
         }
@@ -1206,7 +1211,12 @@ mod tests {
     }
 
     impl crate::dquic::qresolve::Resolve for CountingResolver {
-        fn lookup<'l>(&'l self, _name: &'l str) -> crate::dquic::qresolve::ResolveFuture<'l> {
+        fn lookup<'l>(
+            &'l self,
+            _hostname: &'l str,
+            _servname: &'l str,
+            _family: Option<crate::dquic::qresolve::Family>,
+        ) -> crate::dquic::qresolve::ResolveFuture<'l> {
             use futures::{FutureExt, StreamExt, stream};
 
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1344,7 +1354,7 @@ mod tests {
             .network()
             .quic()
             .stun_resolver()
-            .lookup("stun.example.test")
+            .lookup("stun.example.test", "", None)
             .await
             .expect("custom STUN resolver should be called");
 
