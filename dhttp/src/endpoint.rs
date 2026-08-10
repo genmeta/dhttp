@@ -193,6 +193,7 @@ impl Endpoint {
             },
             &dns_plan,
         )
+        .mdns_driver(network.mdns_driver())
         .build()
         .await
         .context(build_endpoint_error::EndpointDnsSnafu)?;
@@ -1229,7 +1230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_with_custom_resolver_only_uses_custom_resolver_chain() {
+    async fn endpoint_with_custom_resolver_only_uses_routed_resolver_chain() {
         let resolver: Arc<dyn Resolve + Send + Sync> = Arc::new(MarkerResolver);
         let endpoint = Endpoint::builder()
             .resolver(resolver)
@@ -1238,7 +1239,7 @@ mod tests {
             .expect("custom resolver endpoint is valid");
 
         assert!(endpoint.dns_publishers().iter().next().is_none());
-        assert_eq!(endpoint_resolver_names(&endpoint), vec!["marker resolver"]);
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["DHTTP DNS Router"]);
     }
 
     #[tokio::test]
@@ -1262,23 +1263,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_with_system_dns_and_custom_publisher_builds_both_sides() {
+    async fn endpoint_with_system_dns_and_custom_publisher_rejects_empty_dhttp_scope() {
         let publisher: Arc<dyn crate::dquic::resolver::Publish + Send + Sync> =
             Arc::new(CountingPublisher {
                 calls: Arc::new(AtomicUsize::new(0)),
             });
-        let endpoint = Endpoint::builder()
+        let Err(error) = Endpoint::builder()
             .dns(DnsScheme::System)
             .publisher(crate::ddns::publishers::PublishScope::WideArea, publisher)
             .build()
             .await
-            .expect("system plus custom publisher endpoint should build");
+        else {
+            panic!("system-only DNS should not populate the DHTTP resolver scope");
+        };
 
-        assert_eq!(
-            endpoint_resolver_names(&endpoint),
-            vec!["System DNS Resolver"]
-        );
-        assert_eq!(endpoint.dns_publishers().iter().count(), 1);
+        assert!(matches!(
+            error,
+            BuildEndpointError::EndpointDns { .. } | BuildEndpointError::StunDns { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1292,7 +1294,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(endpoint_resolver_names(&endpoint), vec!["marker resolver"]);
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["DHTTP DNS Router"]);
     }
 
     #[tokio::test]
@@ -1345,10 +1347,7 @@ mod tests {
             &raw_network.quic().stun_resolver(),
             &external_resolver
         ));
-        assert_eq!(
-            endpoint_resolver_names(&endpoint),
-            vec!["counting resolver"]
-        );
+        assert_eq!(endpoint_resolver_names(&endpoint), vec!["DHTTP DNS Router"]);
     }
 
     #[tokio::test]
