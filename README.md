@@ -1,14 +1,16 @@
 <p align="center">
   <a href="https://www.dhttp.net" title="DHttp home">
-    <img src="assets/dhttp-logo.svg" width="153" height="48" alt="DHttp">
+    <img src="https://media.dhttp.net/img/dhttp/dhttp-logo.svg" width="153" height="48" alt="DHttp">
   </a>
 </p>
 <h3 align="center">Clients can be servers; all endpoints are created equal.</h3>
 
-[![Crates.io](https://img.shields.io/crates/v/dhttp?label=crates.io)](https://crates.io/crates/dhttp)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Documentation](https://img.shields.io/badge/docs-dhttp.net-ff9900.svg)](https://docs.dhttp.net/en/docs/protocol/dhttp)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-dea584.svg)](https://www.rust-lang.org/)
+<p align="center">
+  <a href="https://crates.io/crates/dhttp"><img src="https://img.shields.io/crates/v/dhttp?label=crates.io" alt="Crates.io"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="https://docs.dhttp.net/en/docs/protocol/dhttp"><img src="https://img.shields.io/badge/docs-dhttp.net-ff9900.svg" alt="Documentation"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.85%2B-dea584.svg" alt="Rust"></a>
+</p>
 
 HTTP has been the Internet's most widely used protocol for decades, powering the Web and reaching into nearly every corner of the digital world. Yet beneath that prosperity lies a deep structural flaw: HTTP created a hierarchy between clients and servers. Servers became the aristocracy—named, served by DNS, discoverable, and globally callable. Clients remained nameless subjects, continuously sending their data upward for servers to analyze and monetize. This architectural inequality has become the machinery that entrenches **technological feudalism** and perpetuates **data colonialism**.
 
@@ -37,7 +39,7 @@ DHttp is **Decentralized HTTP on QUIC and HTTP/3**. It extends HTTP: each endpoi
 ## DHttp Request Flow
 
 <p align="center">
-  <img src="assets/dhttp-request-flow.png" alt="A named DHttp request from bob.lee to alice.smith">
+  <img src="https://media.dhttp.net/img/dhttp/dhttp-request-flow.jpg" alt="A named DHttp request from bob.lee to alice.smith">
 </p>
 
 > Bob.Lee makes an DHttp request to Alice.Smith. DDns resolves `alice.smith` to the EndpointAddress record, DQuic establishes the connection, and DHttp carries the request and response.
