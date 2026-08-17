@@ -81,7 +81,7 @@ impl From<Arc<Network>> for DhttpNetwork {
         Self {
             network,
             mdns_driver: Arc::new(MdnsBindDriver::new(
-                crate::ddns::resolvers::DHTTP_MDNS_SERVICE,
+                crate::ddns::resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
             )),
             _deferred_stun_resolver: None,
             _stun_resolver: None,
@@ -118,7 +118,7 @@ impl DhttpNetwork {
         stun_server: Option<Option<Arc<str>>>,
         stun_resolver: Option<ArcResolver>,
         #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
-        #[builder(default = Arc::<str>::from(crate::ddns::resolvers::DHTTP_H3_DNS_SERVER))]
+        #[builder(default = Arc::<str>::from(crate::ddns::resolvers::DHTTP_NAME_SERVICE))]
         h3_dns_server: Arc<str>,
         #[builder(default = Devices::global())] devices: &'static Devices,
         #[builder(default = Arc::new(InterfaceManager::new()))] iface_manager: Arc<
@@ -144,7 +144,7 @@ impl DhttpNetwork {
             return Ok(Self {
                 network,
                 mdns_driver: Arc::new(MdnsBindDriver::new(
-                    crate::ddns::resolvers::DHTTP_MDNS_SERVICE,
+                    crate::ddns::resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
                 )),
                 _deferred_stun_resolver: None,
                 _stun_resolver: Some(stun_resolver),

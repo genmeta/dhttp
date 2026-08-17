@@ -1,11 +1,4 @@
-# Optional shell/CI overrides. Cargo defaults to the same production values.
-# Run `set -a; source .env; set +a` after copying this file to .env.
-DHTTP_BOOTSTRAP_URL=https://bootstrap.genmeta.net:20002
-DHTTP_CA_SERVICE=https://api.genmeta.net
-DHTTP_NAME_SERVICE=https://ddns.genmeta.net
-DHTTP_MDNS_SERVICE_DOMAIN="_dhttp.local"
-# Keep this value in sync with dhttp/root.crt.
-DHTTP_ROOT_CA_PEM="-----BEGIN CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
 MIICVzCCAd2gAwIBAgIUe8kwBACY6f+MAzdCBVPmq4p+CiswCgYIKoZIzj0EAwMw
 WTELMAkGA1UEBhMCQ04xETAPBgNVBAgMCEhvbmdLb25nMRwwGgYDVQQKDBNHZW5t
 ZXRhIEVDQyBSb290IENBMRkwFwYDVQQDDBByb290Lmdlbm1ldGEubmV0MB4XDTI2
@@ -19,4 +12,4 @@ SWDnp0G5v5/hWi9CC7eWDTwwEgYDVR0TAQH/BAgwBgEB/wIBATAOBgNVHQ8BAf8E
 BAMCAQYwCgYIKoZIzj0EAwMDaAAwZQIwK9GqxdmRHJw7iB0z/b/WgzBv2jb7OmFS
 uVPA+6ZNApjYXCZUOVQFC60KUUV7yW53AjEA5lLrdXxdGNSIuLe1h/A+v/vRrYtt
 132Jzh+LkKBHdC1wcvDKjk2ZQG5WySly6VMp
------END CERTIFICATE-----"
+-----END CERTIFICATE-----

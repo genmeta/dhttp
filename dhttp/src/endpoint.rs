@@ -153,7 +153,7 @@ impl Endpoint {
         identity: Option<Arc<Identity>>,
         network: Option<DhttpNetwork>,
 
-        #[builder(default = Arc::<str>::from(crate::ddns::resolvers::DHTTP_H3_DNS_SERVER))]
+        #[builder(default = Arc::<str>::from(crate::ddns::resolvers::DHTTP_NAME_SERVICE))]
         h3_dns_server: Arc<str>,
         #[builder(default = crate::trust::default_client_quic_config())] client: ClientQuicConfig,
         #[builder(default = crate::trust::default_server_quic_config())] server: ServerQuicConfig,

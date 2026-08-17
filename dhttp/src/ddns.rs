@@ -213,7 +213,7 @@ pub async fn dhttp_network_builder_with_dns<F>(
     #[builder(start_fn)] builder: F,
     #[builder(start_fn)] dns_plan: &DhttpDnsPlan,
     #[builder(default = Arc::new(Vec::new()))] bind: Arc<Vec<BindPattern>>,
-    #[builder(default = Arc::<str>::from(resolvers::DHTTP_H3_DNS_SERVER))] h3_dns_server: Arc<str>,
+    #[builder(default = Arc::<str>::from(resolvers::DHTTP_NAME_SERVICE))] h3_dns_server: Arc<str>,
 ) -> Result<DhttpNetwork, BuildDhttpNetworkWithDnsError>
 where
     F: FnOnce(ArcResolver) -> Arc<Network>,
@@ -221,7 +221,9 @@ where
     let deferred_stun_resolver = Arc::new(DeferredStunResolver::new());
     let stun_resolver: ArcResolver = deferred_stun_resolver.clone();
     let network = builder(stun_resolver);
-    let mdns_driver = Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE));
+    let mdns_driver = Arc::new(mdns::MdnsBindDriver::new(
+        resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
+    ));
     let final_resolver = network_stun_resolver_from_plan(
         dns_plan,
         network.clone(),
@@ -244,8 +246,10 @@ where
 pub async fn quic_endpoint_builder_with_dns<F, Fut>(
     #[builder(start_fn)] builder: F,
     #[builder(start_fn)] dns_plan: &DhttpDnsPlan,
-    #[builder(default = Arc::<str>::from(resolvers::DHTTP_H3_DNS_SERVER))] h3_dns_server: Arc<str>,
-    #[builder(default = Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)))]
+    #[builder(default = Arc::<str>::from(resolvers::DHTTP_NAME_SERVICE))] h3_dns_server: Arc<str>,
+    #[builder(default = Arc::new(mdns::MdnsBindDriver::new(
+        resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
+    )))]
     mdns_driver: Arc<mdns::MdnsBindDriver>,
 ) -> Result<(QuicEndpoint, publishers::Publishers), BuildQuicEndpointWithDnsError>
 where
@@ -1006,7 +1010,9 @@ mod tests {
         let clients = endpoint_h3_clients_from_quic(
             &operations,
             &endpoint,
-            Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)),
+            Arc::new(mdns::MdnsBindDriver::new(
+                resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
+            )),
         )
         .await
         .expect("h3 dns clients should build");
@@ -1067,7 +1073,9 @@ mod tests {
             &operations,
             network.clone(),
             bind.clone(),
-            Arc::new(mdns::MdnsBindDriver::new(resolvers::DHTTP_MDNS_SERVICE)),
+            Arc::new(mdns::MdnsBindDriver::new(
+                resolvers::DHTTP_MDNS_SERVICE_DOMAIN,
+            )),
         )
         .await
         .expect("network h3 underlay should build");

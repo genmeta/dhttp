@@ -1,22 +1,21 @@
 use std::sync::{Arc, LazyLock};
 
 use h3x::dquic::{
-    cert::handy::ToCertificate,
     client::{ClientQuicConfig, ServerCertVerifierChoice},
     server::ServerQuicConfig,
 };
 use rustls::{
     RootCertStore,
     client::WebPkiServerVerifier,
+    pki_types::CertificateDer,
     server::{WebPkiClientVerifier, danger::ClientCertVerifier},
 };
 
-/// PEM-encoded DHTTP ecosystem root CA certificate embedded at build time.
+/// DER-encoded DHTTP ecosystem root CA certificate embedded at build time.
 ///
-/// Build scripts set this from `DHTTP_ROOT_CA` when that environment variable
-/// is present. Otherwise, docs-only builds use the generated docs-only
-/// certificate from `dhttp/build.rs`.
-pub const DHTTP_ROOT_CA: &[u8] = crate::bootstrap::DHTTP_ROOT_CA;
+/// The build script decodes and validates `DHTTP_ROOT_CA_PEM` when that environment
+/// variable is present. Otherwise, it embeds the production default.
+pub const DHTTP_ROOT_CA_DER: &[u8] = crate::bootstrap::DHTTP_ROOT_CA_DER;
 
 /// Client certificate policy for DHTTP peer authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +34,9 @@ pub enum ClientIdentityPolicy {
 pub fn dhttp_root_cert_store() -> &'static Arc<RootCertStore> {
     static STORE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
         let mut store = RootCertStore::empty();
-        store.add_parsable_certificates(DHTTP_ROOT_CA.to_certificate());
+        store
+            .add(CertificateDer::from(DHTTP_ROOT_CA_DER))
+            .expect("BUG: build script embedded an invalid DHTTP trust anchor");
         Arc::new(store)
     });
     &STORE
@@ -97,12 +98,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_root_ca_constant_is_valid_certificate_material() {
+    fn public_root_ca_der_is_a_valid_trust_anchor() {
         let mut store = RootCertStore::empty();
-        let (added, ignored) = store.add_parsable_certificates(DHTTP_ROOT_CA.to_certificate());
 
-        assert_eq!(added, 1);
-        assert_eq!(ignored, 0);
+        store.add(CertificateDer::from(DHTTP_ROOT_CA_DER)).unwrap();
+
+        assert_eq!(store.len(), 1);
     }
 
     #[test]

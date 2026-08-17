@@ -1,4 +1,0 @@
-[env]
-DHTTP_BOOTSTRAP_URL = "https://bootstrap.genmeta.net:20002"
-DHTTP_H3_DNS_SERVER = "https://ddns.genmeta.net:4433"
-DHTTP_MDNS_SERVICE = "_dhttp.local"

@@ -44,7 +44,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 dhttp-identity = "0.3.0"
 dhttp-home = { path = "home", version = "0.5.0" }
 dquic = { version = "0.7.1", default-features = false }
-ddns = { package = "dyns", version = "0.7.1", features = [
+ddns = { package = "dyns", git = "https://github.com/genmeta/ddns.git", rev = "332cf51093572a28364226ef7682e0d95812a6ef", features = [
     "resolvers",
     "publishers",
     "h3",

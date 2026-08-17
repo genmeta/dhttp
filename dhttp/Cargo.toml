@@ -39,9 +39,14 @@ ddns = { workspace = true }
 h3x = { workspace = true }
 
 [build-dependencies]
+rustls-pemfile = "2"
 url = "2"
+x509-parser.workspace = true
 
 [dev-dependencies]
 dhttp-access = { workspace = true, features = ["http", "orm"] }
 rcgen = "0.14"
+rustls-pemfile = "2"
 tokio = { workspace = true, features = ["macros", "rt"] }
+url = "2"
+x509-parser.workspace = true
