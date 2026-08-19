@@ -8,15 +8,26 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Keep the earliest row for each logical rule before adding the constraint.
+        // Rule evaluation is newest-first, so preserve the effective rule when
+        // collapsing duplicates before adding the constraint.
         manager
             .get_connection()
             .execute_unprepared(
-                r#"DELETE FROM location_rules
-                   WHERE id NOT IN (
-                       SELECT MIN(id)
-                       FROM location_rules
-                       GROUP BY location_id, action, json_extract(exprs, '$.polish')
+                r#"DELETE FROM location_rules AS older
+                   WHERE EXISTS (
+                       SELECT 1
+                       FROM location_rules AS newer
+                       WHERE newer.location_id = older.location_id
+                         AND newer.action = older.action
+                         AND json_extract(newer.exprs, '$.polish')
+                             IS json_extract(older.exprs, '$.polish')
+                         AND (
+                             newer.created_at > older.created_at
+                             OR (
+                                 newer.created_at = older.created_at
+                                 AND newer.id > older.id
+                             )
+                         )
                    )"#,
             )
             .await?;

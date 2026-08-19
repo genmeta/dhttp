@@ -214,6 +214,7 @@ impl LocationService<'_> {
         let mut rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
+            .order_by_asc(rule::Column::Id)
             .all(&txn)
             .await
             .context(list_rules_error::LoadRulesSnafu)?;
@@ -248,6 +249,7 @@ impl LocationService<'_> {
         let mut rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
+            .order_by_asc(rule::Column::Id)
             .all(&txn)
             .await
             .context(list_rules_by_pattern_error::LoadRulesSnafu)?;
@@ -317,7 +319,7 @@ impl LocationService<'_> {
                     location.created_at.timestamp_micros(),
                     location.pattern.clone(),
                 );
-                rules.sort_by_key(|rule| rule.created_at);
+                rules.sort_by_key(|rule| (rule.created_at, rule.id));
                 (pattern_with_time, (location, rules))
             })
             .collect();
@@ -351,6 +353,7 @@ impl LocationService<'_> {
         let rules = rule::Entity::find()
             .filter(rule::Column::LocationId.eq(location_id))
             .order_by_asc(rule::Column::CreatedAt)
+            .order_by_asc(rule::Column::Id)
             .all(&txn)
             .await
             .context(remove_rules_error::LoadRulesSnafu)?;
@@ -514,6 +517,20 @@ impl LocationService<'_> {
         }
     }
 
+    async fn refresh_rule_priority(
+        txn: &DatabaseTransaction,
+        existing_rule: rule::Model,
+    ) -> Result<rule::Model, AppendRuleError> {
+        let now = chrono::Utc::now();
+        let mut active_rule: rule::ActiveModel = existing_rule.into();
+        active_rule.created_at = Set(now);
+        active_rule.updated_at = Set(now);
+        active_rule
+            .update(txn)
+            .await
+            .context(append_rule_error::RefreshExistingRuleSnafu)
+    }
+
     async fn append_rule_internal(
         &self,
         location: &LocationPattern,
@@ -534,6 +551,7 @@ impl LocationService<'_> {
             .filter(rule::Column::LocationId.eq(location_id))
             .filter(rule::Column::Action.eq(action))
             .order_by_asc(rule::Column::CreatedAt)
+            .order_by_asc(rule::Column::Id)
             .all(&txn)
             .await
             .context(append_rule_error::LoadExistingRulesSnafu)?;
@@ -542,6 +560,7 @@ impl LocationService<'_> {
             .into_iter()
             .find(|candidate| candidate.exprs.polish() == &expr_polish)
         {
+            let existing_rule = Self::refresh_rule_priority(&txn, existing_rule).await?;
             txn.commit().await.context(append_rule_error::CommitSnafu)?;
             return Ok(existing_rule);
         }
@@ -572,16 +591,20 @@ impl LocationService<'_> {
                     .context(append_rule_error::LoadInsertedRuleSnafu)?
                     .context(append_rule_error::InsertedRuleMissingSnafu { id })?
             }
-            TryInsertResult::Conflicted => rule::Entity::find()
-                .filter(rule::Column::LocationId.eq(location_id))
-                .filter(rule::Column::Action.eq(action))
-                .order_by_asc(rule::Column::CreatedAt)
-                .all(&txn)
-                .await
-                .context(append_rule_error::LoadExistingRulesSnafu)?
-                .into_iter()
-                .find(|candidate| candidate.exprs.polish() == &expr_polish)
-                .context(append_rule_error::ConflictingRuleMissingSnafu)?,
+            TryInsertResult::Conflicted => {
+                let existing_rule = rule::Entity::find()
+                    .filter(rule::Column::LocationId.eq(location_id))
+                    .filter(rule::Column::Action.eq(action))
+                    .order_by_asc(rule::Column::CreatedAt)
+                    .order_by_asc(rule::Column::Id)
+                    .all(&txn)
+                    .await
+                    .context(append_rule_error::LoadExistingRulesSnafu)?
+                    .into_iter()
+                    .find(|candidate| candidate.exprs.polish() == &expr_polish)
+                    .context(append_rule_error::ConflictingRuleMissingSnafu)?;
+                Self::refresh_rule_priority(&txn, existing_rule).await?
+            }
             TryInsertResult::Empty => unreachable!("inserting one rule is not empty"),
         };
 

@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_deduplicates_existing_rules() {
+    async fn migration_keeps_latest_duplicate_rule() {
         use sea_orm_migration::MigratorTrait;
 
         let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
@@ -306,18 +306,25 @@ mod tests {
         .last_insert_id;
         let expr: crate::expr::exprs::LocationRuleExprs = "alice.pilot~".parse().unwrap();
 
-        for _ in 0..2 {
-            rule::Entity::insert(rule::ActiveModel {
+        let mut inserted = Vec::new();
+        for (action, created_at) in [
+            (RequestAction::Allow, now - chrono::Duration::seconds(2)),
+            (RequestAction::Deny, now - chrono::Duration::seconds(1)),
+            (RequestAction::Allow, now),
+        ] {
+            let id = rule::Entity::insert(rule::ActiveModel {
                 location_id: Set(location_id),
-                action: Set(RequestAction::Allow),
+                action: Set(action),
                 exprs: Set(expr.clone()),
-                created_at: Set(now),
-                updated_at: Set(now),
+                created_at: Set(created_at),
+                updated_at: Set(created_at),
                 ..Default::default()
             })
             .exec(&db)
             .await
-            .unwrap();
+            .unwrap()
+            .last_insert_id;
+            inserted.push((id, action));
         }
 
         migration::Migrator::up(&db, None).await.unwrap();
@@ -326,7 +333,18 @@ mod tests {
             .all(&db)
             .await
             .unwrap();
-        assert_eq!(rules.len(), 1);
+        assert_eq!(rules.len(), 2);
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.id == inserted[1].0 && rule.action == RequestAction::Deny)
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.id == inserted[2].0 && rule.action == RequestAction::Allow)
+        );
+        assert!(!rules.iter().any(|rule| rule.id == inserted[0].0));
     }
 
     #[tokio::test]

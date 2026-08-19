@@ -65,6 +65,7 @@ impl LocationRuleEvaluator for LocationRulesDatabase {
             let rules = rule::Entity::find()
                 .filter(rule::Column::LocationId.eq(location_id))
                 .order_by_asc(rule::Column::CreatedAt)
+                .order_by_asc(rule::Column::Id)
                 .all(&self.db)
                 .await
                 .map_err(LocationRuleDecisionError::backend)?;
@@ -259,6 +260,43 @@ mod tests {
         );
         assert_eq!(
             stale_matcher.evaluate("/", &bob).await.unwrap().action,
+            RequestAction::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn reappending_rule_makes_it_highest_priority() {
+        let test_home = TestHome::new("reappend-priority");
+        let home = test_home.home();
+        let identity: identity::Name<'static> = "server.pilot".parse().unwrap();
+        let db = init_identity_access_database(&home, identity.borrow())
+            .await
+            .expect("init access db");
+        let service = LocationService::new(&db);
+        let location = "/".parse().unwrap();
+        let alice_expr: crate::expr::exprs::LocationRuleExprs = "alice.pilot~".parse().unwrap();
+
+        let first_allow = service
+            .append_rule_with_id(&location, RequestAction::Allow, alice_expr.clone())
+            .await
+            .expect("allow alice");
+        service
+            .append_rule(&location, RequestAction::Deny, "*?".parse().unwrap())
+            .await
+            .expect("deny named clients");
+        let refreshed_allow = service
+            .append_rule_with_id(&location, RequestAction::Allow, alice_expr)
+            .await
+            .expect("reappend alice allow");
+
+        assert_eq!(refreshed_allow.id, first_allow.id);
+        let database = LocationRulesDatabase::new(db);
+        assert_eq!(
+            database
+                .evaluate("/", &TestRequest::named("alice.pilot.dhttp.net"))
+                .await
+                .expect("latest matching rule should decide")
+                .action,
             RequestAction::Allow
         );
     }
