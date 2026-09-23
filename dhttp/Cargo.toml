@@ -11,32 +11,30 @@ categories.workspace = true
 
 [features]
 default = []
-access-cli = ["dhttp-access/cli"]
-access-http = ["dhttp-access/http"]
-access-orm = ["dhttp-access/orm"]
+access = ["dep:dhttp-access"]
+log = ["dep:dhttp-log"]
+access-cli = ["access", "dhttp-access/cli"]
+access-http = ["access", "dhttp-access/http"]
+access-orm = ["access", "dhttp-access/orm"]
 access-migration = ["access-orm", "dhttp-access/migration"]
-access-peg-trace = ["dhttp-access/peg-trace"]
-# Enables automatic monitoring of local network-interface changes.
-netwatcher = ["dquic/netwatcher"]
+access-peg-trace = ["access", "dhttp-access/peg-trace"]
 
 [dependencies]
-bon = { workspace = true }
-bytes = { workspace = true }
-futures = { workspace = true }
-http = { workspace = true }
-matchit = { workspace = true }
-rustls = { workspace = true, features = ["ring"] }
-snafu = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-tower-service = { workspace = true }
-tracing = { workspace = true }
-dhttp-identity = { workspace = true }
-dhttp-home = { workspace = true }
-dhttp-access = { workspace = true }
-dhttp-log = { workspace = true }
-dquic = { workspace = true }
-ddns = { workspace = true }
-h3x = { workspace = true }
+bytes.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+h3x.workspace = true
+qbase = { workspace = true }
+qconn = { workspace = true }
+qtransport = { workspace = true }
+qprotocol = { workspace = true }
+qrecovery = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "sync"] }
+tower-service.workspace = true
+qtls = { workspace = true }
+dhttp-access = { workspace = true, optional = true }
+dhttp-log = { workspace = true, optional = true }
 
 [build-dependencies]
 rustls-pemfile = "2"
@@ -44,7 +42,6 @@ url = "2"
 x509-parser.workspace = true
 
 [dev-dependencies]
-dhttp-access = { workspace = true, features = ["http", "orm"] }
 rcgen = "0.14"
 rustls-pemfile = "2"
 tokio = { workspace = true, features = ["macros", "rt"] }
