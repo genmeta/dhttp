@@ -21,8 +21,6 @@ use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
 use snafu::{ResultExt, Snafu};
 
-pub const ACCESS_DB_DIRECTORY: &str = "db";
-pub const ACCESS_DB_FILENAME: &str = "access.db";
 pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Snafu)]
@@ -57,15 +55,13 @@ pub fn load_dhttp_home() -> Result<DhttpHome, AccessDbError> {
 }
 
 pub fn access_db_path(home: &DhttpHome, identity: identity::Name<'_>) -> PathBuf {
-    home.join_identity_name(identity)
-        .join(ACCESS_DB_DIRECTORY)
-        .join(ACCESS_DB_FILENAME)
+    home.identity_profile(identity.as_full())
+        .expect("validated DHTTP identity name")
+        .access_db_path()
 }
 
 pub fn identity_access_db_path(identity_profile: &IdentityProfile) -> PathBuf {
-    identity_profile
-        .join(ACCESS_DB_DIRECTORY)
-        .join(ACCESS_DB_FILENAME)
+    identity_profile.access_db_path()
 }
 
 fn sqlite_uri(path: &Path, mode: &str) -> String {

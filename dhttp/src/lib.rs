@@ -14,7 +14,6 @@ pub mod client;
 pub mod endpoint;
 pub mod error;
 pub mod home;
-pub mod name;
 pub mod network;
 
 pub use client::{Request, Response};
@@ -28,7 +27,7 @@ pub use qconn::{ArcConnection, Scope, Scopes};
 pub use qtls::{HandshakeSummary, LocalAuthority, RemoteAuthority};
 
 /// Error type accepted by the standard HTTP service boundary.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Streaming request body passed to application services.
 pub type Body = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>;

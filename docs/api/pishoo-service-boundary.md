@@ -1,15 +1,17 @@
 # Pishoo 服务接入边界
 
+> 历史设计：本轮 h3x/dhttp/Pishoo 对接及结构成员以 [三仓接口冻结 v1](../../../pishoo/design/README.md) 和 [dhttp 结构清单](../../../pishoo/design/dhttp-interfaces.md) 为准。本文保留历史讨论，不作为本轮实现依据。
+
 状态：职责与接口约定，尚未实现应用或网络运行行为。本轮决定由 Pishoo 完整负责 WASM，DHTTP 接收调用方组装的 Router。本文替代此前 DHTTP 内置 WasmApp、apis() 及私有 WIT 清单方案。
 
-Pishoo 的应用约定参考 [身份级 WASM 沙盒与 OpenAPI](../../../pishoo/design/wasm-sandbox-design.md) 和 [整体设计](../../../pishoo/design/pishoo-wasm-db-redesign.md)。这些文档中尚存的 `dhttp::WasmApp`、由 DHTTP 注入 WASM 宿主设置等表述，以本次职责调整为准：相关加载、实例化和执行逻辑归 Pishoo。网络配置以 [DHTTP 顶层接口](top-level-review.md) 为准。
+Pishoo 的当前应用约定与字段方法见 [三仓架构](../../../pishoo/design/h3x-dhttp-pishoo-architecture.md) 和 [Pishoo 结构清单](../../../pishoo/design/pishoo-interfaces.md)。旧 Pishoo 设计文件已经删除；下文只保留历史讨论。
 
 ## 1. 唯一应用入口
 
 ```rust
 let endpoint = Endpoint::load(servername).await?;
 // router 由 Pishoo 组装，包含静态、代理、原生及 WASM 路由。
-endpoint.listen(router).await?;
+endpoint.listen(scopes, router).await?;
 ```
 
 DHTTP 对 router 的约束继续是 `tower_service::Service<http::Request<Body>, Response = http::Response<B>>`。Pishoo 可以使用 Axum；DHTTP 不依赖、重导出或检查 Router 的具体实现，也不区分某次响应来自原生代码、代理还是 WASM。

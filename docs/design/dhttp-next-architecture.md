@@ -1,5 +1,7 @@
 # dhttp 下一版职责与架构设计
 
+> 历史设计：本轮 h3x/dhttp/Pishoo 对接及结构成员以 [三仓接口冻结 v1](../../../pishoo/design/README.md) 和 [dhttp 结构清单](../../../pishoo/design/dhttp-interfaces.md) 为准。本文保留历史讨论，不作为本轮实现依据。
+
 状态：**设计提案，尚未实现。**
 
 日期：2026-09-22。
@@ -727,7 +729,7 @@ h3x `goaway()` 本身不能无限阻塞 daemon 退出；deadline 由 dhttp super
 - h3x WASI HTTP 测试：`../h3x/tests/wasmtime_wasi_http.rs`
 - dquic 多名称 listener：`../dquic/dquic/src/server.rs`
 - dquic connection streams/authority：`../dquic/qconnection/src/lib.rs`
-- Pishoo 总体设计：`../pishoo/design/pishoo-wasm-db-redesign.md`
-- Pishoo 既有接入草案：`../pishoo/design/dhttp-integration-contract.md`
+- Pishoo 总体设计：`../pishoo/design/h3x-dhttp-pishoo-architecture.md`
+- Pishoo 既有接入草案：`../pishoo/design/dhttp-interfaces.md`
 
 本文结论来自静态代码和设计文件核对。所有接口、兼容性与可靠性条目均为实施要求，尚未宣称通过集成测试。

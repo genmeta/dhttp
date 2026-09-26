@@ -6,6 +6,54 @@ use std::path::{Path, PathBuf};
 
 use snafu::{OptionExt, Snafu};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidName;
+
+impl std::fmt::Display for InvalidName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid DHTTP name")
+    }
+}
+
+impl std::error::Error for InvalidName {}
+
+pub fn validate_name(input: &str) -> Result<(), InvalidName> {
+    (normalize_name(input).as_deref() == Some(input))
+        .then_some(())
+        .ok_or(InvalidName)
+}
+
+/// Expand a short identity name and validate its canonical DNS form.
+pub fn normalize_name(input: &str) -> Option<String> {
+    let name = input.trim().to_ascii_lowercase();
+    let name = if name.ends_with(".dhttp.net") {
+        name
+    } else {
+        format!("{name}.dhttp.net")
+    };
+    if name.len() > 253
+        || name.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.bytes().all(|byte| byte.is_ascii_digit())
+                || !label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                || !label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return None;
+    }
+    Some(name)
+}
+
 const USER_HOME_ENV: &str = "DHTTP_HOME";
 const GLOBAL_HOME_ENV: &str = "DHTTP_GLOBAL_HOME";
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -19,8 +67,8 @@ pub enum HomeScope {
 
 /// A handle to the user's dhttp home directory (e.g. `~/.dhttp/`).
 ///
-/// `DhttpHome` describes a directory that contains per-identity profiles and
-/// a global settings file. It does not own any in-memory configuration data;
+/// `DhttpHome` describes a directory that contains per-identity profiles.
+/// It does not own any in-memory configuration data;
 /// it is purely a typed path with helpers for resolving the layout inside.
 #[derive(Debug, Clone)]
 pub struct DhttpHome {
@@ -141,6 +189,21 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{LoadDhttpHomeError, resolve_global_home_path, resolve_user_home_path};
+
+    #[test]
+    fn normalizes_identity_names() {
+        assert_eq!(
+            super::normalize_name(" Alice ").as_deref(),
+            Some("alice.dhttp.net")
+        );
+        assert_eq!(
+            super::normalize_name("Alice.DHTTP.NET").as_deref(),
+            Some("alice.dhttp.net")
+        );
+        assert!(super::normalize_name("../alice").is_none());
+        assert!(super::validate_name("alice.dhttp.net").is_ok());
+        assert!(super::validate_name("Alice.dhttp.net").is_err());
+    }
 
     #[test]
     fn user_scope_path_prefers_runtime_home_env() {

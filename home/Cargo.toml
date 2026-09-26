@@ -10,21 +10,17 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-dhttp-identity = { workspace = true }
 dirs = { workspace = true }
 snafu = { workspace = true }
-serde = { workspace = true }
 
 futures = { workspace = true, optional = true }
 rustls = { workspace = true, features = ["ring", "std"], optional = true }
 tokio = { workspace = true, features = ["fs", "io-util"], optional = true }
-toml = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
 
 [features]
-default = ["ssl", "settings"]
+default = ["ssl"]
 ssl = ["dep:tokio", "dep:futures", "dep:rustls", "dep:x509-parser"]
-settings = ["dep:tokio", "dep:toml"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

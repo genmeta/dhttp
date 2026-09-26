@@ -21,6 +21,8 @@ access-peg-trace = ["access", "dhttp-access/peg-trace"]
 
 [dependencies]
 bytes.workspace = true
+futures.workspace = true
+dhttp-home.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
@@ -29,8 +31,12 @@ qbase = { workspace = true }
 qconn = { workspace = true }
 qtransport = { workspace = true }
 qprotocol = { workspace = true }
+qudp = { path = "../../dquic/qudp" }
 qrecovery = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "sync"] }
+netdev = { version = "0.46.2", default-features = false }
+netwatcher = "0.8"
+rustls.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "rt", "time"] }
 tower-service.workspace = true
 qtls = { workspace = true }
 dhttp-access = { workspace = true, optional = true }

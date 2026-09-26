@@ -13,7 +13,7 @@ use tokio::{
 };
 use x509_parser::prelude::Pem;
 
-use dhttp_identity::{identity::Identity, name::DhttpName};
+use crate::identity::{Identity, normalize_profile_name};
 
 use crate::{
     DhttpHome,
@@ -23,12 +23,15 @@ use crate::{
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
 pub const KEY_FILE_NAME: &str = "privkey.pem";
+pub const OCSP_FILE_NAME: &str = "ocsp.der";
 
 static SAVE_IDENTITY_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
 pub enum ResolveIdentityProfileError {
+    #[snafu(display("invalid identity name: {name}"))]
+    InvalidName { name: String },
     #[snafu(display("failed to inspect exact identity profile path {}", path.display()))]
     ExactMetadata { path: PathBuf, source: io::Error },
     #[snafu(display("failed to inspect wildcard identity profile path {}", path.display()))]
@@ -78,6 +81,15 @@ pub enum LoadKeyError {
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
+pub enum LoadOcspError {
+    #[snafu(display("failed to read OCSP staple at {}", path.display()))]
+    Read { path: PathBuf, source: io::Error },
+    #[snafu(display("OCSP staple is empty at {}", path.display()))]
+    Empty { path: PathBuf },
+}
+
+#[derive(Snafu, Debug)]
+#[snafu(module)]
 pub enum LoadIdentityError {
     #[snafu(display("failed to load identity certificates at {}", path.display()))]
     LoadCerts {
@@ -87,11 +99,19 @@ pub enum LoadIdentityError {
 
     #[snafu(display("failed to load identity private key at {}", path.display()))]
     LoadKey { path: PathBuf, source: LoadKeyError },
+
+    #[snafu(display("failed to load identity OCSP staple at {}", path.display()))]
+    LoadOcsp {
+        path: PathBuf,
+        source: LoadOcspError,
+    },
 }
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
 pub enum SaveIdentityError {
+    #[snafu(display("identity OCSP staple cannot be empty"))]
+    EmptyOcsp,
     #[snafu(display("failed to create identity directory at {}", path.display()))]
     CreateIdentityDir { path: PathBuf, source: io::Error },
     #[snafu(display("failed to create staged identity material at {}", path.display()))]
@@ -180,8 +200,20 @@ impl IdentityProfile {
         self.join(SSL_DIR_NAME)
     }
 
+    pub fn cert_path(&self) -> PathBuf {
+        self.ssl_dir().join(CERT_FILE_NAME)
+    }
+
+    pub fn key_path(&self) -> PathBuf {
+        self.ssl_dir().join(KEY_FILE_NAME)
+    }
+
+    pub fn ocsp_path(&self) -> PathBuf {
+        self.ssl_dir().join(OCSP_FILE_NAME)
+    }
+
     pub async fn load_certs(&self) -> Result<Vec<CertificateDer<'static>>, LoadCertsError> {
-        let certs_path = self.ssl_dir().join(CERT_FILE_NAME);
+        let certs_path = self.cert_path();
         let mut data = std::io::Cursor::new(fs::read(certs_path.as_path()).await.context(
             load_certs_error::ReadSnafu {
                 path: certs_path.clone(),
@@ -209,7 +241,7 @@ impl IdentityProfile {
     }
 
     pub async fn load_key(&self) -> Result<PrivateKeyDer<'static>, LoadKeyError> {
-        let key_path = self.ssl_dir().join(KEY_FILE_NAME);
+        let key_path = self.key_path();
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -243,36 +275,63 @@ impl IdentityProfile {
         )
     }
 
-    /// Load this profile's identity (certificate chain + private key) from disk.
+    pub async fn load_ocsp(&self) -> Result<Vec<u8>, LoadOcspError> {
+        let path = self.ocsp_path();
+        let bytes = fs::read(&path)
+            .await
+            .context(load_ocsp_error::ReadSnafu { path: &path })?;
+        if bytes.is_empty() {
+            return load_ocsp_error::EmptySnafu { path }.fail();
+        }
+        Ok(bytes)
+    }
+
+    /// Load this profile's certificate chain, private key and OCSP staple.
     pub async fn load_identity(&self) -> Result<Identity, LoadIdentityError> {
-        let certs_path = self.ssl_dir().join(CERT_FILE_NAME);
+        let certs_path = self.cert_path();
         let certs = self
             .load_certs()
             .await
             .context(load_identity_error::LoadCertsSnafu { path: certs_path })?;
 
-        let key_path = self.ssl_dir().join(KEY_FILE_NAME);
+        let key_path = self.key_path();
         let key = self
             .load_key()
             .await
             .context(load_identity_error::LoadKeySnafu { path: key_path })?;
 
-        Ok(Identity::new(self.name.clone().into_name(), certs, key))
+        let ocsp_path = self.ocsp_path();
+        let ocsp = self
+            .load_ocsp()
+            .await
+            .context(load_identity_error::LoadOcspSnafu { path: ocsp_path })?;
+
+        Ok(Identity::new(self.name.clone(), certs, key, ocsp))
     }
 
-    pub async fn save_identity(&self, cert: &[u8], key: &[u8]) -> Result<(), SaveIdentityError> {
-        self.save_identity_transaction(cert, key, || Ok(())).await
+    pub async fn save_identity(
+        &self,
+        cert: &[u8],
+        key: &[u8],
+        ocsp: &[u8],
+    ) -> Result<(), SaveIdentityError> {
+        self.save_identity_transaction(cert, key, ocsp, || Ok(()))
+            .await
     }
 
     async fn save_identity_transaction<F>(
         &self,
         cert: &[u8],
         key: &[u8],
+        ocsp: &[u8],
         before_install: F,
     ) -> Result<(), SaveIdentityError>
     where
         F: FnOnce() -> io::Result<()>,
     {
+        if ocsp.is_empty() {
+            return save_identity_error::EmptyOcspSnafu.fail();
+        }
         fs::create_dir_all(self.path())
             .await
             .context(save_identity_error::CreateIdentityDirSnafu { path: self.path() })?;
@@ -294,6 +353,10 @@ impl IdentityProfile {
             return Err(error);
         }
         if let Err(error) = Self::write_material_file(stage_dir.join(KEY_FILE_NAME), key).await {
+            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
+            return Err(error);
+        }
+        if let Err(error) = Self::write_material_file(stage_dir.join(OCSP_FILE_NAME), ocsp).await {
             let _ = fs::remove_dir_all(stage_dir.as_path()).await;
             return Err(error);
         }
@@ -376,13 +439,18 @@ impl DhttpHome {
     /// Resolve `name` to an `IdentityProfile` by exact match only (no wildcard fallback).
     pub async fn resolve_identity_profile_exactly(
         &self,
-        name: DhttpName<'_>,
+        name: &str,
     ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
-        let profile_path = self.join_identity_name(name.clone());
+        let canonical = normalize_profile_name(name).ok_or_else(|| {
+            ResolveIdentityProfileError::InvalidName {
+                name: name.to_owned(),
+            }
+        })?;
+        let profile_path = self.join_identity_name(&canonical).expect("validated name");
         match fs::metadata(profile_path.as_path()).await {
             Ok(_) => Ok(IdentityProfile {
                 path: profile_path,
-                name: name.to_owned(),
+                name: canonical,
             }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 resolve_identity_profile_error::ExactNotFoundSnafu { path: profile_path }.fail()
@@ -395,10 +463,18 @@ impl DhttpHome {
     /// Resolve `name` to an `IdentityProfile` by wildcard match only (no exact fallback).
     pub async fn resolve_identity_profile_wildcard(
         &self,
-        name: DhttpName<'_>,
+        name: &str,
     ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
-        let wildcard_name = name.to_wildcard();
-        let profile_path = self.join_identity_name(wildcard_name.clone());
+        let canonical = normalize_profile_name(name).ok_or_else(|| {
+            ResolveIdentityProfileError::InvalidName {
+                name: name.to_owned(),
+            }
+        })?;
+        let (_, rest) = canonical.split_once('.').expect("validated name");
+        let wildcard_name = format!("*.{rest}");
+        let profile_path = self
+            .join_identity_name(&wildcard_name)
+            .expect("validated name");
         match fs::metadata(profile_path.as_path()).await {
             Ok(_) => Ok(IdentityProfile {
                 path: profile_path,
@@ -422,9 +498,9 @@ impl DhttpHome {
     /// Resolve `name` to an `IdentityProfile`, trying exact match then wildcard match.
     pub async fn resolve_identity_profile(
         &self,
-        name: DhttpName<'_>,
+        name: &str,
     ) -> Result<IdentityProfile, ResolveIdentityProfileError> {
-        match self.resolve_identity_profile_exactly(name.clone()).await {
+        match self.resolve_identity_profile_exactly(name).await {
             Ok(profile) => Ok(profile),
             Err(ResolveIdentityProfileError::ExactNotFound { path: exact }) => {
                 match self.resolve_identity_profile_wildcard(name).await {
@@ -443,12 +519,12 @@ impl DhttpHome {
     /// `<name>/ssl/` layout under this home directory.
     pub fn identity_profile_names(
         &self,
-    ) -> impl Stream<Item = Result<DhttpName<'static>, ListIdentityProfilesError>> {
+    ) -> impl Stream<Item = Result<String, ListIdentityProfilesError>> {
         use list_identity_profiles_error::*;
         async fn next_name(
             read_dir: &mut ReadDir,
             path: &Path,
-        ) -> Result<Option<DhttpName<'static>>, ListIdentityProfilesError> {
+        ) -> Result<Option<String>, ListIdentityProfilesError> {
             loop {
                 let Some(e) = read_dir.next_entry().await.context(ReadDirSnafu { path })? else {
                     return Ok(None);
@@ -461,7 +537,7 @@ impl DhttpHome {
                         path: entry_path.clone(),
                     })?
                     .is_dir()
-                    && let Ok(name) = name.to_string_lossy().as_ref().parse::<DhttpName>()
+                    && let Some(name) = normalize_profile_name(name.to_string_lossy().as_ref())
                     && fs::metadata(entry_path.join(SSL_DIR_NAME)).await.is_ok()
                 {
                     return Ok(Some(name));
@@ -585,93 +661,18 @@ impl DhttpHome {
         Ok(candidates.into_boxed_slice())
     }
 
-    pub async fn identity_profile_exists_exactly(&self, name: DhttpName<'_>) -> bool {
+    pub async fn identity_profile_exists_exactly(&self, name: &str) -> bool {
         self.resolve_identity_profile_exactly(name).await.is_ok()
     }
 
-    pub async fn identity_profile_exists_wildcard(&self, name: DhttpName<'_>) -> bool {
+    pub async fn identity_profile_exists_wildcard(&self, name: &str) -> bool {
         self.resolve_identity_profile_wildcard(name).await.is_ok()
     }
 
-    pub async fn identity_profile_exists(&self, name: DhttpName<'_>) -> bool {
+    pub async fn identity_profile_exists(&self, name: &str) -> bool {
         self.resolve_identity_profile(name).await.is_ok()
     }
 }
-
-#[cfg(feature = "settings")]
-mod settings_integration {
-    use snafu::{OptionExt, ResultExt, Snafu};
-
-    use super::ResolveIdentityProfileError;
-    use crate::{
-        DhttpHome,
-        identity::{
-            IdentityProfile,
-            settings::{DhttpSettingsFile, FileLineCol, LoadDhttpSettingsError},
-        },
-    };
-
-    #[derive(Snafu, Debug)]
-    #[snafu(module, display(
-        "failed to resolve default identity profile{}",
-        location.as_ref().map_or(String::new(), |loc| format!(" at {loc}"))
-    ))]
-    pub struct ResolveDefaultIdentityFromSettingsError {
-        location: Option<FileLineCol>,
-        source: ResolveIdentityProfileError,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(module)]
-    pub enum ResolveDefaultIdentityProfileError {
-        #[snafu(transparent)]
-        LoadSettings { source: LoadDhttpSettingsError },
-        #[snafu(display("no default identity configured"))]
-        NoDefaultIdentity,
-        #[snafu(transparent)]
-        Resolve {
-            source: ResolveDefaultIdentityFromSettingsError,
-        },
-    }
-
-    impl DhttpSettingsFile {
-        /// Resolve the default identity profile referenced by `[default].name`,
-        /// or return `None` if no default is configured in this settings file.
-        pub async fn resolve_default_identity_profile(
-            &self,
-            home: &DhttpHome,
-        ) -> Option<Result<IdentityProfile, ResolveDefaultIdentityFromSettingsError>> {
-            let name = self.settings().default.name.as_ref()?;
-
-            Some(
-                home.resolve_identity_profile(name.as_ref().clone())
-                    .await
-                    .context(
-                    resolve_default_identity_from_settings_error::ResolveDefaultIdentityFromSettingsSnafu {
-                        location: self.locate(name.span().start),
-                    },
-                ),
-            )
-        }
-    }
-
-    impl DhttpHome {
-        /// Read the settings file and resolve the default identity profile it points to.
-        pub async fn resolve_default_identity_profile(
-            &self,
-        ) -> Result<IdentityProfile, ResolveDefaultIdentityProfileError> {
-            Ok(self
-                .load_settings()
-                .await?
-                .resolve_default_identity_profile(self)
-                .await
-                .context(resolve_default_identity_profile_error::NoDefaultIdentitySnafu)??)
-        }
-    }
-}
-
-#[cfg(feature = "settings")]
-pub use settings_integration::*;
 
 #[cfg(test)]
 mod tests {
@@ -744,7 +745,7 @@ mod tests {
         assert!(candidates.iter().any(|candidate| {
             candidate
                 .as_ref()
-                .is_ok_and(|profile| profile.name().as_full() == "z.good.dhttp.net")
+                .is_ok_and(|profile| profile.name() == "z.good.dhttp.net")
         }));
     }
 
@@ -758,7 +759,7 @@ mod tests {
         let candidates = home.identity_profile_candidates().await.unwrap();
         let names: Vec<_> = candidates
             .iter()
-            .map(|candidate| candidate.as_ref().unwrap().name().as_full())
+            .map(|candidate| candidate.as_ref().unwrap().name())
             .collect();
 
         assert_eq!(names, ["a.example.dhttp.net", "z.example.dhttp.net"]);
@@ -767,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn candidates_ignore_regular_home_files() {
         let temp = TempDir::new("candidate-ignore-files");
-        fs::write(temp.path().join("settings.toml"), b"[default]\n").unwrap();
+        fs::write(temp.path().join("notes.txt"), b"unrelated file\n").unwrap();
         let profile = create_profile(temp.path(), "reimu.pilot");
         let home = DhttpHome::new(temp.path().to_path_buf());
 
@@ -912,10 +913,7 @@ mod tests {
         let names: Vec<_> = home.identity_profile_names().collect().await;
 
         assert_eq!(names.len(), 1);
-        assert_eq!(
-            names[0].as_ref().unwrap().as_full(),
-            "reimu.pilot.dhttp.net"
-        );
+        assert_eq!(names[0].as_ref().unwrap().as_str(), "reimu.pilot.dhttp.net");
     }
 
     #[tokio::test]
@@ -953,6 +951,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ocsp_staple_must_exist_and_be_nonempty() {
+        let temp = TempDir::new("ocsp-staple");
+        let profile = IdentityProfile::try_from(temp.path().join("alice.smith")).unwrap();
+        let path = profile.ocsp_path();
+
+        assert!(matches!(
+            profile.load_ocsp().await,
+            Err(LoadOcspError::Read { path: missing, .. }) if missing == path
+        ));
+        tokio::fs::create_dir_all(profile.ssl_dir()).await.unwrap();
+        tokio::fs::write(&path, []).await.unwrap();
+        assert!(matches!(
+            profile.load_ocsp().await,
+            Err(LoadOcspError::Empty { path: empty }) if empty == path
+        ));
+        tokio::fs::write(&path, b"staple").await.unwrap();
+        assert_eq!(profile.load_ocsp().await.unwrap(), b"staple");
+    }
+
+    #[tokio::test]
     async fn save_identity_replaces_material_without_touching_profile_files() {
         let temp = TempDir::new("replace-material");
         let profile = IdentityProfile::try_from(temp.path().join("alice.smith")).unwrap();
@@ -963,12 +981,15 @@ mod tests {
         tokio::fs::write(profile.ssl_dir().join(KEY_FILE_NAME), b"old key")
             .await
             .unwrap();
-        tokio::fs::write(profile.join("server.conf"), b"keep me")
+        tokio::fs::write(profile.ocsp_path(), b"old ocsp")
+            .await
+            .unwrap();
+        tokio::fs::write(profile.config_db_path(), b"keep me")
             .await
             .unwrap();
 
         profile
-            .save_identity(b"new cert", b"new key")
+            .save_identity(b"new cert", b"new key", b"new ocsp")
             .await
             .unwrap();
 
@@ -985,9 +1006,33 @@ mod tests {
             b"new key"
         );
         assert_eq!(
-            tokio::fs::read(profile.join("server.conf")).await.unwrap(),
+            tokio::fs::read(profile.ocsp_path()).await.unwrap(),
+            b"new ocsp"
+        );
+        assert_eq!(
+            tokio::fs::read(profile.config_db_path()).await.unwrap(),
             b"keep me"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_ocsp_does_not_replace_existing_identity() {
+        let temp = TempDir::new("empty-ocsp-save");
+        let profile = IdentityProfile::try_from(temp.path().join("alice.smith")).unwrap();
+        tokio::fs::create_dir_all(profile.ssl_dir()).await.unwrap();
+        tokio::fs::write(profile.ocsp_path(), b"old ocsp")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            profile.save_identity(b"new cert", b"new key", b"").await,
+            Err(SaveIdentityError::EmptyOcsp)
+        ));
+        assert_eq!(
+            tokio::fs::read(profile.ocsp_path()).await.unwrap(),
+            b"old ocsp"
+        );
+        assert!(!profile.cert_path().exists());
     }
 
     #[tokio::test]
@@ -1001,9 +1046,12 @@ mod tests {
         tokio::fs::write(profile.ssl_dir().join(KEY_FILE_NAME), b"old key")
             .await
             .unwrap();
+        tokio::fs::write(profile.ocsp_path(), b"old ocsp")
+            .await
+            .unwrap();
 
         let error = profile
-            .save_identity_transaction(b"new cert", b"new key", || {
+            .save_identity_transaction(b"new cert", b"new key", b"new ocsp", || {
                 Err(io::Error::other("injected commit failure"))
             })
             .await
@@ -1031,13 +1079,17 @@ mod tests {
                 .unwrap(),
             b"old key"
         );
+        assert_eq!(
+            tokio::fs::read(profile.ocsp_path()).await.unwrap(),
+            b"old ocsp"
+        );
     }
 
     #[tokio::test]
     async fn missing_identity_profile_reports_exact_and_wildcard_paths() {
         let temp = TempDir::new("missing-identity-profile");
         let home = DhttpHome::new(temp.path().to_path_buf());
-        let name = "reimu.pilot".parse().unwrap();
+        let name = "reimu.pilot";
 
         let error = home.resolve_identity_profile(name).await.unwrap_err();
 
