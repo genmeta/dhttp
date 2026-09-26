@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use dhttp::{DhttpNetwork, Error, ListenConfig, NetworkConfig, Scope};
 
 #[tokio::test]
@@ -33,17 +31,10 @@ async fn network_initializes_once_and_shuts_down() {
         DhttpNetwork::init(config).await,
         Err(Error::AlreadyInitialized)
     ));
-    let deadline = Instant::now() + Duration::from_secs(1);
-    assert_eq!(
-        network.shutdown(deadline).await.unwrap().unfinished_tasks,
-        0
-    );
+    network.shutdown().unwrap();
     assert!(
         qprotocol::Dock::global().is_empty(),
         "bound sockets are released"
     );
-    assert_eq!(
-        network.shutdown(deadline).await.unwrap().unfinished_tasks,
-        0
-    );
+    network.shutdown().unwrap();
 }

@@ -38,6 +38,12 @@ netwatcher = "0.8"
 rustls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "rt", "time"] }
 tower-service.workspace = true
+tracing.workspace = true
+tower = { version = "0.5", features = ["util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-stream = "0.3"
+scopeguard = "1"
+dhttp-identity = { path = "../identity" }
 qtls = { workspace = true }
 dhttp-access = { workspace = true, optional = true }
 dhttp-log = { workspace = true, optional = true }

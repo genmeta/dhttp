@@ -2,7 +2,7 @@ use std::{
     convert::Infallible,
     future::{Ready, ready},
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -73,14 +73,14 @@ async fn listener_registration_cleans_up_on_cancel() {
     unsafe { std::env::set_var("DHTTP_HOME", &root) };
 
     let network = DhttpNetwork::init(NetworkConfig {
-        listen: vec![ListenConfig::Scope(Scope::Loopback.into())],
+        listen: vec![ListenConfig::Scope(dhttp::Scopes::ALL)],
     })
     .await
     .unwrap();
     let endpoint = Endpoint::load("test").await.unwrap();
     let listening = tokio::spawn({
         let endpoint = endpoint.clone();
-        async move { endpoint.listen(Scope::Loopback, EmptyApp).await }
+        async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
     });
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -118,6 +118,22 @@ async fn listener_registration_cleans_up_on_cancel() {
         .get(endpoint.name())
         .unwrap();
     let second = qconn::ServerRegistry::global().get(other.name()).unwrap();
+    (first.accept_cb)(Err(qbase::error::QuicError::with_default_fty(
+        qbase::error::ErrorKind::Internal,
+        "test rejected handshake",
+    )
+    .into()));
+    tokio::task::yield_now().await;
+    assert!(
+        !listening.is_finished(),
+        "a bad handshake must not stop the listener"
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &first,
+        &qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .unwrap()
+    ));
     assert!(first.scopes.contains(Scope::Loopback));
     assert!(!first.scopes.contains(Scope::External));
     assert!(second.scopes.contains(Scope::External));
@@ -125,13 +141,13 @@ async fn listener_registration_cleans_up_on_cancel() {
     assert!(!second.scopes.contains(Scope::Loopback));
 
     assert!(matches!(
-        endpoint.listen(Scope::External, EmptyApp).await,
+        endpoint.listen(Scope::External.into(), EmptyApp).await,
         Err(Error::AlreadyListening)
     ));
     let separate = Endpoint::load("test").await.unwrap();
     assert!(matches!(
-        separate.listen(Scope::External, EmptyApp).await,
-        Err(Error::NameInUse { .. })
+        separate.listen(Scope::External.into(), EmptyApp).await,
+        Err(Error::AlreadyListening)
     ));
 
     listening.abort();
@@ -150,7 +166,7 @@ async fn listener_registration_cleans_up_on_cancel() {
     .await
     .unwrap();
     let listening_again =
-        tokio::spawn(async move { separate.listen(Scope::Loopback, EmptyApp).await });
+        tokio::spawn(async move { separate.listen(Scope::Loopback.into(), EmptyApp).await });
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if qconn::ServerRegistry::global()
@@ -164,16 +180,66 @@ async fn listener_registration_cleans_up_on_cancel() {
     })
     .await
     .unwrap();
-    network
-        .shutdown(Instant::now() + Duration::from_secs(1))
-        .await
-        .unwrap();
+    // Stop withdraws synchronously and does not close the identity. A late old
+    // supervisor must not remove the newly registered server.
+    endpoint.stop_listening().unwrap();
     assert!(
         qconn::ServerRegistry::global()
             .get(endpoint.name())
             .is_none()
     );
+    let newest = tokio::spawn({
+        let endpoint = endpoint.clone();
+        async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let current = qconn::ServerRegistry::global()
+        .get(endpoint.name())
+        .unwrap();
     assert!(listening_again.await.unwrap().is_ok());
+    assert!(std::sync::Arc::ptr_eq(
+        &current,
+        &qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .unwrap()
+    ));
+
+    // Every same-name handle observes permanent close; other identities stay live.
+    let same_name = Endpoint::load("TEST").await.unwrap();
+    same_name.close().unwrap();
+    assert!(newest.await.unwrap().is_ok());
+    assert!(
+        qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .is_none()
+    );
+    assert!(qconn::ServerRegistry::global().get(other.name()).is_some());
+    assert!(matches!(
+        endpoint.listen(Scope::Loopback.into(), EmptyApp).await,
+        Err(Error::EndpointClosed)
+    ));
+    assert!(matches!(
+        endpoint.get("https://other~/".parse().unwrap()).await,
+        Err(Error::EndpointClosed)
+    ));
+    let unopened = Endpoint::load("unopened").await.unwrap();
+    unopened.close().unwrap();
+    let unopened_again = Endpoint::load("unopened").await.unwrap();
+    assert!(matches!(
+        unopened_again.get("https://other~/".parse().unwrap()).await,
+        Err(Error::EndpointClosed)
+    ));
+    network.shutdown().unwrap();
+    assert!(qconn::ServerRegistry::global().get(other.name()).is_none());
     assert!(other_listening.await.unwrap().is_ok());
     std::fs::remove_dir_all(root).unwrap();
 }

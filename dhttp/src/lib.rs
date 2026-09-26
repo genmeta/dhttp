@@ -1,10 +1,4 @@
-//! DHTTP interfaces agreed in `docs/api/top-level-review.md`.
-//!
-//! Declaration-only stage: endpoint members and method signatures are defined,
-//! but method bodies intentionally use `todo!()` and cannot be called yet.
-// Temporary allowances for declaration-only members and method parameters.
-#![allow(dead_code, unused_variables)]
-
+//! Identity-bound HTTP/3 endpoints and a process-wide transport network.
 mod bootstrap;
 mod transport;
 mod trust;
@@ -16,21 +10,19 @@ pub mod error;
 pub mod home;
 pub mod network;
 
-pub use client::{Request, Response};
-pub use endpoint::Endpoint;
-pub use error::{Error, Result, ShutdownReport};
-pub use h3x::{ArcWndBuf, R, Trailers, W};
+pub use endpoint::{Endpoint, Request};
+pub use error::{Error, Result};
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-
 pub use network::{DhttpNetwork, ListenConfig, NetworkConfig};
-pub use qconn::{ArcConnection, Scope, Scopes};
-pub use qtls::{HandshakeSummary, LocalAuthority, RemoteAuthority};
+pub use qconn::{Scope, Scopes};
+pub use qtls::{CertificateDer, HandshakeSummary, LocalAuthority, RemoteAuthority};
 
-/// Error type accepted by the standard HTTP service boundary.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-/// Streaming request body passed to application services.
+pub type EmptyBody = http_body_util::Empty<bytes::Bytes>;
 pub type Body = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>;
+pub type RequestFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<http::Response<Body>>> + Send + 'static>,
+>;
 
 #[cfg(feature = "access")]
 pub use dhttp_access as access;
