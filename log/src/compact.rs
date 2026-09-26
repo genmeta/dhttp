@@ -163,4 +163,5 @@ impl_decimal_integer!(
 );
 
 #[cfg(test)]
+#[path = "../tests/unit/compact.rs"]
 mod tests;
