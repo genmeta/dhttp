@@ -176,5 +176,235 @@ impl Evaluable<&http::Method> for Method {
     }
 }
 
-include!("atomics/pairs.rs");
-include!("atomics/expressions.rs");
+/// 键值对模式，用于匹配HTTP头或查询参数
+///
+/// TODO: 支持key的匹配项参与匹配?
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KVPattern {
+    pub key: NormalPattern,
+    pub value: NormalPattern,
+}
+
+impl KVPattern {
+    pub fn new<K, V, KL, VL>(key: K, value: V) -> Result<Self, BuildAtomicPatternError>
+    where
+        K: Into<NormalPattern>,
+        V: Into<NormalPattern>,
+        KL: PatternInputLanguage,
+        VL: PatternInputLanguage,
+    {
+        let key = key.into();
+        let value = value.into();
+        validate_reachable::<_, KL>(&key).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: KL::label(),
+                source,
+            }
+        })?;
+        validate_reachable::<_, VL>(&value).map_err(|source| {
+            BuildAtomicPatternError::Unreachable {
+                domain: VL::label(),
+                source,
+            }
+        })?;
+        Ok(Self { key, value })
+    }
+
+    pub fn new_header(
+        key: NormalPattern,
+        value: NormalPattern,
+    ) -> Result<Self, BuildAtomicPatternError> {
+        Self::new::<_, _, HeaderNameLanguage, HeaderValueLanguage>(key, value)
+    }
+
+    pub fn new_query(
+        key: NormalPattern,
+        value: NormalPattern,
+    ) -> Result<Self, BuildAtomicPatternError> {
+        Self::new::<_, _, QueryKeyLanguage, QueryValueLanguage>(key, value)
+    }
+}
+
+impl Evaluable<(&str, &str)> for KVPattern {
+    type Value = bool;
+
+    fn eval(&self, (key, value): &(&str, &str)) -> Self::Value {
+        self.key.eval(key) && self.value.eval(value)
+    }
+}
+
+impl Display for KVPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.key, self.value)
+    }
+}
+
+#[derive(Debug, Clone, Into, AsRef, PartialEq, Eq)]
+pub struct Header {
+    pattern: KVPattern,
+}
+
+impl Header {
+    pub fn new(pattern: KVPattern) -> Self {
+        Self { pattern }
+    }
+}
+
+impl Evaluable<(&str, &str)> for Header {
+    type Value = bool;
+
+    fn eval(&self, pair: &(&str, &str)) -> Self::Value {
+        self.pattern.eval(pair)
+    }
+}
+
+#[cfg(feature = "http")]
+impl Evaluable<(&http::HeaderName, &http::HeaderValue)> for Header {
+    type Value = bool;
+
+    fn eval(&self, (key, value): &(&http::HeaderName, &http::HeaderValue)) -> Self::Value {
+        let Ok(value) = value.to_str() else {
+            // TODO: support binary header value match
+            return false;
+        };
+        self.eval(&(key.as_str(), value))
+    }
+}
+
+#[derive(Debug, Clone, Into, AsRef, PartialEq, Eq)]
+pub struct Query {
+    pattern: KVPattern,
+}
+
+impl Query {
+    pub fn new(pattern: KVPattern) -> Self {
+        Self { pattern }
+    }
+}
+
+impl Evaluable<(&str, &str)> for Query {
+    type Value = bool;
+
+    fn eval(&self, pair: &(&str, &str)) -> Self::Value {
+        self.pattern.eval(pair)
+    }
+}
+
+fn escape_pattern<Kind>(pat: &Pattern<Kind>) -> String {
+    pat.as_str().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn to_quoted_escaped_pattern<Kind>(pat: &Pattern<Kind>) -> String {
+    format!("\"{}\"", escape_pattern(pat))
+}
+
+fn to_quoted_escaped_kv_pattern(pat: &KVPattern) -> String {
+    let KVPattern { key, value } = pat;
+    let (key, value) = (escape_pattern(key), escape_pattern(value));
+    format!("\"{}\":\"{}\"", key, value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AtomicLocationRuleExpr {
+    Any(AnyClient), // "*?"
+    ClientName(ClientName),
+    Method(Method),
+    Header(Header),
+    Query(Query),
+}
+
+impl Display for AtomicLocationRuleExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Any(any) => any.fmt(f),
+            Self::ClientName(pattern) => {
+                write!(f, "{}", to_quoted_escaped_pattern(pattern.as_ref()))
+            }
+            Self::Method(Method { pattern }) => {
+                write!(f, "With Method {}", to_quoted_escaped_pattern(pattern))
+            }
+            Self::Header(Header { pattern }) => {
+                write!(f, "With Header {}", to_quoted_escaped_kv_pattern(pattern))
+            }
+            Self::Query(Query { pattern }) => {
+                write!(f, "With Query {}", to_quoted_escaped_kv_pattern(pattern))
+            }
+        }
+    }
+}
+
+mod parse_atomic {
+
+    use peg::{error::ParseError, str::LineCol};
+    use snafu::ResultExt;
+
+    use super::*;
+
+    #[derive(snafu::Snafu, Debug)]
+    pub enum ParseAtomicRuleExprError {
+        #[snafu(display("failed to parse rule expr"))]
+        Pattern { source: InvalidPatternExpr },
+        #[snafu(display("failed to parse rule expr `{input}`"))]
+        Incomplete {
+            input: String,
+            source: ParseError<LineCol>,
+        },
+    }
+
+    impl FromStr for AtomicLocationRuleExpr {
+        type Err = ParseAtomicRuleExprError;
+
+        fn from_str(infix: &str) -> Result<Self, Self::Err> {
+            let tokens =
+                parse::TokenStream::new(infix).context(IncompleteSnafu { input: infix })?;
+            parse::atomic_location_rule_expr(&tokens)
+                .context(IncompleteSnafu { input: infix })?
+                .context(PatternSnafu)
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+pub struct HttpRequest<'a> {
+    client_name: Option<&'a str>,
+    method: &'a http::Method,
+    headers: &'a http::HeaderMap<http::HeaderValue>,
+    queries: Vec<(&'a str, &'a str)>,
+}
+
+#[cfg(feature = "http")]
+impl<'a> HttpRequest<'a> {
+    pub fn new<T>(client_name: Option<&'a str>, request: &'a http::Request<T>) -> Self {
+        Self {
+            client_name,
+            method: request.method(),
+            headers: request.headers(),
+            queries: request.uri().query().map_or(vec![], |q| {
+                q.split('&')
+                    .filter_map(|pair| {
+                        let mut parts = pair.splitn(2, '=');
+                        let key = parts.next()?;
+                        let value = parts.next().unwrap_or("");
+                        Some((key, value))
+                    })
+                    .collect::<Vec<(&str, &str)>>()
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+impl Evaluable<HttpRequest<'_>> for AtomicLocationRuleExpr {
+    type Value = Result<bool, EvalError>;
+
+    fn eval(&self, request: &HttpRequest) -> Self::Value {
+        Ok(match self {
+            // Self::Source(source) => source.eval(&argument.source_ip),
+            Self::Any(..) => true,
+            Self::ClientName(pattern) => pattern.eval(&request.client_name)?,
+            Self::Method(method) => method.eval(&request.method),
+            Self::Header(header) => request.headers.iter().any(|(k, v)| header.eval(&(k, v))),
+            Self::Query(query) => request.queries.iter().any(|pair| query.eval(pair)),
+        })
+    }
+}

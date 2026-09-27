@@ -9,6 +9,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+path = "src/dhttp.rs"
+
 [features]
 default = []
 access = ["dep:dhttp-access"]
@@ -40,7 +43,6 @@ tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "rt", "t
 tower-service.workspace = true
 tracing.workspace = true
 tower = { version = "0.5", features = ["util"] }
-tokio-util = { version = "0.7", features = ["rt"] }
 async-stream = "0.3"
 scopeguard = "1"
 dhttp-identity = { path = "../identity" }

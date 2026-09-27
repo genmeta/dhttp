@@ -175,5 +175,5 @@ pub async fn init_access_database_for(
 }
 
 #[cfg(all(test, feature = "migration"))]
-#[path = "../../tests/unit/database/mod.rs"]
+#[path = "../tests/unit/database.rs"]
 mod tests;

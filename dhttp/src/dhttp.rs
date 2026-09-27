@@ -13,7 +13,7 @@ pub mod network;
 pub use endpoint::{Endpoint, Request};
 pub use error::{Error, Result};
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-pub use network::{DhttpNetwork, ListenConfig, NetworkConfig};
+pub use network::DhttpNetwork;
 pub use qconn::{Scope, Scopes};
 pub use qtls::{CertificateDer, HandshakeSummary, LocalAuthority, RemoteAuthority};
 

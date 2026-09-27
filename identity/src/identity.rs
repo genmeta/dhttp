@@ -142,9 +142,259 @@ impl Identity {
     }
 }
 
-include!("identity/authority.rs");
-include!("identity/certificate.rs");
-include!("identity/signature.rs");
+/// Local authority for DHTTP identity material.
+///
+/// Signatures use DHTTP's canonical key-to-signature-scheme policy instead of
+/// accepting a caller-supplied scheme. The policy is:
+///
+/// - Ed25519 keys use [`SignatureScheme::ED25519`].
+/// - ECDSA P-256 keys use [`SignatureScheme::ECDSA_NISTP256_SHA256`].
+/// - ECDSA P-384 keys use [`SignatureScheme::ECDSA_NISTP384_SHA384`].
+/// - RSA keys use [`SignatureScheme::RSA_PSS_SHA512`], matching the QUIC/TLS
+///   RSA signing preference used by rustls.
+///
+/// Callers should treat `sign` and `verify` as DHTTP identity operations, not
+/// as general-purpose cryptographic primitives with negotiable algorithms.
+pub trait LocalAuthority: Send + Sync + std::fmt::Debug {
+    fn name(&self) -> &str;
+
+    fn cert_chain(&self) -> &[CertificateDer<'static>];
+
+    fn sign(&self, data: &[u8]) -> BoxFuture<'_, Result<Vec<u8>, SignError>>;
+
+    fn public_key(&self) -> SubjectPublicKeyInfoDer<'_> {
+        extract_public_key(self.cert_chain())
+    }
+
+    fn verify(&self, data: &[u8], signature: &[u8]) -> BoxFuture<'_, Result<bool, VerifyError>> {
+        let result = verify_signature(self.public_key(), data, signature);
+        Box::pin(std::future::ready(result))
+    }
+}
+
+/// Remote authority for DHTTP identity material.
+///
+/// Verification uses the same DHTTP canonical key-to-signature-scheme policy
+/// as [`LocalAuthority`]. The policy is:
+///
+/// - Ed25519 keys use [`SignatureScheme::ED25519`].
+/// - ECDSA P-256 keys use [`SignatureScheme::ECDSA_NISTP256_SHA256`].
+/// - ECDSA P-384 keys use [`SignatureScheme::ECDSA_NISTP384_SHA384`].
+/// - RSA keys use [`SignatureScheme::RSA_PSS_SHA512`], matching the QUIC/TLS
+///   RSA signing preference used by rustls.
+///
+/// A remote authority does not carry an explicit signature scheme in its API;
+/// the scheme is derived from the authority public key according to the
+/// documented DHTTP policy.
+pub trait RemoteAuthority: Send + Sync + std::fmt::Debug {
+    fn name(&self) -> &str;
+
+    fn cert_chain(&self) -> &[CertificateDer<'static>];
+
+    fn public_key(&self) -> SubjectPublicKeyInfoDer<'_> {
+        extract_public_key(self.cert_chain())
+    }
+
+    fn verify(&self, data: &[u8], signature: &[u8]) -> BoxFuture<'_, Result<bool, VerifyError>> {
+        let result = verify_signature(self.public_key(), data, signature);
+        Box::pin(std::future::ready(result))
+    }
+}
+
+impl LocalAuthority for Identity {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn cert_chain(&self) -> &[CertificateDer<'static>] {
+        self.cert_chain()
+    }
+
+    fn sign(&self, data: &[u8]) -> BoxFuture<'_, Result<Vec<u8>, SignError>> {
+        let result = Identity::sign(self, data);
+        Box::pin(std::future::ready(result))
+    }
+}
+
+impl RemoteAuthority for Identity {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn cert_chain(&self) -> &[CertificateDer<'static>] {
+        self.cert_chain()
+    }
+}
+
+pub fn extract_subject_key_identifier<'a>(
+    cert_chain: &'a [CertificateDer<'a>],
+) -> Result<Option<&'a [u8]>, ExtractSubjectKeyIdentifierError> {
+    let leaf = cert_chain
+        .first()
+        .context(extract_subject_key_identifier_error::EmptyCertificateChainSnafu)?;
+    let (_remain, certificate) = x509_parser::certificate::X509Certificate::from_der(leaf)
+        .context(extract_subject_key_identifier_error::ParseCertificateSnafu)?;
+
+    for extension in certificate.extensions() {
+        if let ParsedExtension::SubjectKeyIdentifier(identifier) = extension.parsed_extension() {
+            return Ok(Some(identifier.0));
+        }
+        if extension.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER {
+            return extract_subject_key_identifier_error::ParseExtensionSnafu.fail();
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn extract_dhttp_subject_key_identifier(
+    cert_chain: &[CertificateDer<'_>],
+) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+    let ski = extract_subject_key_identifier(cert_chain)?
+        .context(extract_dhttp_subject_key_identifier_error::MissingSubjectKeyIdentifierSnafu)?;
+    DhttpSubjectKeyIdentifier::try_from_subject_key_identifier_bytes(ski)
+        .context(extract_dhttp_subject_key_identifier_error::InvalidDhttpSubjectKeyIdentifierSnafu)
+}
+
+mod private {
+    pub trait Sealed {}
+
+    impl<T: ?Sized> Sealed for T {}
+}
+
+pub trait LocalAuthorityCertificateExt: private::Sealed {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError>;
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError>;
+}
+
+impl<T: ?Sized + LocalAuthority> LocalAuthorityCertificateExt for T {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError> {
+        extract_subject_key_identifier(self.cert_chain())
+    }
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+        extract_dhttp_subject_key_identifier(self.cert_chain())
+    }
+}
+
+pub trait RemoteAuthorityCertificateExt: private::Sealed {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError>;
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError>;
+}
+
+impl<T: ?Sized + RemoteAuthority> RemoteAuthorityCertificateExt for T {
+    fn subject_key_identifier(&self) -> Result<Option<&[u8]>, ExtractSubjectKeyIdentifierError> {
+        extract_subject_key_identifier(self.cert_chain())
+    }
+
+    fn dhttp_subject_key_identifier(
+        &self,
+    ) -> Result<DhttpSubjectKeyIdentifier, ExtractDhttpSubjectKeyIdentifierError> {
+        extract_dhttp_subject_key_identifier(self.cert_chain())
+    }
+}
+
+pub fn extract_public_key<'d>(cert_chain: &'d [CertificateDer<'d>]) -> SubjectPublicKeyInfoDer<'d> {
+    match x509_parser::certificate::X509Certificate::from_der(&cert_chain[0]) {
+        Ok((_remain, certificate)) => {
+            let spki = certificate.public_key().raw;
+            spki.to_owned().into()
+        }
+        Err(_) if cert_chain.len() == 1 => cert_chain[0].as_ref().into(),
+        Err(_) => unreachable!("rustls returned an invalid peer_certificates"),
+    }
+}
+
+pub fn sign_with_key(
+    key: &(impl rustls::sign::SigningKey + ?Sized),
+    data: &[u8],
+) -> Result<Vec<u8>, SignError> {
+    for scheme in canonical_signing_schemes(key.algorithm()) {
+        if let Some(signer) = key.choose_scheme(&[*scheme]) {
+            return signer.sign(data).context(sign_error::CryptoSnafu);
+        }
+    }
+
+    sign_error::UnsupportedKeySnafu.fail()
+}
+
+pub fn verify_signature(
+    spki: SubjectPublicKeyInfoDer,
+    data: &[u8],
+    signature: &[u8],
+) -> Result<bool, VerifyError> {
+    let scheme = canonical_verification_scheme(spki.as_ref())?;
+    let algorithm: &'static dyn ring::signature::VerificationAlgorithm = match scheme {
+        SignatureScheme::ECDSA_NISTP384_SHA384 => &ring::signature::ECDSA_P384_SHA384_ASN1,
+        SignatureScheme::ECDSA_NISTP256_SHA256 => &ring::signature::ECDSA_P256_SHA256_ASN1,
+        SignatureScheme::ED25519 => &ring::signature::ED25519,
+        SignatureScheme::RSA_PSS_SHA512 => &ring::signature::RSA_PSS_2048_8192_SHA512,
+        _ => return verify_error::UnsupportedKeySnafu.fail(),
+    };
+
+    let public_key = match SubjectPublicKeyInfo::from_der(&spki) {
+        Ok((_remain, spki)) => spki.subject_public_key,
+        Err(_) => return verify_error::UnsupportedKeySnafu.fail(),
+    };
+
+    Ok(
+        ring::signature::UnparsedPublicKey::new(algorithm, public_key)
+            .verify(data, signature)
+            .is_ok(),
+    )
+}
+
+fn canonical_signing_schemes(algorithm: rustls::SignatureAlgorithm) -> &'static [SignatureScheme] {
+    match algorithm {
+        rustls::SignatureAlgorithm::RSA => &[RSA_CANONICAL_SCHEME],
+        rustls::SignatureAlgorithm::ECDSA => ECDSA_CANONICAL_SCHEMES,
+        rustls::SignatureAlgorithm::ED25519 => &[ED25519_CANONICAL_SCHEME],
+        _ => &[],
+    }
+}
+
+fn canonical_verification_scheme(spki: &[u8]) -> Result<SignatureScheme, VerifyError> {
+    let Ok((_remain, spki)) = SubjectPublicKeyInfo::from_der(spki) else {
+        return verify_error::UnsupportedKeySnafu.fail();
+    };
+
+    if spki.algorithm.algorithm == OID_SIG_ED25519 {
+        return Ok(ED25519_CANONICAL_SCHEME);
+    }
+
+    if spki.algorithm.algorithm == OID_PKCS1_RSAENCRYPTION {
+        return Ok(RSA_CANONICAL_SCHEME);
+    }
+
+    if spki.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY {
+        return verify_error::UnsupportedKeySnafu.fail();
+    }
+
+    let Some(curve) = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|parameters| parameters.as_oid().ok())
+    else {
+        return verify_error::UnsupportedKeySnafu.fail();
+    };
+
+    if curve == OID_EC_P256 {
+        Ok(SignatureScheme::ECDSA_NISTP256_SHA256)
+    } else if curve == OID_NIST_EC_P384 {
+        Ok(SignatureScheme::ECDSA_NISTP384_SHA384)
+    } else {
+        verify_error::UnsupportedKeySnafu.fail()
+    }
+}
 
 #[cfg(test)]
 #[path = "../tests/unit/identity.rs"]

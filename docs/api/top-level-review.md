@@ -10,20 +10,20 @@
 - DhttpNetwork 通过配置显式初始化，是进程全局对象；所有身份共享 interface 和一个 h3x 连接池。Network 负责监听网络变化并维护这些共享资源。
 - home 本轮只作为目录定位和凭据读取的辅助模块，不展开配置、缓存、扫描注册表或生命周期设计；不为保留旧调用方而维持重复身份模型。
 - Endpoint 保留 load(servername) 简单入口，只保留规范化名称；不接受 home 或底层材料参数，不暴露 quic()。Network 在发起新连接或登记监听时获取本端凭据，不持有身份目录，也不提供 network.endpoint。
-- 网络配置保存按通信范围监听或指定具体网卡的规则，并规定允许的来源范围；`listen external` 持续覆盖所有适合 External 的网卡，Network 处理网卡新增、删除和 up/down。Network 按实际 socket 统一检查入口，Endpoint.listen(scopes, app) 再指定该身份允许的来源范围。External 仅允许对应绑定接收外网来源的包，不触发 STUN 探测或外部地址发布。
+- 各 Server 通过 scopes 指定允许的来源范围；`listen external` 持续覆盖所有适合 External 的网卡。Network 汇总活动 Server 的 scopes，处理网卡新增、删除和 up/down，并按实际 socket 统一检查入口；qconn 还按各 Server 的 scopes 检查来源。External 仅允许对应绑定接收外网来源的包，不触发 STUN 探测或外部地址发布。
 - Pishoo 自己发现 Server、解释应用目录和策略；若需显式凭据路径，由 Pishoo 确定凭据来源并在接入阶段交给 Network，不把路径或凭据放进逻辑 Endpoint。
 - 不在 Endpoint 里保存身份材料、QUIC endpoint、连接、state、profile 或 network。
 - HTTP 消息、body、trailers、异步读写优先复用 h3x，不重做一套 dhttp 消息。get 等方法同步返回绑定当前 Endpoint 的 `Request<B>`；POST 等请求还返回等待响应头的 `dhttp::Response` future，await 后交付原生 `h3x::Response<R>`。底层两个方向始终按流式读写处理；执行对象如何持有 h3x 请求并绑定连接尚待审查。
 - “交换”只表示一次请求及响应的完整生命周期；不公开 `dhttp::Exchange`、`ExchangeOutcome` 或独立取消订阅接口。h3x 提供流方向的显式取消，dhttp 在内部协调任务与关闭。
 - 本端、对端身份直接使用 qtls 类型；不定义 PreparedIdentity、RequestContext 或 PeerIdentity。
-- 服务接入只约束 tower_service::Service 和标准 HTTP body；不依赖、重导出或指定 Axum，也不自建 Router。Pishoo 负责 WASM 运行、WASI HTTP 适配、OpenAPI、授权与身份沙盒，组装好 Router 后交给 Endpoint.listen(scopes, router)。
+- 服务接入只约束 tower_service::Service 和标准 HTTP body；不依赖、重导出或指定 Axum，也不自建 Router。Pishoo 负责 WASM 运行、WASI HTTP 适配、OpenAPI、授权与身份沙盒，组装好 Router 后连同 scopes 交给 Endpoint.listen(scopes, router)。
 - 本稿只覆盖 Rust 核心公共面。SDK、WebTransport 和身份轮换暂不扩展；匿名客户端复用情况单列核对，不新建身份包装。
 
 ## 2. 顶层导出
 
 ```rust
 pub use endpoint::Endpoint;
-pub use network::{DhttpNetwork, NetworkConfig, ListenConfig};
+pub use network::DhttpNetwork;
 pub use qconn::{Scope, Scopes};
 // 服务边界使用现有 body 容器的别名，不定义新的消息或 body 状态机。
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -75,7 +75,7 @@ impl Endpoint {
     pub fn request(&self, method: Method, uri: Uri) -> Request<ArcWndBuf>;
 
     // 只约束标准 Service，不依赖任何具体 HTTP 路由框架。
-    pub async fn listen<S, B>(&self, scopes: impl Into<Scopes>, app: S) -> Result<()>
+    pub async fn listen<S, B>(&self, scopes: Scopes, app: S) -> Result<()>
     where
         S: tower_service::Service<http::Request<Body>, Response = http::Response<B>>
             + Clone + Send + 'static,
@@ -94,7 +94,7 @@ Endpoint 只提供 `load(servername)` 作为命名入口，实例只保存自己
 
 独立 `dhttp-home` 负责名称规范化、`DHTTP_HOME/<身份名>` 身份目录扫描和定位，并统一定义 `ssl/`、`db/`、`apps/`、`public/`、`logs/` 与 `config.db` 的路径。它读取身份凭据；核心 `dhttp::home` 使用这些接口装配底层端点。Pishoo 从统一路径读取自己的配置和应用，daccess 从统一路径管理权限库；各组件负责自己文件的内容和生命周期。`load` 保持简单形状；get/post 等同步返回可配置、可 await 的请求。
 
-listen 登记该 Endpoint 的应用和允许的来源范围。Network 按实际接收 interface/socket 的配置检查入口，qconn 再按该 Endpoint 的 scopes 检查来源；两层检查均通过才交付连接和请求。不因读取凭据自动监听，Endpoint 对象本身不保存 scopes。
+listen 登记该 Endpoint 的应用和 scopes。Network 汇总活动服务的 scopes，按实际接收 socket 的范围检查入口，qconn 再按该 Endpoint 的 scopes 检查来源；两层检查均通过才交付连接和请求。不因读取凭据自动监听，Endpoint 对象本身不保存 scopes。
 
 `stop_listening` 只停止新请求接入并撤销服务发布；已接入交换继续，端点仍能主动发起请求，也可再次 listen。取消 listen future 同样需要停止准入，并交由全局网络清理登记。
 
@@ -370,25 +370,10 @@ pub(crate) async fn load_identity(
 
 这里是重构目标，不代表当前目录和 Cargo 依赖已经删除。实际删除 identity crate 时同步迁移所有依赖它的代码，不保留两套长期身份模型，也不引入反向依赖 dhttp 的 home crate 造成依赖环。本轮仍只收敛顶层接口，不展开 home 实现设计。
 
-## 7. Network：配置驱动的全局网络
+## 7. Network：汇总活动服务范围的全局网络
 
 ```rust
-#[derive(Clone)]
-pub struct NetworkConfig {
-    /// 持续生效的选择规则，随系统网卡变化重新求值。
-    pub listen: Vec<ListenConfig>,
-}
-
-#[derive(Clone)]
-pub enum ListenConfig {
-    /// 持续监听所选通信范围内的全部适用网卡，包括以后新增的网卡。
-    Scope(Scopes),
-    /// 指定一张网卡及其允许的来源范围。
-    Interface { device: String, scopes: Scopes },
-}
-
 pub struct DhttpNetwork {
-    config: NetworkConfig,
     outbound_pool: h3x::Pool<ConnectionKey, DquicTransport, Error>,
     addresses: Arc<qprotocol::AddressBook>,
 }
@@ -396,13 +381,13 @@ pub struct DhttpNetwork {
 static NETWORK: OnceLock<DhttpNetwork> = OnceLock::new();
 
 impl DhttpNetwork {
-    pub async fn init(config: NetworkConfig) -> Result<&'static Self>;
+    pub async fn init() -> Result<&'static Self>;
     pub fn global() -> Result<&'static Self>;
     pub async fn shutdown(&self, deadline: Instant) -> Result<ShutdownReport>;
 }
 ```
 
-NetworkConfig 保存持续生效的 ListenConfig 规则。Scope 分支表达通信范围，Network 将它展开到当前和将来的适用网卡；Interface 分支允许调用方直接指定一张网卡及其用途，不再公开单独的 InterfaceConfig。索引、地址和实际绑定端口属于随系统变化的运行时资源，不由调用方配置。Network 既不扫描身份目录，也不持有 endpoints 身份索引。配置由调用方以类型化值提供，不依赖 home 的配置模型。
+每个 Server 在 `Endpoint.listen` 时提供 scopes。Network 汇总活动 Server 的 scopes，并展开到当前和将来的适用网卡。调用方不指定网卡、索引、地址或端口；这些资源随系统变化，由 Network 选择。Network 不扫描身份目录。没有活动 Server 时不创建监听 socket。
 
 ### 7.1 当前 qprotocol 的资源边界
 
@@ -412,27 +397,23 @@ NetworkConfig 保存持续生效的 ListenConfig 规则。Scope 分支表达通�
 - `Dock::add(Arc<UdpSocket>)` 接管 socket 的接收分发，按实际 `local_addr()` 管理；DHTTP 使用它接收 QUIC。
 - `AddressBook` 将具体绑定地址关联到 inner / outer / agent 协议地址，不以网卡名作为地址键。
 
-`Dock::global()` 已提供进程级 Dock，按绑定地址保存 socket 登记并持有收包任务；DhttpNetwork 持有已绑定 socket 的生存引用及规则对应关系，供撤销和重绑使用，不另建收包任务。`AddressBook` 已维护地址快照与订阅，DhttpNetwork 不复制 `NetworkState`、`SocketStatus`、`NetworkStatus` 或 watch 发布器。qprotocol 不枚举网卡，也不解释 Loopback / Internal / External 选择规则。
+`Dock::global()` 已提供进程级 Dock，按绑定地址保存 socket 登记并持有收包任务；DhttpNetwork 持有已绑定 socket 的生存引用及范围，供撤销和重绑使用，不另建收包任务。`AddressBook` 已维护地址快照与订阅，DhttpNetwork 不复制 `NetworkState`、`SocketStatus`、`NetworkStatus` 或 watch 发布器。qprotocol 不枚举网卡，也不解释 Loopback / Internal / External 选择规则。
 
-因此 `ListenConfig` 只表示监听意图，一条范围规则可匹配多张网卡，一张网卡又可产生多个 IPv4 / IPv6 socket。最终绑定的 socket 交给 Dock；调用方不提供易变化的索引、地址快照、端口或已打开的 socket。
+一个 scope 可匹配多张网卡，一张网卡又可产生多个 IPv4 / IPv6 socket。最终绑定的 socket 交给 Dock；调用方不提供易变化的索引、地址快照、端口或已打开的 socket。
 
 核对入口：[qprotocol socket 重导出](/Users/lixiaofeng/code/genmeta/dquic/qprotocol/src/socket.rs)、[qudp 网卡绑定](/Users/lixiaofeng/code/genmeta/dquic/qudp/src/lib.rs)、[Dock](/Users/lixiaofeng/code/genmeta/dquic/qprotocol/src/dock.rs)、[AddressBook](/Users/lixiaofeng/code/genmeta/dquic/qprotocol/src/addr_book.rs)。
 
 ### 7.2 网卡选择与范围
 
-`listen external` 的确定语义是 **listen all external device**：Network 持续监听所有适合 External 通信的网卡，包含以后新增或恢复的网卡。按通信范围监听已经包含“该范围内全部适用网卡”的含义，无需另加 All。命令直接产生范围规则，Network 根据系统变化持续展开。下面以系统分配端口为例：
+`listen external` 的确定语义是 **listen all external device**：Network 持续监听所有适合 External 通信的网卡，包含以后新增或恢复的网卡。按通信范围监听已经包含“该范围内全部适用网卡”的含义。下面以系统分配端口为例：
 
 ```rust
-let network_config = NetworkConfig {
-    listen: vec![ListenConfig::Scope(Scope::External.into())],
-};
+endpoint.listen(Scope::External.into(), app).await?;
 ```
 
-若当前有 en0、en1 两张适用网卡，Network 为两张网卡都建立符合 External 规则的绑定；以后 en2 新增时再加入。原始 Scope 规则持续保留，不能用初始化时的展开结果替换。
+若当前有 en0、en1 两张适用网卡，Network 为两张网卡都建立符合 External 范围的绑定；以后 en2 新增时再加入。Server 的 scopes 持续保留，不能用首次展开的结果替换。
 
-需要限定网卡时使用 `ListenConfig::Interface { device: "en0".into(), scopes: Scope::External.into() }`。这里名称指定资源，scopes 指定这个资源的通信用途和允许的来源；同一张网卡可以用于 Internal、External 或两者，无法单凭网卡名确定用途。两种规则可共同使用，由 Network 按实际网卡合并。
-
-范围规则在展开时将适用 scopes 关联到具体网卡及绑定地址；它在实际入口上约束允许的来源，不再反过来筛选另一份 All 选择器。沿用 qconn 的独立位语义，不默认累加。Endpoint.listen(scopes, app) 明确指定逐身份的来源范围；每个服务同时受 Network 的实际 socket 策略限制。启用 External 不会自动启动服务，也不会扩大其他 Endpoint 的允许范围。同一张网卡可通过一组 socket 同时承担 Internal 和 External。
+scopes 在展开时关联到具体网卡及绑定地址；它在实际入口上约束允许的来源。沿用 qconn 的独立位语义，不默认累加。Endpoint.listen(scopes, app) 同时决定该身份的来源范围；每个服务也受 Network 实际 socket 的汇总策略限制。一个 Server 启用 External 不会扩大其他 Server 的允许范围。同一张网卡可通过一组 socket 同时承担 Internal 和 External。
 
 | 范围 | 网卡及 socket 用途 |
 |---|---|
@@ -440,11 +421,11 @@ let network_config = NetworkConfig {
 | Internal | 所选网卡上用于内网通信的地址 |
 | External | 所选网卡上允许接收外网来源包的地址 |
 
-初始化及每次系统变化时，Network 枚举网卡，按 Scope 规则展开全部适用网卡，并合入直接指定的 Interface 配置，解析当前索引与符合所选范围的可用单播地址，分别构造具体 SocketAddr。IPv4 / IPv6 均可使用，不绑定通配地址；IPv6 链路本地地址保留系统 scope ID，只用于适合的局部通信。Loopback 必须使用回环资源；External 可以绑定 NAT 后的私网地址，也不要求网卡承担默认路由。绑定成功不表示公网路由或 NAT 转发已配置。具体可用性随地址和链路变化。
+Server 开始监听及每次系统变化时，Network 枚举网卡，按所有活动 Server 的 scopes 展开全部适用网卡，解析当前索引与符合所选范围的可用单播地址，分别构造具体 SocketAddr。IPv4 / IPv6 均可使用，不绑定通配地址；IPv6 链路本地地址保留系统 scope ID，只用于适合的局部通信。Loopback 必须使用回环资源；External 可以绑定 NAT 后的私网地址，也不要求网卡承担默认路由。绑定成功不表示公网路由或 NAT 转发已配置。具体可用性随地址和链路变化。
 
-Scope 规则当前没有匹配或可用网卡时，Network 仍保留规则和系统监听，等待网卡新增或恢复；没有可用路径的操作返回 NetworkUnavailable。空配置列表仍为配置错误，不隐式选择网卡。显式 Interface 配置的名称不存在或范围与指定网卡不兼容，在初始化时返回配置错误；成功初始化后设备的暂时不可用按恢复流程处理。
+scope 当前没有匹配或可用网卡时，Network 仍保留活动 Server 的范围，等待网卡新增或恢复；没有可用路径的操作返回 NetworkUnavailable。设备暂时不可用时按恢复流程处理。
 
-规则展开到具体网卡后，先合并相同实际设备的适用 scopes，再展开地址并绑定，因此 Scope 与 Interface 规则重叠时不会因重复用途创建多组 socket。绑定端口由 Network 内部决定，不属于配置接口；每个 socket 绑定后读取实际端口。当前 Dock 以 SocketAddr 为键，不支持把两个不同网卡上相同的绑定地址视为独立资源；出现该冲突应明确报错，不能把其中一个静默合并到另一张网卡。
+活动 Server 的 scopes 先合并，再展开到具体网卡与地址并绑定，因此多个 Server 使用同一范围不会创建多组 socket。绑定端口由 Network 内部决定；每个 socket 绑定后读取实际端口。当前 Dock 以 SocketAddr 为键，不支持把两个不同网卡上相同的绑定地址视为独立资源；出现该冲突应明确报错，不能把其中一个静默合并到另一张网卡。
 
 ### 接入检查由 Network 统一负责
 
@@ -457,7 +438,7 @@ Scope 规则当前没有匹配或可用网卡时，Network 仍保留规则和系
 
 不符合范围的接入在 Network/传输接入层拒绝，不交给 Endpoint 的应用。尽可能在创建完整连接前检查；交付前仍应确认目标服务有效。来源取自实际收包与传输路径信息，不来自 HTTP header 或 URI。
 
-范围按接收 socket 对应的配置判断，不能用所有网卡 scopes 的并集替代：例如仅允许 Internal 的网卡不会因为另一张网卡启用 External 而放行外部来源。共享 socket 合并后的策略只对应该共享资源，不能泄漏到其他入口。
+范围按接收 socket 实际适用的 scopes 判断；回环与非回环、链路本地与其他地址的可用范围不同。共享 socket 合并后的策略只对应该共享资源，不能泄漏到其他入口。
 
 首次 accept 不是唯一检查点。QUIC 后续新路径、地址迁移及网络资源重建也要遵守相同来源规则，已建立连接不能借换路径扩大准入范围。未知或无法可靠归属的入口不应直接交付到 Endpoint。
 
@@ -465,15 +446,15 @@ qconn 的 `QuicEndpoint::listen` 接收逐 servername 的 scopes，并在 QUIC �
 
 复用依据：[来源分类](/Users/lixiaofeng/code/genmeta/dquic/qconn/src/endpoint.rs:215)、[QUIC 收包检查](/Users/lixiaofeng/code/genmeta/dquic/qconn/src/recv.rs:54)。
 
-### 7.3 监听初始化
+### 7.3 监听创建
 
-初始化先完成规则校验和系统变化订阅，再展开当前快照，通过 `UdpSocket::bind_to_device` 绑定具体地址与网卡，交给 Dock 接收分发，接入 `qtransport::QuicRouter` 并登记协议端点。External 只改变该绑定允许的来源范围；DHTTP 不因 External 解析 bootstrap、探测 STUN 或向 AddressBook 写入 outer 地址。协调首次快照和变化事件后才公布全局实例；配置或共享监听设施初始化失败要回收已启动资源。Scope 规则当前没有可用资源仍允许建立持续监听。
+Network 初始化后不绑定监听 socket。Server 开始监听时汇总活动 scopes，展开当前快照，通过 `UdpSocket::bind_to_device` 绑定具体地址与网卡，交给 Dock 接收分发，接入 `qtransport::QuicRouter` 并登记协议端点。External 只改变该绑定允许的来源范围；DHTTP 不因 External 解析 bootstrap、探测 STUN 或向 AddressBook 写入 outer 地址。当前没有可用资源时仍保留 Server 登记，等待网卡恢复。
 
 ### 7.4 网络变化监听与恢复
 
-网络变化监听、网卡快照维护和资源恢复是 `DhttpNetwork` 的核心职责，与 init / shutdown 属于同一生命周期。Network 按配置决定使用哪些网卡和 scopes，绑定端口由内部策略决定；qudp 提供 socket 绑定与 I/O，qprotocol 提供协议分发、登记和地址簿。操作系统通知可以复用独立的平台库，事件处理与恢复策略由 Network 统一管理，不依赖已废弃的 qinterface，也不要求每个 Endpoint 单独监听。
+网络变化监听、网卡快照维护和资源恢复是 `DhttpNetwork` 的核心职责，与 init / shutdown 属于同一生命周期。Network 按活动 Server 的 scopes 决定使用哪些网卡，绑定端口由内部策略决定；qudp 提供 socket 绑定与 I/O，qprotocol 提供协议分发、登记和地址簿。恢复策略由 Network 统一管理，不依赖已废弃的 qinterface，也不要求每个 Endpoint 单独监听。
 
-init 建立进程内共享的系统网络监听任务，并协调首次快照与事件订阅，避免初始化期间漏掉变化。监听覆盖整个系统的网卡新增、删除、up/down、索引及 IPv4 / IPv6 地址变化，不能只订阅初始化时选中的网卡。每次变化都重新对完整快照求值 Scope 规则，新网卡无需修改配置即可加入。路由变化不会改变 External 的接收范围定义。平台事件作为重新读取系统快照的触发信号，重复或连续事件合并处理；必要时用轮询补足平台通知能力。
+init 建立进程内共享的系统网络维护任务，但不创建监听 socket。Network 定期读取完整网卡快照，覆盖网卡新增、删除、up/down、索引及 IPv4 / IPv6 地址变化。每次变化都按活动 Server 的 scopes 重新求值，新网卡可自动加入。路由变化不会改变 External 的接收范围定义。
 
 Network 根据最新快照更新实际资源：
 
@@ -508,7 +489,6 @@ pub enum Error {
     NetworkUnavailable,
     NetworkNotInitialized,
     AlreadyInitialized,
-    InvalidNetworkConfig { message: String },
     IdentityNotFound { name: String },
     Credentials { source: qtls::RustlsError },
     Http { source: http::Error },
@@ -537,8 +517,8 @@ deadline 是同一个绝对 `std::time::Instant`，不是每个关闭步骤重�
 // Endpoint 内部读取凭据并使用底层身份类型，调用方只给出名称。
 let endpoint = Endpoint::load("alice.dhttp.net").await?;
 
-// 网络配置由调用方提供，不依赖 home 配置格式。
-let network = DhttpNetwork::init(network_config).await?;
+// 共享网络先启动，监听规则由各 Server 随服务提交。
+let network = DhttpNetwork::init().await?;
 
 // 无请求体的便捷调用：await 得到带流式 body 的 h3x Response<R>。
 let mut response = endpoint.get("https://bob.dhttp.net/info".parse()?).await?;
@@ -570,7 +550,7 @@ let endpoint = Endpoint::load(servername).await?;
 endpoint.listen(scopes, app).await?;
 ```
 
-Pishoo 组织一个混合 Router：静态、代理、原生 handler 和多个 WASM 应用共享 Server 执行边界，WASM 分支再受当前身份沙盒约束。Pishoo 自己加载组件和同名 OpenAPI，逐条注册声明入口，在 guest 执行前授权；完成组装后调用 Endpoint.listen(scopes, router)，不为每个 handler 创建 Endpoint、监听或网络。
+Pishoo 组织一个混合 Router：静态、代理、原生 handler 和多个 WASM 应用共享 Server 执行边界，WASM 分支再受当前身份沙盒约束。Pishoo 自己加载组件和同名 OpenAPI，逐条注册声明入口，在 guest 执行前授权；完成组装后连同 Server 的 scopes 调用 Endpoint.listen(scopes, router)，不为每个 handler 创建 Endpoint、监听或网络。
 
 WASI HTTP body 桥接、Store/Instance、guest 调用和应用任务回收全部归 Pishoo；DHTTP 通过标准 Service/body 提供通用传输与生命周期衔接。不存在 dhttp::WasmApp 或 WASM 宿主注入接缝。Pishoo 既有设计中尚引用这些旧上游接口的部分按本次边界调整，见 [接入说明](pishoo-service-boundary.md)。gmutils 后续按新的接口适配，不要求本轮保留旧 identity/home 抽象。
 
@@ -579,7 +559,7 @@ WASI HTTP body 桥接、Store/Instance、guest 调用和应用任务回收全部
 1. 按最简单的模型重构，不以旧 identity/home 或 gmutils 兼容为接口约束。
 2. 删除重复身份和名称包装，直接使用 dquic/qtls/h3x 已有类型；保留必要的 DHTTP 名称与证书规则函数。
 3. home 暂时只是目录定位和凭据读取辅助，不详细设计其对象、配置、缓存、扫描或生命周期；Endpoint 只暴露 load(servername)。
-4. NetworkConfig.listen 保存 Scope/Interface 监听规则，不包含 home、逐名称监听表或端口；`listen external` 直接表达 External 范围，持续展开到全部适用网卡。External 不启动 STUN 探测。Network 负责系统网卡新增、删除、up/down 等变化的监听、资源重绑与恢复；使用 qprotocol 的全局 Dock 管理 socket，按入口和来源统一准入，Endpoint.listen 接收 scopes 和 app。
+4. 每个 Server 只传 scopes，不指定网卡、端口或已打开的 socket；`listen external` 直接表达 External 范围，持续展开到全部适用网卡。External 不启动 STUN 探测。Network 汇总活动 Server 的 scopes，负责系统网卡变化时的资源重绑与恢复；使用 qprotocol 的全局 Dock 管理 socket，按入口和来源统一准入，Endpoint.listen 接收 scopes 和 app。
 5. HTTP 消息复用 h3x；Endpoint 返回的 `Request<()>` 和 `Request<ArcWndBuf>` 分别实现两种 IntoFuture 输出。get 等无请求体便捷调用直接 await 得到响应；post 等需要调用方写请求体的调用直接 await 得到请求 body 写入端和 `dhttp::Response`。接口声明已同步到代码，执行能力与消息的绑定仍待实现；只给未绑定的 h3x 请求增加 IntoFuture 无法补足配对接收流。
 6. listen 仅约束 tower_service::Service，不依赖 Axum；Pishoo 组装 Router，完整负责 WASM、WASI HTTP、OpenAPI、逐 API 授权和身份沙盒。DHTTP 不增加 WASM 类型、feature、依赖或私有清单。
 7. Pishoo 和 gmutils 的具体调用迁移留到接入阶段；本轮只收敛接口稿，后续同步修改依赖关系，不用兼容层长期保留旧 identity 模型。

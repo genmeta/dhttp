@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 readme = "../README.md"
 
+[lib]
+path = "src/dhttp_log.rs"
+
 [dependencies]
 chrono.workspace = true
 dhttp-identity.workspace = true

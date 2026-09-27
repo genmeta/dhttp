@@ -9,6 +9,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+path = "src/dhttp_identity.rs"
+
 [dependencies]
 serde = { workspace = true }
 snafu = { workspace = true }

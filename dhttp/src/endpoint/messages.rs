@@ -1,12 +1,15 @@
+use super::*;
 impl<B> Request<B> {
     pub fn header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.message.headers_mut().insert(name, value);
         self
     }
+
     pub fn append_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.message.headers_mut().append(name, value);
         self
     }
+
     pub fn body<T>(self, body: T) -> Request<T> {
         let (parts, _) = self.message.into_parts();
         Request {
@@ -15,6 +18,7 @@ impl<B> Request<B> {
         }
     }
 }
+
 impl<B> IntoFuture for Request<B>
 where
     B: http_body::Body<Data = Bytes> + Send + 'static,
@@ -25,29 +29,22 @@ where
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let network = DhttpNetwork::global()?;
-            let owner = endpoint_connections(network, &self.endpoint.name);
             let mut message = self.message;
             *message.uri_mut() = canonical_uri(&self.endpoint, message.uri())?;
             let remote = remote_name(message.uri())?;
-            let h3 =
-                get_connection(network, self.endpoint.name.clone(), remote, owner.clone()).await?;
-            let (writer, reader) = tokio::select! {
-                _ = owner.stop.cancelled() => return Err(Error::EndpointClosed),
-                result = tokio::time::timeout(OPERATION_TIMEOUT, h3.open_bi()) => result.map_err(io_error)?.map_err(h3_error)?,
-            };
-            send_request(
-                message,
-                writer,
-                reader,
-                h3.qpack().clone(),
-                owner.stop.clone(),
-            )
-            .await
+            let h3 = network
+                .get_connection(self.endpoint.name.clone(), remote)
+                .await?;
+            let (writer, reader) = tokio::time::timeout(OPERATION_TIMEOUT, h3.open_bi())
+                .await
+                .map_err(io_error)?
+                .map_err(h3_error)?;
+            send_request(message, writer, reader, h3.qpack().clone()).await
         })
     }
 }
 
-fn canonical_uri(endpoint: &Endpoint, uri: &http::Uri) -> Result<http::Uri> {
+pub(super) fn canonical_uri(endpoint: &Endpoint, uri: &http::Uri) -> Result<http::Uri> {
     let name =
         dhttp_identity::name::DhttpName::try_from(endpoint.name().to_owned()).map_err(|error| {
             Error::InvalidRequest {
@@ -59,13 +56,14 @@ fn canonical_uri(endpoint: &Endpoint, uri: &http::Uri) -> Result<http::Uri> {
             message: error.to_string(),
         })
 }
-fn remote_name(uri: &http::Uri) -> Result<Arc<str>> {
-    if let Some(scheme) = uri.scheme_str() {
-        if !matches!(scheme, "https" | "http" | "dhttp" | "wss" | "ws") {
-            return Err(Error::InvalidRequest {
-                message: "unsupported URI scheme".into(),
-            });
-        }
+
+pub(super) fn remote_name(uri: &http::Uri) -> Result<Arc<str>> {
+    if let Some(scheme) = uri.scheme_str()
+        && !matches!(scheme, "https" | "http" | "dhttp" | "wss" | "ws")
+    {
+        return Err(Error::InvalidRequest {
+            message: "unsupported URI scheme".into(),
+        });
     }
     let host = uri.host().ok_or_else(|| Error::InvalidRequest {
         message: "URI has no remote authority".into(),
@@ -75,12 +73,11 @@ fn remote_name(uri: &http::Uri) -> Result<Arc<str>> {
         .ok_or_else(|| Error::InvalidName { name: host.into() })
 }
 
-async fn send_request<B, W, R>(
+pub(super) async fn send_request<B, W, R>(
     message: http::Request<B>,
     writer: W,
     reader: R,
     qpack: h3x::ArcQpack,
-    stop: CancellationToken,
 ) -> Result<http::Response<Body>>
 where
     B: http_body::Body<Data = Bytes> + Send + 'static,
@@ -101,11 +98,7 @@ where
         writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64())
     });
     let send_qpack = qpack.clone();
-    let send_stop = stop.clone();
     let upload = tokio::spawn(async move {
-        if send_stop.is_cancelled() {
-            return Err(Error::EndpointClosed);
-        }
         let trailers = outgoing.clone();
         let writing =
             scopeguard::ScopeGuard::into_inner(writer).write_request(outgoing, send_qpack);
@@ -116,11 +109,7 @@ where
         let pumping = pump_body(body, buffer, move |name, value| {
             trailers.append_trailer(name, value);
         });
-        tokio::select! {
-            biased;
-            result = async { tokio::try_join!(biased; async { (&mut writing).await.map_err(h3_error) }, pumping) } => { result?; }
-            _ = send_stop.cancelled() => return Err(Error::EndpointClosed),
-        }
+        tokio::try_join!(biased; async { (&mut writing).await.map_err(h3_error) }, pumping)?;
         scopeguard::ScopeGuard::into_inner(guard);
         Ok(())
     });
@@ -136,7 +125,6 @@ where
     let mut completed = false;
     let response = loop {
         tokio::select! {
-            _ = stop.cancelled() => return Err(Error::EndpointClosed),
             result = &mut *upload, if !completed => { upload_result(result.map_err(io_error)?)?; completed = true; },
             response = &mut timeout => break response.map_err(io_error)?.map_err(h3_error)?,
         }
@@ -159,7 +147,6 @@ where
                 tokio::pin!(reading);
                 loop {
                     tokio::select! {
-                        _ = stop.cancelled() => return Err(Error::EndpointClosed),
                         result = &mut *upload, if !completed => { upload_result(result.map_err(io_error)?)?; completed = true; },
                         result = &mut reading => return result.map_err(io_error)?.map_err(io_error),
                     }
@@ -196,11 +183,11 @@ fn upload_result(result: Result<()>) -> Result<()> {
         {
             return Ok(());
         }
-        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
-            if let Some(inner) = io.get_ref() {
-                cause = inner;
-                continue;
-            }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+        {
+            cause = inner;
+            continue;
         }
         match cause.source() {
             Some(source) => cause = source,
@@ -208,4 +195,117 @@ fn upload_result(result: Result<()>) -> Result<()> {
         }
     }
     Err(error)
+}
+
+pub(super) fn receiving_body(
+    inbound: h3x::ArcWndBuf,
+    trailers: h3x::Trailers,
+    drop_code: h3x::ErrorCode,
+) -> Body {
+    // Construct before the generator: dropping an entirely unpolled Body must stop native input too.
+    let guard = scopeguard::guard(inbound, move |mut body| body.stop(drop_code.as_u64()));
+    StreamBody::new(async_stream::try_stream! {
+        let mut guard = guard;
+        loop {
+            let mut bytes = vec![0; BODY_READ_CHUNK_BYTES];
+            let count = tokio::time::timeout(OPERATION_TIMEOUT, guard.read(&mut bytes)).await.map_err(io_error)?.map_err(io_error)?;
+            if count == 0 { break; }
+            bytes.truncate(count);
+            yield Frame::data(Bytes::from(bytes));
+        }
+        scopeguard::ScopeGuard::into_inner(guard);
+        let fields = trailers.headers();
+        if !fields.is_empty() { yield Frame::trailers(fields); }
+    }).map_err(|error: Error| Box::new(error) as BoxError).boxed_unsync()
+}
+
+async fn pump_body<B>(
+    body: B,
+    mut native: h3x::ArcWndBuf,
+    mut trailer: impl FnMut(http::HeaderName, http::HeaderValue),
+) -> Result<()>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<BoxError>,
+{
+    let mut body = Box::pin(body);
+    loop {
+        let frame: Option<std::result::Result<Frame<Bytes>, BoxError>> =
+            tokio::time::timeout(OPERATION_TIMEOUT, body.frame())
+                .await
+                .map_err(io_error)?
+                .map(|frame| frame.map_err(Into::into));
+        let Some(frame) = frame else {
+            break;
+        };
+        let frame = frame.map_err(box_error)?;
+        match frame.into_data() {
+            Ok(data) => {
+                tokio::time::timeout(OPERATION_TIMEOUT, native.write_bytes(data))
+                    .await
+                    .map_err(io_error)?
+                    .map_err(io_error)?;
+            }
+            Err(frame) => {
+                if let Ok(fields) = frame.into_trailers() {
+                    // HeaderMap's borrowed iterator emits the name for every value.
+                    for (name, value) in fields.iter() {
+                        trailer(name.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+    native.shutdown().await.map_err(io_error)
+}
+
+pub(super) fn send_response<B, W>(
+    response: http::Response<B>,
+    method: http::Method,
+    writer: W,
+    qpack: h3x::ArcQpack,
+) -> impl std::future::Future<Output = Result<()>>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<BoxError>,
+    W: WriteResponse + CancelStream,
+{
+    let writer = scopeguard::guard(writer, |mut writer| {
+        writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64())
+    });
+    async move {
+        let (parts, body) = response.into_parts();
+        let suppressed = method == http::Method::HEAD
+            || parts.status == http::StatusCode::NO_CONTENT
+            || parts.status == http::StatusCode::NOT_MODIFIED;
+        let body = if suppressed {
+            drop(body);
+            None
+        } else {
+            Some(body)
+        };
+        let buffer = h3x::ArcWndBuf::new(BODY_WINDOW_BYTES);
+        let outgoing = h3x::Response::<h3x::W>::from_parts(parts, buffer.clone());
+        let trailers = outgoing.clone();
+        let writing =
+            scopeguard::ScopeGuard::into_inner(writer).write_response(outgoing, method, qpack);
+        tokio::pin!(writing);
+        // This guard is declared after the pinned writer and therefore cancels
+        // the native body before dropping the writer future on any exit.
+        let guard = scopeguard::guard(trailers.clone(), |mut response| {
+            response.cancel(h3x::ErrorCode::RequestCancelled.as_u64())
+        });
+        if let Some(body) = body {
+            let pumping = pump_body(body, buffer, move |name, value| {
+                trailers.append_trailer(name, value);
+            });
+            // Poll the writer first so its existing body cancellation callback
+            // is installed before a producer can fail on its first frame.
+            tokio::try_join!(biased; async { (&mut writing).await.map_err(h3_error) }, pumping)?;
+        } else {
+            writing.await.map_err(h3_error)?;
+        }
+        scopeguard::ScopeGuard::into_inner(guard);
+        Ok(())
+    }
 }

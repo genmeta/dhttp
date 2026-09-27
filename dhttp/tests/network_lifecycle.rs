@@ -1,40 +1,24 @@
-use dhttp::{DhttpNetwork, Error, ListenConfig, NetworkConfig, Scope};
+use dhttp::{DhttpNetwork, Error};
 
 #[tokio::test]
-async fn network_initializes_once_and_shuts_down() {
+async fn network_initializes_once() {
     assert!(matches!(
         DhttpNetwork::global(),
         Err(Error::NetworkNotInitialized)
     ));
-    assert!(matches!(
-        DhttpNetwork::init(NetworkConfig { listen: vec![] }).await,
-        Err(Error::InvalidNetworkConfig { .. })
-    ));
-    let config = NetworkConfig {
-        listen: vec![ListenConfig::Scope(Scope::Loopback.into())],
-    };
-    let (first, second) = tokio::join!(
-        DhttpNetwork::init(config.clone()),
-        DhttpNetwork::init(config.clone())
-    );
+    let (first, second) = tokio::join!(DhttpNetwork::init(), DhttpNetwork::init());
     let network = match (first, second) {
         (Ok(network), Err(Error::AlreadyInitialized))
         | (Err(Error::AlreadyInitialized), Ok(network)) => network,
         _ => panic!("exactly one concurrent initialization must succeed"),
     };
     assert!(
-        !qprotocol::Dock::global().is_empty(),
-        "loopback socket is bound"
+        qprotocol::Dock::global().is_empty(),
+        "network binds no sockets before a server listens"
     );
     assert!(std::ptr::eq(network, DhttpNetwork::global().unwrap()));
     assert!(matches!(
-        DhttpNetwork::init(config).await,
+        DhttpNetwork::init().await,
         Err(Error::AlreadyInitialized)
     ));
-    network.shutdown().unwrap();
-    assert!(
-        qprotocol::Dock::global().is_empty(),
-        "bound sockets are released"
-    );
-    network.shutdown().unwrap();
 }

@@ -12,9 +12,9 @@ let response = endpoint.get(uri)
 
 Endpoint 加载和请求构造不访问网络；首次 await 才取得共享连接。所有请求方法默认使用标准 Empty body，`.body(body)` 可替换为任意标准流式 Body，`from_request` 使用相同驱动。上传与响应读取并发，响应头不等待上传 EOF。服务请求携带实际 `qtls::HandshakeSummary`；对外不暴露 QUIC/H3 连接。
 
-`DhttpNetwork::init(NetworkConfig)` 在进程中初始化一次，按监听规则持有实际 socket、AddressBook、连接和服务登记。每两秒重读网卡快照，保留未变化绑定，撤销失效绑定的地址、协议和 Dock 登记。配置更新需要重启；Endpoint 监听范围不能超出启动网络配置允许的范围。
+`DhttpNetwork::init()` 在进程中初始化一次。各 Endpoint 在监听时传入 `Scopes`；Network 汇总活动服务的范围，创建并持有实际 socket、AddressBook、连接和服务登记。没有活动服务时不绑定监听 socket。每两秒重读网卡快照，保留未变化绑定，撤销失效绑定的地址、协议和 Dock 登记；服务退出后重新汇总范围并回收多余绑定。
 
-`endpoint.listen(scopes, service)` 接受标准 Tower Service。取消 listen future 或调用 `stop_listening()` 会撤销本次监听，随后可以重新 listen，既有交换可继续。`close()` 立即取消同规范化名称的所有句柄并关闭其连接；该名称本进程内不能重开。`network.shutdown()` 立即取消全部身份并撤销所有绑定，不等待排空、不返回关闭报告。
+`endpoint.listen(scopes, service)` 接受标准 Tower Service。`scopes` 同时指定该服务允许的来源范围，并参与 Network 的网卡选择。取消 listen future 或调用 `stop_listening()` 会撤销本次监听；等待旧监听任务退出后才能用同名 Endpoint 重新 listen，既有交换可继续。
 
 Body 适配使用现成 `StreamBody` 和 `UnsyncBoxBody`，保留 DATA、多值 trailers、EOF、错误、提前丢弃和 HEAD/204/304 语义。操作等待期限为 16 分钟，连接期限为 30 秒；业务请求和终端会话期限由调用方决定。远端停止在后续流 I/O 中观察，不提供独立终态订阅。
 

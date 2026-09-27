@@ -19,14 +19,9 @@ pub enum Error {
     NameInUse {
         name: String,
     },
-    EndpointClosed,
-    NetworkClosed,
     NetworkUnavailable,
     NetworkNotInitialized,
     AlreadyInitialized,
-    InvalidNetworkConfig {
-        message: String,
-    },
     HomeUnavailable {
         message: String,
     },
@@ -77,14 +72,9 @@ impl fmt::Display for Error {
             Self::InvalidRequest { message } => write!(f, "invalid request: {message}"),
             Self::AlreadyListening => f.write_str("endpoint is already listening"),
             Self::NameInUse { name } => write!(f, "name is already registered: {name}"),
-            Self::EndpointClosed => f.write_str("endpoint is closed"),
-            Self::NetworkClosed => f.write_str("network is closed"),
             Self::NetworkUnavailable => f.write_str("network is unavailable"),
             Self::NetworkNotInitialized => f.write_str("network is not initialized"),
             Self::AlreadyInitialized => f.write_str("network is already initialized"),
-            Self::InvalidNetworkConfig { message } => {
-                write!(f, "invalid network configuration: {message}")
-            }
             Self::HomeUnavailable { message } => write!(f, "DHTTP home unavailable: {message}"),
             Self::IdentityNotFound { name } => write!(f, "identity not found: {name}"),
             Self::Cancelled => f.write_str("operation cancelled"),
