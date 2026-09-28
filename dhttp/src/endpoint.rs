@@ -1,18 +1,20 @@
 //! Identity-bound request and response handling.
 use crate::{Body, BoxError, EmptyBody, Error, RequestFuture, Result, network::DhttpNetwork};
 use bytes::Bytes;
+use futures::StreamExt;
 use h3x::{ReadRequest, ReadResponse, WriteRequest, WriteResponse};
 use http_body::Frame;
 use http_body_util::{BodyExt, StreamBody};
 use qconn::Scopes;
-use std::{future::IntoFuture, sync::Arc, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use qrecovery::{recv::StopSending, send::CancelStream};
+use std::{future::IntoFuture, sync::Arc};
+use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 use tower_service::Service;
 
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const BODY_WINDOW_BYTES: usize = 64 * 1024;
-const BODY_READ_CHUNK_BYTES: usize = 16 * 1024;
+// Match h3x's receive chunk so each Body frame can transfer its Bytes directly.
+const BODY_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 #[derive(Clone)]
 pub struct Endpoint {
@@ -26,7 +28,7 @@ pub struct Request<B> {
 }
 
 mod messages;
-use messages::{receiving_body, send_response};
+use messages::{forward_inbound_body, send_response};
 impl Endpoint {
     pub async fn load(name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
@@ -124,17 +126,16 @@ pub(crate) fn serve_exchange<W, R>(
     handshake: Arc<qtls::HandshakeSummary>,
 ) -> impl std::future::Future<Output = Result<()>>
 where
-    W: WriteResponse,
+    W: WriteResponse + CancelStream,
     R: ReadRequest,
 {
     async move {
-        let reading = reader.read_request(qpack.clone());
-        tokio::pin!(reading);
-        let incoming = tokio::time::timeout(OPERATION_TIMEOUT, &mut reading)
-            .await
-            .map_err(io_error)?
-            .map_err(h3_error)?;
-        let (mut parts, inbound) = incoming.into_parts();
+        // Application failures have no response to encode, so end our write direction.
+        let writer = scopeguard::guard(writer, |mut writer| {
+            writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
+        });
+        let incoming = reader.read_request(qpack.clone()).await.map_err(h3_error)?;
+        let (mut parts, mut inbound) = incoming.into_parts();
         let method = parts.method.clone();
         let uri = handshake.local.as_ref().and_then(|local| {
             let identity =
@@ -146,13 +147,20 @@ where
             .then_some(uri)
         });
         let Some(uri) = uri else {
+            inbound.stop(h3x::ErrorCode::NoError.as_u64());
             let mut response = http::Response::new(
                 EmptyBody::new()
                     .map_err(|never| match never {})
                     .boxed_unsync(),
             );
             *response.status_mut() = http::StatusCode::MISDIRECTED_REQUEST;
-            return send_response(response, method, writer, qpack).await;
+            return send_response(
+                response,
+                method,
+                scopeguard::ScopeGuard::into_inner(writer),
+                qpack,
+            )
+            .await;
         };
         parts.uri = uri;
         let trailers = parts
@@ -160,7 +168,9 @@ where
             .remove::<h3x::Trailers>()
             .unwrap_or_default();
         parts.extensions.insert((*handshake).clone());
-        let body = receiving_body(inbound, trailers);
+        let body = StreamBody::new(forward_inbound_body(inbound, trailers))
+            .map_err(|error: Error| Box::new(error) as BoxError)
+            .boxed_unsync();
         let request: http::Request<Body> = http::Request::from_parts(parts, body);
         let mut app = app;
         futures::future::poll_fn(|cx| app.poll_ready(cx))
@@ -174,7 +184,13 @@ where
             >,
         > = app.call(request);
         let response = response.await.map_err(box_error)?;
-        send_response(response, method, writer, qpack).await
+        send_response(
+            response,
+            method,
+            scopeguard::ScopeGuard::into_inner(writer),
+            qpack,
+        )
+        .await
     }
 }
 

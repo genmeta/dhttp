@@ -44,6 +44,7 @@ pub(crate) struct TcpTransport {
     register: mpsc::UnboundedSender<(u64, DuplexStream)>,
     incoming_bi: Mutex<mpsc::UnboundedReceiver<BiStream>>,
     incoming_uni: Mutex<mpsc::UnboundedReceiver<UniStream>>,
+    // Acceptors wait on queues, so either wire half must wake them on connection close.
     closed: watch::Sender<bool>,
 }
 

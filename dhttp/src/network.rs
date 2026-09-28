@@ -3,6 +3,7 @@ use crate::{
     Body, BoxError, Error, Result,
     endpoint::{h3_error, io_error, serve_exchange},
 };
+use qrecovery::send::CancelStream;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -87,7 +88,14 @@ impl DhttpNetwork {
 }
 
 async fn serve_connection(network: &'static DhttpNetwork, name: Arc<str>, h3: H3) {
-    while let Ok((writer, reader)) = h3.accept_bi().await {
+    loop {
+        let (writer, reader) = match h3.accept_bi().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::debug!(endpoint = %name, %error, "stopped accepting HTTP/3 streams");
+                break;
+            }
+        };
         let app = network
             .listeners
             .lock()
@@ -97,7 +105,17 @@ async fn serve_connection(network: &'static DhttpNetwork, name: Arc<str>, h3: H3
         if let Some(app) = app {
             let qpack = h3.qpack().clone();
             let handshake = transport::handshake(h3.transport());
-            tokio::spawn(serve_exchange(app, writer, reader, qpack, handshake));
+            let endpoint = name.clone();
+            let stream_id = writer.stream_id();
+            tokio::spawn(async move {
+                if let Err(error) = serve_exchange(app, writer, reader, qpack, handshake).await {
+                    tracing::debug!(endpoint = %endpoint, stream_id, %error, "request exchange failed");
+                }
+            });
+        } else {
+            // This listener has gone away; reject the new stream locally.
+            let mut writer = writer;
+            writer.cancel(h3x::ErrorCode::RequestRejected.as_u64());
         }
     }
     transport::forget_pool_connection(network, &name, &h3);

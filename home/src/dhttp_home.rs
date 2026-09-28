@@ -1,4 +1,7 @@
 pub mod identity;
+mod request_uri;
+
+pub use request_uri::{ResolveRequestUriError, resolve_request_uri};
 
 mod bootstrap;
 

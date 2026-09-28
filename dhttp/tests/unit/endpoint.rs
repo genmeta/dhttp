@@ -1,8 +1,9 @@
 //! Transport-independent tests: all HTTP/3 traffic stays inside Tokio duplex streams.
-use super::messages::{canonical_uri, remote_name, send_request};
+use super::messages::send_request;
 use super::*;
 use http_body_util::{Empty, Full};
-use std::sync::Mutex;
+use std::{sync::Mutex, time::Duration};
+use tokio::io::AsyncReadExt;
 #[path = "../support/transport.rs"]
 mod support;
 
@@ -47,6 +48,42 @@ fn frames_body(data: &'static [u8]) -> Body {
         Ok(Frame::trailers(trailers)),
     ]))
     .boxed_unsync()
+}
+
+#[tokio::test]
+async fn inbound_body_transfers_bytes_without_copy_and_preserves_eof() {
+    let native = h3x::ArcWndBuf::new(BODY_READ_CHUNK_BYTES);
+    let data = Bytes::from_static(b"shared body bytes");
+    native.write_bytes(data.clone()).await.unwrap();
+    native.clone().shutdown().await.unwrap();
+
+    let mut body = StreamBody::new(forward_inbound_body(
+        native.clone(),
+        h3x::Trailers::default(),
+    ))
+    .boxed_unsync();
+    let received = body.frame().await.unwrap().unwrap().into_data().unwrap();
+    assert_eq!(received, data);
+    assert_eq!(received.as_ptr(), data.as_ptr());
+    assert!(body.frame().await.is_none());
+    drop(body);
+    assert!(
+        native
+            .read_chunk(BODY_READ_CHUNK_BYTES)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn dropping_unpolled_inbound_body_stops_native_reader() {
+    let native = h3x::ArcWndBuf::new(BODY_READ_CHUNK_BYTES);
+    drop(forward_inbound_body(
+        native.clone(),
+        h3x::Trailers::default(),
+    ));
+    assert!(native.read_chunk(BODY_READ_CHUNK_BYTES).await.is_err());
 }
 
 #[tokio::test]
@@ -175,7 +212,7 @@ async fn inbound_authority_must_match_handshake_before_service() {
             ));
             let request = http::Request::builder()
                 .uri(uri)
-                .body(Empty::<Bytes>::new())
+                .body(Full::new(Bytes::from(vec![42; BODY_WINDOW_BYTES * 8])))
                 .unwrap();
             let response = send_request(request, writer, reader, client.qpack().clone())
                 .await
@@ -232,6 +269,98 @@ async fn response_headers_arrive_before_upload_eof() {
 }
 
 #[tokio::test]
+async fn dropping_outbound_request_future_stops_upload() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (_response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let (started, observed_start) = tokio::sync::oneshot::channel();
+        let (dropped, observed_drop) = tokio::sync::oneshot::channel();
+        let guard = scopeguard::guard(dropped, |sender| {
+            let _ = sender.send(());
+        });
+        let body = StreamBody::new(async_stream::stream! {
+            let _guard = guard;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+            yield Ok::<_, BoxError>(Frame::data(Bytes::new()));
+        });
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("https://bob~/upload")
+            .body(body)
+            .unwrap();
+        let sending = tokio::spawn(send_request(
+            request,
+            writer,
+            reader,
+            client.qpack().clone(),
+        ));
+        let incoming = request_reader
+            .read_request(server.qpack().clone())
+            .await
+            .unwrap();
+        observed_start.await.unwrap();
+        sending.abort();
+        let _ = sending.await;
+        observed_drop.await.unwrap();
+        drop(incoming);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dropping_outbound_response_body_stops_upload() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let (started, observed_start) = tokio::sync::oneshot::channel();
+        let (dropped, observed_drop) = tokio::sync::oneshot::channel();
+        let guard = scopeguard::guard(dropped, |sender| {
+            let _ = sender.send(());
+        });
+        let body = StreamBody::new(async_stream::stream! {
+            let _guard = guard;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+            yield Ok::<_, BoxError>(Frame::data(Bytes::new()));
+        });
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let incoming = request_reader
+                .read_request(server.qpack().clone())
+                .await
+                .unwrap();
+            send_response(
+                http::Response::new(Full::new(Bytes::from_static(b"early"))),
+                http::Method::POST,
+                response_writer,
+                server.qpack().clone(),
+            )
+            .await
+            .unwrap();
+            released.await.unwrap();
+            drop(incoming);
+        });
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("https://bob~/upload")
+            .body(body)
+            .unwrap();
+        let response = send_request(request, writer, reader, client.qpack().clone())
+            .await
+            .unwrap();
+        observed_start.await.unwrap();
+        drop(response);
+        observed_drop.await.unwrap();
+        release.send(()).unwrap();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn dropped_request_body_does_not_cancel_early_service_response() {
     bounded(async {
         let (client, server) = support::connection_pair();
@@ -271,13 +400,26 @@ async fn dropped_request_body_does_not_cancel_early_service_response() {
 }
 
 #[tokio::test]
-async fn outbound_uri_expands_identity_shorthand_before_routing() {
+async fn outbound_request_preserves_target_error_categories() {
     let endpoint = Endpoint::load("alice").await.unwrap();
-    let other = canonical_uri(&endpoint, &"https://bob~/upload?q=1".parse().unwrap()).unwrap();
-    assert_eq!(other.to_string(), "https://bob.dhttp.net/upload?q=1");
-    assert_eq!(remote_name(&other).unwrap().as_ref(), "bob.dhttp.net");
-    let local = canonical_uri(&endpoint, &"https://~/self".parse().unwrap()).unwrap();
-    assert_eq!(local.to_string(), "https://alice.dhttp.net/self");
+
+    let error = endpoint
+        .get("ftp://bob~/x".parse().unwrap())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidRequest { message } if message == "unsupported URI scheme"
+    ));
+
+    let error = endpoint
+        .get("https://bad_name/x".parse().unwrap())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidName { name } if name == "bad_name"
+    ));
 }
 
 #[tokio::test]
@@ -319,10 +461,12 @@ async fn body_failure_is_an_error_instead_of_clean_eof() {
         let (client, server) = support::connection_pair();
         let (_writer, reader) = client.open_bi().await.unwrap();
         let (writer, _reader) = server.accept_bi().await.unwrap();
-        let body = StreamBody::new(futures::stream::iter([
-            Ok(Frame::data(Bytes::from_static(b"partial"))),
-            Err::<Frame<Bytes>, BoxError>(Box::new(std::io::Error::other("producer failed"))),
-        ]));
+        let (fail, fail_after_partial) = tokio::sync::oneshot::channel::<()>();
+        let body = StreamBody::new(async_stream::stream! {
+            yield Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(b"partial")));
+            fail_after_partial.await.unwrap();
+            yield Err::<Frame<Bytes>, BoxError>(Box::new(std::io::Error::other("producer failed")));
+        });
         let writing = send_response(
             http::Response::new(body),
             http::Method::GET,
@@ -330,15 +474,19 @@ async fn body_failure_is_an_error_instead_of_clean_eof() {
             server.qpack().clone(),
         );
         let reading = async {
-            match reader
+            let mut response = reader
                 .read_response(http::Method::GET, client.qpack().clone())
                 .await
-            {
-                Ok(mut response) => {
-                    let _ = response.read_to_end(&mut Vec::new()).await;
-                }
-                Err(_) => {}
-            }
+                .unwrap();
+            let mut partial = [0; 7];
+            response.read_exact(&mut partial).await.unwrap();
+            assert_eq!(&partial, b"partial");
+            fail.send(()).unwrap();
+            let error = response.read_to_end(&mut Vec::new()).await.unwrap_err();
+            assert_eq!(
+                h3x::Error::from(error).code,
+                h3x::ErrorCode::RequestCancelled
+            );
         };
         let (result, ()) = tokio::join!(writing, reading);
         assert!(result.is_err());
@@ -421,14 +569,17 @@ async fn service_call_and_readiness_failures_return_errors() {
             let reading = reader.read_response(http::Method::GET, client.qpack().clone());
             let (result, response) = tokio::join!(serving, reading);
             assert!(result.is_err());
-            assert!(response.is_err());
+            assert_eq!(
+                response.err().unwrap().code,
+                h3x::ErrorCode::RequestCancelled
+            );
         }
     })
     .await;
 }
 
 #[tokio::test]
-async fn malformed_request_fails_peer_without_waiting_for_response_timeout() {
+async fn malformed_request_fails_peer_promptly() {
     bounded(async {
         let (client, server) = support::connection_pair();
         let (mut writer, reader) = client.open_bi().await.unwrap();

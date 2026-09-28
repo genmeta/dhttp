@@ -59,6 +59,7 @@ pub(super) fn activate(network: &'static DhttpNetwork) {
 pub(super) fn service(entry: &ListenerEntry) -> BoxService {
     entry.service.clone()
 }
+
 pub(super) fn handshake(transport: &QuicTransport) -> Arc<qtls::HandshakeSummary> {
     transport.handshake.clone()
 }

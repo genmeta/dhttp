@@ -3,6 +3,50 @@ use std::path::PathBuf;
 use super::{LoadDhttpHomeError, resolve_global_home_path, resolve_user_home_path};
 
 #[test]
+fn request_uri_expands_shorthand_and_identifies_remote() {
+    let (uri, remote) = super::resolve_request_uri(
+        "alice.dhttp.net",
+        "https://bob~/upload?q=1".parse().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(uri.to_string(), "https://bob.dhttp.net/upload?q=1");
+    assert_eq!(remote, "bob.dhttp.net");
+
+    let (uri, remote) =
+        super::resolve_request_uri("alice.dhttp.net", "https://~/self".parse().unwrap()).unwrap();
+    assert_eq!(uri.to_string(), "https://alice.dhttp.net/self");
+    assert_eq!(remote, "alice.dhttp.net");
+
+    let (uri, remote) =
+        super::resolve_request_uri("alice.dhttp.net", "https://Bob/x".parse().unwrap()).unwrap();
+    assert_eq!(uri.to_string(), "https://Bob/x");
+    assert_eq!(remote, "bob.dhttp.net");
+}
+
+#[test]
+fn request_uri_rejects_unsupported_scheme_and_missing_authority() {
+    use super::ResolveRequestUriError;
+
+    let error =
+        super::resolve_request_uri("alice.dhttp.net", "ftp://bob~/x".parse().unwrap()).unwrap_err();
+    assert!(matches!(error, ResolveRequestUriError::UnsupportedScheme));
+
+    let error = super::resolve_request_uri("alice.dhttp.net", "/x".parse().unwrap()).unwrap_err();
+    assert!(matches!(
+        error,
+        ResolveRequestUriError::MissingRemoteAuthority
+    ));
+
+    let error =
+        super::resolve_request_uri("alice.dhttp.net", "https://bad_name/x".parse().unwrap())
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        ResolveRequestUriError::InvalidRemoteName { name } if name == "bad_name"
+    ));
+}
+
+#[test]
 fn normalizes_identity_names() {
     assert_eq!(
         super::normalize_name(" Alice ").as_deref(),

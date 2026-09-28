@@ -88,3 +88,16 @@ impl From<http::uri::InvalidUri> for Error {
         }
     }
 }
+
+impl From<dhttp_home::ResolveRequestUriError> for Error {
+    fn from(error: dhttp_home::ResolveRequestUriError) -> Self {
+        match error {
+            dhttp_home::ResolveRequestUriError::InvalidRemoteName { name } => {
+                Self::InvalidName { name }
+            }
+            error => Self::InvalidRequest {
+                message: error.to_string(),
+            },
+        }
+    }
+}
