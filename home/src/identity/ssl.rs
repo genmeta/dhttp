@@ -1,7 +1,6 @@
 use std::{
     iter,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use futures::{Stream, StreamExt, stream};
@@ -24,8 +23,6 @@ pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
 pub const KEY_FILE_NAME: &str = "privkey.pem";
 pub const OCSP_FILE_NAME: &str = "ocsp.der";
-
-static SAVE_IDENTITY_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]
@@ -114,36 +111,12 @@ pub enum SaveIdentityError {
     EmptyOcsp,
     #[snafu(display("failed to create identity directory at {}", path.display()))]
     CreateIdentityDir { path: PathBuf, source: io::Error },
-    #[snafu(display("failed to create staged identity material at {}", path.display()))]
-    CreateStageDir { path: PathBuf, source: io::Error },
-    #[snafu(display("failed to get metadata for path {}", path.display()))]
-    Metadata { path: PathBuf, source: io::Error },
-    #[snafu(display(
-        "failed to preserve old identity material from {} at {}",
-        from.display(),
-        to.display()
-    ))]
-    PreserveOld {
-        from: PathBuf,
-        to: PathBuf,
-        source: io::Error,
-    },
+    #[snafu(display("failed to remove old identity material at {}", path.display()))]
+    RemoveOld { path: PathBuf, source: io::Error },
     #[snafu(display("failed to create file at {}", path.display()))]
     Create { path: PathBuf, source: io::Error },
     #[snafu(display("failed to write to file at {}", path.display()))]
     Write { path: PathBuf, source: io::Error },
-    #[snafu(display("failed to commit identity material at {}", path.display()))]
-    Commit { path: PathBuf, source: io::Error },
-    #[snafu(display(
-        "failed to restore old identity material from {} to {}",
-        from.display(),
-        to.display()
-    ))]
-    Rollback {
-        from: PathBuf,
-        to: PathBuf,
-        source: io::Error,
-    },
 }
 
 #[derive(Snafu, Debug)]
@@ -315,102 +288,23 @@ impl IdentityProfile {
         key: &[u8],
         ocsp: &[u8],
     ) -> Result<(), SaveIdentityError> {
-        self.save_identity_transaction(cert, key, ocsp, || Ok(()))
-            .await
-    }
-
-    async fn save_identity_transaction<F>(
-        &self,
-        cert: &[u8],
-        key: &[u8],
-        ocsp: &[u8],
-        before_install: F,
-    ) -> Result<(), SaveIdentityError>
-    where
-        F: FnOnce() -> io::Result<()>,
-    {
         if ocsp.is_empty() {
             return save_identity_error::EmptyOcspSnafu.fail();
         }
-        fs::create_dir_all(self.path())
-            .await
-            .context(save_identity_error::CreateIdentityDirSnafu { path: self.path() })?;
-
-        let transaction_id = SAVE_IDENTITY_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed);
-        let unique_suffix = format!("{}-{transaction_id}", std::process::id());
-        let stage_dir = self.join(format!(".{SSL_DIR_NAME}-stage-{unique_suffix}"));
-        let backup_dir = self.join(format!(".{SSL_DIR_NAME}-backup-{unique_suffix}"));
         let ssl_dir = self.ssl_dir();
-
-        fs::create_dir(stage_dir.as_path()).await.context(
-            save_identity_error::CreateStageDirSnafu {
-                path: stage_dir.clone(),
-            },
-        )?;
-
-        if let Err(error) = Self::write_material_file(stage_dir.join(CERT_FILE_NAME), cert).await {
-            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-            return Err(error);
+        if ssl_dir.exists() {
+            fs::remove_dir_all(&ssl_dir)
+                .await
+                .context(save_identity_error::RemoveOldSnafu {
+                    path: ssl_dir.clone(),
+                })?;
         }
-        if let Err(error) = Self::write_material_file(stage_dir.join(KEY_FILE_NAME), key).await {
-            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-            return Err(error);
-        }
-        if let Err(error) = Self::write_material_file(stage_dir.join(OCSP_FILE_NAME), ocsp).await {
-            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-            return Err(error);
-        }
-
-        let had_old_material = match fs::symlink_metadata(ssl_dir.as_path()).await {
-            Ok(_) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => {
-                let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-                return Err(save_identity_error::MetadataSnafu { path: ssl_dir }.into_error(error));
-            }
-        };
-
-        if had_old_material
-            && let Err(error) = fs::rename(ssl_dir.as_path(), backup_dir.as_path()).await
-        {
-            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-            return Err(save_identity_error::PreserveOldSnafu {
-                from: ssl_dir,
-                to: backup_dir,
-            }
-            .into_error(error));
-        }
-
-        let commit_result = match before_install() {
-            Ok(()) => fs::rename(stage_dir.as_path(), ssl_dir.as_path()).await,
-            Err(error) => Err(error),
-        };
-
-        if let Err(commit_error) = commit_result {
-            if had_old_material
-                && let Err(rollback_error) =
-                    fs::rename(backup_dir.as_path(), ssl_dir.as_path()).await
-            {
-                let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-                return Err(save_identity_error::RollbackSnafu {
-                    from: backup_dir,
-                    to: ssl_dir,
-                }
-                .into_error(rollback_error));
-            }
-
-            let _ = fs::remove_dir_all(stage_dir.as_path()).await;
-            return Err(save_identity_error::CommitSnafu { path: ssl_dir }.into_error(commit_error));
-        }
-
-        if had_old_material {
-            // The new material is already committed. Backup removal is best-effort so a
-            // housekeeping error cannot turn a successful replacement into a reported
-            // failure whose observable state contradicts the result.
-            let _ = fs::remove_dir_all(backup_dir.as_path()).await;
-        }
-
-        Ok(())
+        fs::create_dir_all(&ssl_dir)
+            .await
+            .context(save_identity_error::CreateIdentityDirSnafu { path: ssl_dir })?;
+        Self::write_material_file(self.cert_path(), cert).await?;
+        Self::write_material_file(self.key_path(), key).await?;
+        Self::write_material_file(self.ocsp_path(), ocsp).await
     }
 
     async fn write_material_file(path: PathBuf, contents: &[u8]) -> Result<(), SaveIdentityError> {
@@ -426,12 +320,7 @@ impl IdentityProfile {
         file.write_all(contents)
             .await
             .context(save_identity_error::WriteSnafu { path: path.clone() })?;
-        file.flush()
-            .await
-            .context(save_identity_error::WriteSnafu { path: path.clone() })?;
-        file.sync_all()
-            .await
-            .context(save_identity_error::WriteSnafu { path })
+        Ok(())
     }
 }
 

@@ -81,7 +81,7 @@ impl RecordBuilder {
                 return Err(FormatError::InvalidByte { byte });
             }
         }
-        self.ensure_content_fits(value.len())?;
+        self.ensure_fits(value.len())?;
         self.bytes.extend_from_slice(value);
         Ok(())
     }
@@ -91,12 +91,7 @@ impl RecordBuilder {
     where
         E: FormatElement<C>,
     {
-        let checkpoint = self.bytes.len();
-        let result = value.format_element(convention, &mut ElementWriter::new(self));
-        if result.is_err() {
-            self.bytes.truncate(checkpoint);
-        }
-        result
+        value.format_element(convention, &mut ElementWriter::new(self))
     }
 
     /// Finalizes a validated [`FormattedRecord`] by appending exactly one line feed.
@@ -104,7 +99,7 @@ impl RecordBuilder {
     /// The returned physical record is ASCII, has no embedded carriage returns or line feeds,
     /// and is at most [`MAX_RECORD_LEN`] bytes including its single final line feed.
     pub fn finish(mut self) -> Result<FormattedRecord, FormatError> {
-        self.ensure_content_fits(0)?;
+        self.ensure_fits(0)?;
         self.bytes.push(b'\n');
         Ok(FormattedRecord(self.bytes.into_boxed_slice()))
     }
@@ -116,7 +111,7 @@ impl RecordBuilder {
                 return Err(FormatError::InvalidByte { byte });
             }
         }
-        self.ensure_element_fits(value.len())?;
+        self.ensure_fits(value.len())?;
         self.bytes.extend_from_slice(value);
         Ok(())
     }
@@ -132,7 +127,7 @@ impl RecordBuilder {
                 max_len: MAX_RECORD_LEN,
             })
         })?;
-        self.ensure_element_fits(additional)?;
+        self.ensure_fits(additional)?;
 
         for &byte in value {
             match byte {
@@ -150,26 +145,12 @@ impl RecordBuilder {
     }
 
     pub(crate) fn append_quote_delimiter(&mut self) -> Result<(), FormatError> {
-        self.ensure_element_fits(1)?;
+        self.ensure_fits(1)?;
         self.bytes.push(b'"');
         Ok(())
     }
 
-    fn ensure_content_fits(&self, additional: usize) -> Result<(), FormatError> {
-        if self
-            .bytes
-            .len()
-            .checked_add(additional)
-            .is_none_or(|length| length >= MAX_RECORD_LEN)
-        {
-            return Err(FormatError::TooLong {
-                max_len: MAX_RECORD_LEN,
-            });
-        }
-        Ok(())
-    }
-
-    fn ensure_element_fits(&self, additional: usize) -> Result<(), FormatError> {
+    fn ensure_fits(&self, additional: usize) -> Result<(), FormatError> {
         if self
             .bytes
             .len()

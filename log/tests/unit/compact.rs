@@ -93,7 +93,7 @@ fn quoted_composes_with_external_raw_bytes_and_optional() {
 }
 
 #[test]
-fn nested_quoted_is_rejected_without_leaving_partial_bytes() {
+fn nested_quoted_is_rejected() {
     let convention = CompactConvention::default();
     let mut builder = RecordBuilder::new();
     builder.literal(b"before ").unwrap();
@@ -102,11 +102,6 @@ fn nested_quoted_is_rejected_without_leaving_partial_bytes() {
         builder.element(&convention, &Quoted(Quoted(RawBytes(b"nested")))),
         Err(FormatError::NestedQuoted)
     ));
-
-    builder
-        .element(&convention, &RawBytes(b"after"))
-        .expect("builder should remain usable after rejecting nested quoting");
-    assert_eq!(builder.finish().unwrap().as_bytes(), b"before after\n");
 }
 
 struct RequestLine<'a> {

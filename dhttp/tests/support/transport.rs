@@ -24,7 +24,6 @@ type UniStream = (u64, Stream);
 /// Minimal in-memory QUIC connection used by the request/response examples.
 pub struct Connection {
     role: Role,
-    directions: StdMutex<Vec<Arc<DirectionFailure>>>,
     next_bi: AtomicU64,
     next_uni: AtomicU64,
     outgoing_bi: mpsc::UnboundedSender<BiStream>,
@@ -36,7 +35,6 @@ pub struct Connection {
 #[derive(Default)]
 struct DirectionFailure {
     error: StdMutex<Option<Error>>,
-    stops: StdMutex<Vec<u64>>,
     reader: AtomicWaker,
     writer: AtomicWaker,
 }
@@ -128,7 +126,6 @@ impl AsyncWrite for Stream {
 
 impl StopSending for Stream {
     fn stop(&mut self, code: u64) {
-        self.recv.stops.lock().unwrap().push(code);
         self.recv.fail(code, "peer stopped the stream");
     }
 }
@@ -156,10 +153,6 @@ impl Transport for Connection {
     async fn open_bi(&self) -> Result<Option<BiStream>> {
         let id = self.next_bi.fetch_add(4, Ordering::Relaxed);
         let (local, peer) = bi_stream();
-        self.directions
-            .lock()
-            .unwrap()
-            .extend([local.0.recv.clone(), local.1.send.clone()]);
         self.outgoing_bi.send((id, peer)).map_err(|_| {
             ErrorCode::InternalError.connection("peer stopped accepting bidirectional streams")
         })?;
@@ -204,7 +197,6 @@ pub fn connection_pair() -> (H3Connection<Connection>, H3Connection<Connection>)
 
     let client = Connection {
         role: Role::Client,
-        directions: StdMutex::new(Vec::new()),
         next_bi: AtomicU64::new(0),
         next_uni: AtomicU64::new(2),
         outgoing_bi: client_bi,
@@ -214,7 +206,6 @@ pub fn connection_pair() -> (H3Connection<Connection>, H3Connection<Connection>)
     };
     let server = Connection {
         role: Role::Server,
-        directions: StdMutex::new(Vec::new()),
         next_bi: AtomicU64::new(1),
         next_uni: AtomicU64::new(3),
         outgoing_bi: server_bi_reply,
@@ -244,15 +235,4 @@ fn bi_stream() -> ((Stream, Stream), (Stream, Stream)) {
             Stream::writer(peer_writer, peer_to_local),
         ),
     )
-}
-
-impl Connection {
-    pub fn stops(&self) -> Vec<u64> {
-        self.directions
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|direction| direction.stops.lock().unwrap().clone())
-            .collect()
-    }
 }

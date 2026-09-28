@@ -83,7 +83,6 @@ impl Endpoint {
         S::Error: Into<BoxError>,
         B: http_body::Body<Data = bytes::Bytes> + Send + 'static,
         B::Error: Into<BoxError>;
-    pub async fn stop_listening(&self) -> Result<()>;
 
     // 关闭这个逻辑 Endpoint 对应的 HTTP 接入、请求和池条目。
     pub async fn close(&self, deadline: Instant) -> Result<ShutdownReport>;
@@ -96,7 +95,7 @@ Endpoint 只提供 `load(servername)` 作为命名入口，实例只保存自己
 
 listen 登记该 Endpoint 的应用和 scopes。Network 汇总活动服务的 scopes，按实际接收 socket 的范围检查入口，qconn 再按该 Endpoint 的 scopes 检查来源；两层检查均通过才交付连接和请求。不因读取凭据自动监听，Endpoint 对象本身不保存 scopes。
 
-`stop_listening` 只停止新请求接入并撤销服务发布；已接入交换继续，端点仍能主动发起请求，也可再次 listen。取消 listen future 同样需要停止准入，并交由全局网络清理登记。
+`listen` future 运行接入循环；结束时撤销服务登记。端点仍能主动发起请求，也可再次 listen。
 
 `close` 是最终关闭，影响共享同一个名称 Arc 的 Endpoint 克隆；后续请求返回 EndpointClosed。关闭登记和任务跟踪在全局网络内部维护，不增加 Endpoint.state。独立加载的同名 Endpoint 具有不同 Arc 实例，不因关闭其中一个而误关另一个的资源。
 
@@ -201,22 +200,13 @@ dhttp 提供使用当前 Endpoint 身份及全局连接池的逻辑；h3x 不反
 1. 校验请求，使用调用 Endpoint 的身份从全局池取得 h3x 连接。
 2. open_bi 获得同一交换的配对读写流。
 3. 通过 write_request 发送消息，通过 read_response 读取响应；上传与响应接收能够并发推进。返回请求 body 写入端前，不等待响应头或完整上传。
-4. 无请求体的便捷调用返回 h3x::Response<R>；需调用方写请求体的调用先返回写入端与响应 future，后者 await 返回 h3x::Response<R>。网络层继续管理未完成上传、响应 body、取消和任务回收。
+4. 无请求体的便捷调用返回 h3x::Response<R>；需调用方写请求体的调用先返回写入端与响应 future，后者 await 返回 h3x::Response<R>。网络层负责上传和响应 body 的读写。
 
 请求头、body 和 trailers 复用 h3x 的消息操作与有界缓冲。请求 body 写入端遵守异步写入和背压，结束写入只关闭请求方向，不关闭响应方向；不能要求调用方在发送开始前把整个 body 写入有界缓冲。返回响应头不代表整个交换已经结束。
 
-### 4.6 h3x 必需的启动与取消接缝
+### 4.6 h3x 请求与响应启动
 
-先区分当前已有能力：`read_response` 读到最终响应 HEADERS 后已经 `tokio::spawn` 后台 body 读取任务并返回 `h3x::Response<R>`；h3x 的流也已有显式 `StopSending` / `CancelStream` 操作。以下需要补的是请求写入的返回时机，以及在调用方丢弃 body 或任务时自动调用这些取消操作的所有权接缝，不增加 dhttp 顶层公开类型。dhttp 负责任务启动、错误映射和交换登记。
-
-1. **请求头发送完成信号**：当前 `write_request` 在写完 HEADERS 后仍在同一个 future 中循环读取有界请求 body、发送 DATA/trailers，直到发送 FIN 才返回；它没有在内部 spawn body 发送任务。dhttp 可以在外部 spawn 这个完整 future，但还需要 h3x 在 HEADERS 写入底层流后通知执行方。`Request<ArcWndBuf>.await` 收到信号即可返回 `(h3x::Request<W>, dhttp::Response)`；上传任务不能因首次 await 返回而停止。HEADERS 写入失败时首次 await 返回错误，并取消配对的响应读取任务。
-2. **响应头前取消**：`read_response` 的 future 在读到最终响应头之前拥有接收方向的取消守卫。future 被 abort/drop 时，守卫调用该 `H3ReadStream` 的 `StopSending` 能力，使用请求取消错误码，唤醒等待者并撤销本次流登记；正常交付响应头后转移所有权，不发送 STOP_SENDING。仅调用当前 `H3ReadStream::drop` 的 `finish()` 不满足此要求。
-3. **响应 body 所有权**：`read_response` 把接收方向的取消能力交给返回的 `h3x::Response<R>` 所持有的 body 消费端。消费端及其克隆共享一个内部读取所有权；生产端的后台读任务不计入该所有权。最后一个消费端在 EOF 前被丢弃时，触发 STOP_SENDING、终止后台读任务并释放有界缓冲上的等待；读到 EOF 或已经失败时解除取消动作。所有权随现有 `into_body` / `into_parts` 一起转移，不能只绑定在 `Response<R>` 外壳上，否则提取 body 后会误取消。可在 `ArcWndBuf` 内部增加方向明确的消费端租约，不要求新增公开 body 类型。
-4. **请求 body 所有权**：返回给调用方的 `h3x::Request<W>` 及其克隆共享一个内部写入所有权；后台 `write_request` 消费的缓冲读取端不计入该所有权。最后一个调用方写入端在 `shutdown()` 前被丢弃时，使缓冲读取结束并对 QUIC 发送方向调用 `CancelStream`，不能把未结束上传当作空 body 或永远等待。正常 `shutdown()` 后，驱动任务继续发送剩余 DATA、trailers 和 FIN；写入失败传回交换结果。可用 `ArcWndBuf` 的写入端租约实现，不要求新增 `RequestBody`。
-5. **发送后头部不可再编辑**：首次 await 返回给调用方的 `h3x::Request<W>` 只用于写 body 和 trailers。当前类型仍公开 `set_method`、`set_uri`、`set_header` 等方法；调用后只会修改本地副本，不能改变已发送的 HEADERS。h3x 需要提供发送后的类型状态或等价的冻结机制，使这些操作在类型层面不可用，或明确返回错误；不允许静默成功。该机制不能妨碍 `AsyncWrite`、`shutdown` 与发送前已设置的 trailers。
-6. **交换终态**：同一次取消至多记录一个终态；只停止本次请求的读写方向，不关闭可复用的连接。Endpoint 的任务登记在取消后等待写入任务、响应头任务和响应 body 任务退出；连接级错误仍按 h3x 的分类传播。`Response::drop` 只需 abort 它持有的一个响应头任务，取消守卫和 body 租约负责底层流动作。
-
-落地时至少验证：服务端等完整上传才发响应、服务端提前发送大响应、响应头前丢弃 `dhttp::Response`、响应头后丢弃未读完的 body、未 shutdown 就丢弃最后一个请求写入端、克隆或提取 body 后的最后所有者判定、发送后修改请求头会被拒绝，以及取消后同一连接仍能处理下一次请求。当前 h3x 尚无上述租约、HEADERS 完成通知和发送后头部冻结能力，代码实施前须补齐。
+`write_request` 发送 HEADERS 后继续发送请求 body 和 trailers；dhttp 在独立任务中驱动上传，并发读取响应。响应头可在上传结束前交给调用方。发送失败和读取失败按 h3x 错误返回。
 
 ### 4.7 dhttp 的请求执行分工
 
@@ -507,7 +497,7 @@ pub struct ShutdownReport {
 
 请求入口接受已解析的 `Uri`；`impl From<http::uri::InvalidUri> for Error` 支持在返回 `dhttp::Result` 的调用方直接写 `endpoint.get("https://example.com/".parse()?)`。源码中的可克隆错误包装保存同一个原始解析错误。
 
-保留底层错误来源，不把 HTTP/3 stream 错误压成一个无内容的 Transport。名称、路由和关闭状态是 dhttp 自己的错误。Home 保留出错文件或目录及底层原因，包括读取、解析、权限、保存及回滚错误；具体转换与 Display/Error 实现不在本轮实现。
+保留底层错误来源，不把 HTTP/3 stream 错误压成一个无内容的 Transport。名称、路由和关闭状态是 dhttp 自己的错误。Home 保留出错文件或目录及底层原因，包括读取、解析、权限及保存错误；具体转换与 Display/Error 实现不在本轮实现。
 
 deadline 是同一个绝对 `std::time::Instant`，不是每个关闭步骤重新计时。达到 deadline 属于关闭报告：剩余交换被取消，连接被强关，未完成任务计数返回；无法完成清理本身的错误通过 Result 返回。Session 尚未进入本轮接口，报告中不放 session 字段。
 

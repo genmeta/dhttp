@@ -1,30 +1,6 @@
 use super::*;
 
 #[test]
-fn missing_bootstrap_env_uses_genmeta_production_default() {
-    let name = format!("__DHTTP_MISSING_BOOTSTRAP_{}", std::process::id());
-
-    assert_eq!(
-        env_or_default(&name, DEFAULT_BOOTSTRAP_URL),
-        "https://bootstrap.genmeta.net:20002"
-    );
-}
-
-#[test]
-fn bootstrap_url_produces_stun_authority() {
-    assert_eq!(
-        bootstrap_authority("https://bootstrap.genmeta.net:20002").as_deref(),
-        Ok("bootstrap.genmeta.net:20002")
-    );
-}
-
-#[test]
-fn bootstrap_url_requires_https_and_explicit_port() {
-    assert!(bootstrap_authority("http://bootstrap.genmeta.net:20002").is_err());
-    assert!(bootstrap_authority("https://bootstrap.genmeta.net").is_err());
-}
-
-#[test]
 fn default_root_ca_is_decoded_to_der() {
     let der = parse_root_ca_der(DEFAULT_ROOT_CA_PEM).unwrap();
 

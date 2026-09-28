@@ -188,9 +188,9 @@ Endpoint 不是 QUIC 连接，也不独占 UDP socket。多个 Endpoint 可以�
 
 同一个 Endpoint 同时只运行一个 app。同一共享 listener 中，一个规范化名称只绑定一个活动 Endpoint。内部记录名称与 app 的对应关系即可，不公开 ServiceRegistration 类型。
 
-`endpoint.listen(app).await` 持续处理请求，直到停止或错误退出。`endpoint.stop_listening().await` 停止该 Endpoint 的新请求、撤销发布并等待监听循环退出；已接入请求可继续完成。`endpoint.close(deadline).await` 排空并关闭该 Endpoint 的请求、连接和后台任务，不影响其他 Endpoint。
+`endpoint.listen(app).await` 持续处理请求，直到停止或错误退出。结束 `endpoint.listen(app)` future 撤销该 Endpoint 的监听登记；已接入请求可继续完成。`endpoint.close(deadline).await` 排空并关闭该 Endpoint 的请求、连接和后台任务，不影响其他 Endpoint。
 
-普通应用内容更新在 Router 或稳定 dispatcher 内完成，不重建监听。listen future 被取消时必须同步切断准入并通知清理任务；需要等待清理完成时调用 stop_listening/close。
+普通应用内容更新在 Router 或稳定 dispatcher 内完成，不重建监听。listen future 结束时清理监听登记。
 
 ### 5.4 Exchange
 
@@ -404,7 +404,7 @@ h3x 不加入 DNS、身份文件或 DHTTP 业务配置。dhttp 负责以上策�
 
 当前 dquic dev 的 connect 已启动后续 DNS 地址流消费任务，任务使用弱连接引用并监听 terminated；dhttp 不再启动一份相同解析循环。h3x Pool 命中时直接复用连接，只有 factory 建连才进入解析流程。
 
-当前 dhttp 的 dns_publication_loop 只构造循环，不自动启动。目标实现由 listen 在本地接入就绪后启动所配置的发布任务；必要的首次发布失败要返回错误并清理本次启动的资源，后续重试有界并可停止。stop_listening/close 停止续期、尝试撤销并等待任务退出，失败需上报且受 deadline 限制。仅发请求的 Endpoint 默认不发布服务记录。网络地址变化由共享 driver 提供，各 Endpoint 更新自己的名称记录。
+当前 dhttp 的 dns_publication_loop 只构造循环，不自动启动。目标实现由 listen 在本地接入就绪后启动所配置的发布任务；必要的首次发布失败要返回错误并清理本次启动的资源，后续重试有界并可停止。监听结束时停止续期并撤销发布，失败需上报且受 deadline 限制。仅发请求的 Endpoint 默认不发布服务记录。网络地址变化由共享 driver 提供，各 Endpoint 更新自己的名称记录。
 
 ## 11. 服务端请求路径
 
@@ -527,7 +527,7 @@ WASM 组件与同名 OpenAPI 共同形成一个内容快照。配对缺失、格
 
 删除 Server 目录时：
 
-1. `endpoint.stop_listening().await`；
+1. 结束 `endpoint.listen(app)` future；
 2. 停止该 Server 新 Session；
 3. 取消仍未发布的候选 generation；
 4. 有界排空 Exchange 和 Session；

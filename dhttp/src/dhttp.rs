@@ -1,6 +1,8 @@
 //! Identity-bound HTTP/3 endpoints and a process-wide transport network.
+#[cfg(not(feature = "tcp-mock"))]
 mod bootstrap;
 mod transport;
+#[cfg(not(feature = "tcp-mock"))]
 mod trust;
 
 pub mod certificate;

@@ -95,18 +95,11 @@ async fn connect_sqlite(path: &Path, mode: &str) -> Result<DatabaseConnection, A
     Ok(database)
 }
 
-// sea_orm_migration会打info日志
 #[cfg(feature = "migration")]
 pub async fn initial_database(
     database: &sea_orm::DatabaseConnection,
 ) -> Result<(), sea_orm::DbErr> {
-    let mut future = migration::Migrator::up(database, None);
-    std::future::poll_fn(|cx| {
-        let _subscriber_guard = (!tracing::enabled!(tracing::Level::DEBUG))
-            .then(|| tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::new()));
-        future.as_mut().poll(cx)
-    })
-    .await
+    migration::Migrator::up(database, None).await
 }
 
 pub async fn open_existing_access_database(

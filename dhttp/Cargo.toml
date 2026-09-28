@@ -14,6 +14,7 @@ path = "src/dhttp.rs"
 
 [features]
 default = []
+tcp-mock = []
 access = ["dep:dhttp-access"]
 log = ["dep:dhttp-log"]
 access-cli = ["access", "dhttp-access/cli"]
@@ -37,8 +38,6 @@ qprotocol = { workspace = true }
 qudp = { path = "../../dquic/qudp" }
 qrecovery = { workspace = true }
 netdev = { version = "0.46.2", default-features = false }
-netwatcher = "0.8"
-rustls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "sync", "rt", "time"] }
 tower-service.workspace = true
 tracing.workspace = true
@@ -52,7 +51,6 @@ dhttp-log = { workspace = true, optional = true }
 
 [build-dependencies]
 rustls-pemfile = "2"
-url = "2"
 x509-parser.workspace = true
 
 [dev-dependencies]

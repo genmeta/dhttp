@@ -5,7 +5,6 @@ use h3x::{ReadRequest, ReadResponse, WriteRequest, WriteResponse};
 use http_body::Frame;
 use http_body_util::{BodyExt, StreamBody};
 use qconn::Scopes;
-use qrecovery::{recv::StopSending, send::CancelStream};
 use std::{future::IntoFuture, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
@@ -93,11 +92,6 @@ impl Endpoint {
             .boxed_clone();
         network.listen(self.name.clone(), scopes, service).await
     }
-
-    pub fn stop_listening(&self) -> Result<()> {
-        DhttpNetwork::global()?.stop_listening(&self.name);
-        Ok(())
-    }
 }
 
 pub async fn resolve_remote(endpoint: &Endpoint, name: &str) -> Result<qtls::RemoteAuthority> {
@@ -123,36 +117,50 @@ fn box_error(source: BoxError) -> Error {
 }
 
 pub(crate) fn serve_exchange<W, R>(
-    app: crate::network::ErasedService,
+    app: crate::network::BoxService,
     writer: W,
     reader: R,
     qpack: h3x::ArcQpack,
     handshake: Arc<qtls::HandshakeSummary>,
 ) -> impl std::future::Future<Output = Result<()>>
 where
-    W: WriteResponse + CancelStream,
+    W: WriteResponse,
     R: ReadRequest,
 {
-    // Establish cancellation ownership before the future is polled.
-    let writer = scopeguard::guard(writer, |mut writer| {
-        writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64())
-    });
     async move {
         let reading = reader.read_request(qpack.clone());
         tokio::pin!(reading);
-        let writer = writer;
         let incoming = tokio::time::timeout(OPERATION_TIMEOUT, &mut reading)
             .await
             .map_err(io_error)?
             .map_err(h3_error)?;
         let (mut parts, inbound) = incoming.into_parts();
         let method = parts.method.clone();
+        let uri = handshake.local.as_ref().and_then(|local| {
+            let identity =
+                dhttp_identity::name::DhttpName::try_from(local.name().to_owned()).ok()?;
+            let uri = identity.expand_uri(parts.uri.clone()).ok()?;
+            let authority = uri.authority()?;
+            (!authority.as_str().contains('@')
+                && dhttp_home::normalize_name(authority.host()).as_deref() == Some(local.name()))
+            .then_some(uri)
+        });
+        let Some(uri) = uri else {
+            let mut response = http::Response::new(
+                EmptyBody::new()
+                    .map_err(|never| match never {})
+                    .boxed_unsync(),
+            );
+            *response.status_mut() = http::StatusCode::MISDIRECTED_REQUEST;
+            return send_response(response, method, writer, qpack).await;
+        };
+        parts.uri = uri;
         let trailers = parts
             .extensions
             .remove::<h3x::Trailers>()
             .unwrap_or_default();
         parts.extensions.insert((*handshake).clone());
-        let body = receiving_body(inbound, trailers, h3x::ErrorCode::NoError);
+        let body = receiving_body(inbound, trailers);
         let request: http::Request<Body> = http::Request::from_parts(parts, body);
         let mut app = app;
         futures::future::poll_fn(|cx| app.poll_ready(cx))
@@ -166,13 +174,7 @@ where
             >,
         > = app.call(request);
         let response = response.await.map_err(box_error)?;
-        send_response(
-            response,
-            method,
-            scopeguard::ScopeGuard::into_inner(writer),
-            qpack,
-        )
-        .await
+        send_response(response, method, writer, qpack).await
     }
 }
 

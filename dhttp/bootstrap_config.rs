@@ -2,37 +2,7 @@ use std::{error::Error, fmt};
 
 use rustls_pemfile::{Item, read_one_from_slice};
 
-pub const DEFAULT_BOOTSTRAP_URL: &str = "https://bootstrap.genmeta.net:20002";
 pub const DEFAULT_ROOT_CA_PEM: &str = include_str!("root.crt");
-
-pub fn env_or_default(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_owned())
-}
-
-pub fn bootstrap_authority(value: &str) -> Result<String, String> {
-    let url = url::Url::parse(value).map_err(|error| error.to_string())?;
-    if url.scheme() != "https" {
-        return Err("scheme must be https".to_owned());
-    }
-    if url.username() != "" || url.password().is_some() {
-        return Err("credentials are not allowed".to_owned());
-    }
-    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-        return Err("path, query, and fragment are not allowed".to_owned());
-    }
-
-    let host = url
-        .host_str()
-        .ok_or_else(|| "host is required".to_owned())?;
-    let port = url
-        .port()
-        .ok_or_else(|| "an explicit port is required".to_owned())?;
-    if matches!(url.host(), Some(url::Host::Ipv6(_))) {
-        Ok(format!("[{host}]:{port}"))
-    } else {
-        Ok(format!("{host}:{port}"))
-    }
-}
 
 #[derive(Debug)]
 pub enum RootCaError {

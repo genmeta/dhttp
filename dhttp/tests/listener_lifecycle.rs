@@ -28,7 +28,7 @@ impl Service<http::Request<Body>> for EmptyApp {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn listener_registration_cleans_up_on_cancel() {
+async fn listener_registers_service_and_releases_it_on_exit() {
     let root = std::env::temp_dir().join(format!("dhttp-listener-{}", std::process::id()));
     let ssl = root.join("test").join("ssl");
     std::fs::create_dir_all(&ssl).unwrap();
@@ -172,73 +172,15 @@ async fn listener_registration_cleans_up_on_cancel() {
     })
     .await
     .unwrap();
-    let listening_again =
-        tokio::spawn(async move { separate.listen(Scope::Loopback.into(), EmptyApp).await });
+    other_listening.abort();
+    let _ = other_listening.await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if qconn::ServerRegistry::global()
-                .get(endpoint.name())
-                .is_some()
-            {
-                break;
-            }
+        while qconn::ServerRegistry::global().get(other.name()).is_some() {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    // Stop withdraws admission synchronously; wait for the old supervisor to
-    // finish before registering the same name again.
-    endpoint.stop_listening().unwrap();
-    assert!(
-        qconn::ServerRegistry::global()
-            .get(endpoint.name())
-            .is_none()
-    );
-    assert!(listening_again.await.unwrap().is_ok());
-    let newest = tokio::spawn({
-        let endpoint = endpoint.clone();
-        async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
-    });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while qconn::ServerRegistry::global()
-            .get(endpoint.name())
-            .is_none()
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    // A separately loaded handle stops the same listener without closing the identity.
-    let same_name = Endpoint::load("TEST").await.unwrap();
-    same_name.stop_listening().unwrap();
-    assert!(newest.await.unwrap().is_ok());
-    assert!(
-        qconn::ServerRegistry::global()
-            .get(endpoint.name())
-            .is_none()
-    );
-    assert!(qconn::ServerRegistry::global().get(other.name()).is_some());
-    let reopened = tokio::spawn({
-        let endpoint = endpoint.clone();
-        async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
-    });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while qconn::ServerRegistry::global()
-            .get(endpoint.name())
-            .is_none()
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    same_name.stop_listening().unwrap();
-    assert!(reopened.await.unwrap().is_ok());
-    other.stop_listening().unwrap();
-    assert!(qconn::ServerRegistry::global().get(other.name()).is_none());
-    assert!(other_listening.await.unwrap().is_ok());
     assert!(qprotocol::Dock::global().is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }

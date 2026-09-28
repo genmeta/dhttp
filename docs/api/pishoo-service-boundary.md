@@ -68,7 +68,7 @@ Service 返回响应头、body EOF 与实际网络输出完成是不同阶段。
 
 响应头前的应用失败由 Pishoo 转成 HTTP 错误响应，未处理的 Service 错误走 DHTTP 通用错误契约；响应头后的失败通过 body 错误及当前流终止传播，不关闭共享连接。HEAD/204/304 或替换响应 body 时，Pishoo 回收原执行，DHTTP 按 HTTP 语义完成最终输出。
 
-移除单个 App 时由 Pishoo 撤销其路由并取消该应用执行，其他 App 和共享数据继续存在；删除身份时由 Pishoo 协调所有应用停止与 Endpoint.stop_listening/close。DHTTP 关闭交换时应触发通用应用取消衔接，Pishoo 等待 guest 与宿主任务清理；关闭某个身份不停止进程共享网络。
+移除单个 App 时由 Pishoo 撤销其路由并取消该应用执行，其他 App 和共享数据继续存在；删除身份时由 Pishoo 协调所有应用停止与 结束 Endpoint.listen future。DHTTP 关闭交换时应触发通用应用取消衔接，Pishoo 等待 guest 与宿主任务清理；关闭某个身份不停止进程共享网络。
 
 ## 5. 当前同步范围
 
