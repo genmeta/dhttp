@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use derive_more::{AsRef, From, Into};
-use dhttp_identity::name::DhttpName;
+use dhttp_home::DHTTP_SUFFIX;
 use regex::{Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
@@ -461,7 +461,7 @@ impl_pattern! {
 }
 
 fn expand_name_glob_or_exact(input: &str) -> String {
-    input.replace('~', DhttpName::SUFFIX)
+    input.replace('~', DHTTP_SUFFIX)
 }
 
 fn expand_name_regex(input: &str) -> String {

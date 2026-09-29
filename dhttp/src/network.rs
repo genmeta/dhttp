@@ -1,8 +1,5 @@
 //! Process-wide generic h3x connection pool and service registry.
-use crate::{
-    Body, BoxError, Error, Result,
-    endpoint::{h3_error, io_error, serve_exchange},
-};
+use crate::{Body, BoxError, Error, Result, endpoint::handle_request};
 use qrecovery::send::CancelStream;
 use std::{
     collections::HashMap,
@@ -64,26 +61,7 @@ impl DhttpNetwork {
         let key = (local, remote);
         tokio::time::timeout(CONNECT_TIMEOUT, self.pool.get(&key))
             .await
-            .map_err(io_error)?
-    }
-
-    pub(crate) async fn resolve_remote(
-        &'static self,
-        local: Arc<str>,
-        name: &str,
-    ) -> Result<qtls::RemoteAuthority> {
-        let remote = dhttp_home::normalize_name(name)
-            .map(Arc::from)
-            .ok_or_else(|| Error::InvalidName {
-                name: name.to_owned(),
-            })?;
-        let connection = self.get_connection(local, remote).await?;
-        transport::handshake(connection.transport())
-            .remote
-            .clone()
-            .ok_or_else(|| Error::InvalidRequest {
-                message: "peer has no authenticated authority".into(),
-            })
+            .map_err(std::io::Error::other)?
     }
 }
 
@@ -108,7 +86,7 @@ async fn serve_connection(network: &'static DhttpNetwork, name: Arc<str>, h3: H3
             let endpoint = name.clone();
             let stream_id = writer.stream_id();
             tokio::spawn(async move {
-                if let Err(error) = serve_exchange(app, writer, reader, qpack, handshake).await {
+                if let Err(error) = handle_request(app, writer, reader, qpack, handshake).await {
                     tracing::debug!(endpoint = %endpoint, stream_id, %error, "request exchange failed");
                 }
             });

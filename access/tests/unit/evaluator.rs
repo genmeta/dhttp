@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::{
     action::RequestAction,
     db::{
-        evaluator::LocationRulesDatabase, identity, init_identity_access_database,
+        evaluator::LocationRulesDatabase, init_access_database_for,
         service::location_service::LocationService,
     },
     expr::{atomics::AtomicLocationRuleExpr, atomics::EvalError, eval::Evaluable},
@@ -62,15 +62,11 @@ impl LocationRuleRequest for TestRequest {
     }
 }
 
-async fn seeded_store() -> (
-    TestHome,
-    sea_orm::DatabaseConnection,
-    identity::Name<'static>,
-) {
+async fn seeded_store() -> (TestHome, sea_orm::DatabaseConnection) {
     let test_home = TestHome::new("seeded");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "server.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
+    let profile = home.identity_profile("server.pilot").unwrap();
+    let db = init_access_database_for(&profile)
         .await
         .expect("init access db");
     let service = LocationService::new(&db);
@@ -98,12 +94,12 @@ async fn seeded_store() -> (
         )
         .await
         .expect("allow alice on files");
-    (test_home, db, identity)
+    (test_home, db)
 }
 
 #[tokio::test]
 async fn database_evaluator_matches_memory_matcher_decisions() {
-    let (_home, db, _identity) = seeded_store().await;
+    let (_home, db) = seeded_store().await;
     let service = LocationService::new(&db);
     let matcher = LocationRulesMatcher::from(
         service
@@ -134,7 +130,7 @@ async fn database_evaluator_matches_memory_matcher_decisions() {
 
 #[tokio::test]
 async fn database_evaluator_reads_committed_rule_changes() {
-    let (_home, db, _identity) = seeded_store().await;
+    let (_home, db) = seeded_store().await;
     let service = LocationService::new(&db);
     let stale_matcher = LocationRulesMatcher::from(
         service
@@ -177,8 +173,8 @@ async fn database_evaluator_reads_committed_rule_changes() {
 async fn reappending_rule_makes_it_highest_priority() {
     let test_home = TestHome::new("reappend-priority");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "server.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
+    let profile = home.identity_profile("server.pilot").unwrap();
+    let db = init_access_database_for(&profile)
         .await
         .expect("init access db");
     let service = LocationService::new(&db);
@@ -214,8 +210,8 @@ async fn reappending_rule_makes_it_highest_priority() {
 async fn database_evaluator_reports_no_rule_set() {
     let test_home = TestHome::new("empty");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "server.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
+    let profile = home.identity_profile("server.pilot").unwrap();
+    let db = init_access_database_for(&profile)
         .await
         .expect("init access db");
     let database = LocationRulesDatabase::new(db);

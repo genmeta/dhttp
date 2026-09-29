@@ -124,7 +124,7 @@ Pishoo 只能依赖 dhttp，不能用自己的 `[patch]` 修复这条底层依�
 
 这些 workspace crate 有独立价值，但当前核心 `dhttp` 对它们是硬依赖。下一版中：
 
-- 不保留独立的 `dhttp-identity` crate；DHTTP 名称、证书校验和身份准备收回 `dhttp::identity` 模块，QUIC/TLS 身份材料由 dquic 提供；
+- 不保留独立的 `dhttp-identity` crate；当前使用的 DHTTP 名称和证书规则归 dhttp-home，QUIC/TLS 身份材料由 dquic 提供；
 - home 的本地凭据加载并入 `dhttp::home`，作为可选 feature，不再单独发布 crate；
 - access/log 作为可选 middleware 和工具 crate；
 - 核心 DhttpNetwork 不读取 access 数据库，也不决定 Pishoo 策略。
@@ -257,7 +257,7 @@ dhttp
   body          标准 HTTP Body、背压与取消桥接
 ```
 
-不建立 `runtime` 模块或 crate。`dhttp-api` 保留语言绑定职责；access/log 按独立复用价值保留为可选组件。删除 identity/home crate 是迁移目标，不是直接删除目录：当前发布图中的 h3x/ddns/home 仍引用 `dhttp-identity`，需要先迁移跨库类型与依赖，避免循环依赖或同名不同源类型混用。通用 TLS 能力下沉到 dquic，DHTTP 专属规则留在 dhttp，底层库不反向依赖 dhttp。
+不建立 `runtime` 模块或 crate。`dhttp-api` 保留语言绑定职责；access/log 按独立复用价值保留为可选组件。独立的 `dhttp-identity` crate 已移除，当前使用的名称和证书规则归 dhttp-home；通用 TLS 能力由 dquic 提供，底层库不反向依赖 dhttp。
 
 稳定公共面包括 Endpoint、Router、请求 builder、RequestWriter、PendingResponse、Response、Body、连接访问与错误码。`DhttpNetwork` 仅为需要共享资源的高级配置入口；`Endpoint::load` 和 builder 是默认构造方式。H3Connection、QPACK 和原始 stream 类型不属于顶层接口；dquic 连接通过明确的 connection 访问口提供握手身份，不另外包装认证结构。
 

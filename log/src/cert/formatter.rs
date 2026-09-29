@@ -1,4 +1,4 @@
-use dhttp_identity::certificate::CertificateChainKey;
+use dhttp_home::certificate::CertificateChainKey;
 
 use crate::{
     FormatError, FormattedRecord,

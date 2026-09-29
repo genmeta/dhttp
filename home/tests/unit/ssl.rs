@@ -35,207 +35,81 @@ impl Drop for TempDir {
 
 fn create_profile(home: &std::path::Path, name: &str) -> PathBuf {
     let profile = home.join(name);
-    fs::create_dir_all(profile.join(SSL_DIR_NAME))
-        .expect("identity profile ssl directory should be creatable");
+    fs::create_dir_all(profile.join(SSL_DIR_NAME)).unwrap();
     profile
 }
 
 #[tokio::test]
-async fn bad_candidate_does_not_hide_valid_sibling() {
-    let temp = TempDir::new("candidate-sibling-isolation");
-    fs::create_dir_all(temp.path().join("123")).unwrap();
-    create_profile(temp.path(), "z.good.dhttp.net");
+async fn async_names_match_sync_discovery_for_direct_ssl_directories() {
+    let temp = TempDir::new("discovery-consistency");
+    create_profile(temp.path(), "alice.pilot");
+    create_profile(temp.path(), "123");
+    create_profile(temp.path(), "*.pilot");
+    create_profile(temp.path(), "Bad");
+    create_profile(temp.path(), "bad_name");
+    fs::create_dir_all(temp.path().join("no-ssl")).unwrap();
+    fs::create_dir_all(temp.path().join("ssl-file")).unwrap();
+    fs::write(temp.path().join("ssl-file/ssl"), b"not a directory").unwrap();
+    fs::write(temp.path().join("notes.txt"), b"unrelated file").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(
+            temp.path().join("alice.pilot"),
+            temp.path().join("linked-profile"),
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("linked-ssl")).unwrap();
+        symlink(
+            temp.path().join("alice.pilot/ssl"),
+            temp.path().join("linked-ssl/ssl"),
+        )
+        .unwrap();
+    }
+
     let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert_eq!(candidates.len(), 2);
-    assert_eq!(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.is_ok())
-            .count(),
-        1
-    );
-    assert_eq!(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.is_err())
-            .count(),
-        1
-    );
-    assert!(candidates.iter().any(|candidate| {
-        candidate
-            .as_ref()
-            .is_ok_and(|profile| profile.name() == "z.good.dhttp.net")
-    }));
-}
-
-#[tokio::test]
-async fn candidates_are_sorted_by_native_path_before_validation() {
-    let temp = TempDir::new("candidate-native-order");
-    create_profile(temp.path(), "z.example.dhttp.net");
-    create_profile(temp.path(), "a.example.dhttp.net");
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-    let names: Vec<_> = candidates
-        .iter()
-        .map(|candidate| candidate.as_ref().unwrap().name())
+    let sync_names: Vec<_> = home
+        .discover_identity_profiles()
+        .unwrap()
+        .into_iter()
+        .map(|profile| profile.name().to_owned())
         .collect();
+    let mut async_names: Vec<_> = home
+        .identity_profile_names()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    async_names.sort();
 
-    assert_eq!(names, ["a.example.dhttp.net", "z.example.dhttp.net"]);
-}
-
-#[tokio::test]
-async fn candidates_ignore_regular_home_files() {
-    let temp = TempDir::new("candidate-ignore-files");
-    fs::write(temp.path().join("notes.txt"), b"unrelated file\n").unwrap();
-    let profile = create_profile(temp.path(), "reimu.pilot");
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].as_ref().unwrap().path(), profile);
-}
-
-#[tokio::test]
-async fn invalid_profile_name_is_one_candidate_error() {
-    let temp = TempDir::new("candidate-invalid-name");
-    let path = temp.path().join("123");
-    fs::create_dir_all(&path).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert!(matches!(
-        &candidates[0],
-        Err(IdentityProfileCandidateError::InvalidProfile {
-            path: error_path,
-            source: crate::identity::IdentityProfileFromPathError::InvalidName { .. },
-        }) if *error_path == path
-    ));
+    assert_eq!(async_names, sync_names);
+    assert_eq!(
+        sync_names,
+        [
+            "*.pilot.dhttp.net",
+            "123.dhttp.net",
+            "alice.pilot.dhttp.net"
+        ]
+    );
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn candidate_preserves_profile_entry_metadata_error() {
+async fn async_names_reject_symlink_home() {
     use std::os::unix::fs::symlink;
 
-    let temp = TempDir::new("candidate-entry-metadata");
-    let path = temp.path().join("loop.pilot");
-    symlink("loop.pilot", &path).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    match &candidates[0] {
-        Err(IdentityProfileCandidateError::EntryMetadata {
-            path: error_path,
-            source,
-        }) => {
-            assert_eq!(*error_path, path);
-            assert!(source.raw_os_error().is_some());
-        }
-        other => panic!("expected entry metadata error, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn missing_ssl_directory_is_one_candidate_error() {
-    let temp = TempDir::new("candidate-missing-ssl");
-    let path = temp.path().join("reimu.pilot");
-    fs::create_dir_all(&path).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert!(matches!(
-        &candidates[0],
-        Err(IdentityProfileCandidateError::MissingSslDirectory { profile, path: ssl_path })
-            if profile.path() == path && *ssl_path == path.join(SSL_DIR_NAME)
-    ));
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn broken_ssl_symlink_is_metadata_error_not_missing() {
-    use std::os::unix::fs::symlink;
-
-    let temp = TempDir::new("candidate-broken-ssl");
-    let profile_path = temp.path().join("reimu.pilot");
-    fs::create_dir_all(&profile_path).unwrap();
-    let ssl_path = profile_path.join(SSL_DIR_NAME);
-    symlink("missing-target", &ssl_path).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert!(matches!(
-        &candidates[0],
-        Err(IdentityProfileCandidateError::SslMetadata { profile, path, .. })
-            if profile.path() == profile_path && *path == ssl_path
-    ));
-}
-
-#[tokio::test]
-async fn ssl_path_that_is_not_directory_is_one_candidate_error() {
-    let temp = TempDir::new("candidate-ssl-file");
-    let profile_path = temp.path().join("reimu.pilot");
-    fs::create_dir_all(&profile_path).unwrap();
-    let ssl_path = profile_path.join(SSL_DIR_NAME);
-    fs::write(&ssl_path, b"not a directory").unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    assert!(matches!(
-        &candidates[0],
-        Err(IdentityProfileCandidateError::SslNotDirectory { profile, path })
-            if profile.path() == profile_path && *path == ssl_path
-    ));
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn candidate_preserves_ssl_metadata_error() {
-    use std::os::unix::fs::symlink;
-
-    let temp = TempDir::new("candidate-ssl-metadata");
-    let profile_path = temp.path().join("reimu.pilot");
-    fs::create_dir_all(&profile_path).unwrap();
-    let ssl_path = profile_path.join(SSL_DIR_NAME);
-    symlink(SSL_DIR_NAME, &ssl_path).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
-    let candidates = home.identity_profile_candidates().await.unwrap();
-
-    match &candidates[0] {
-        Err(IdentityProfileCandidateError::SslMetadata {
-            profile,
-            path,
-            source,
-        }) => {
-            assert_eq!(profile.path(), profile_path);
-            assert_eq!(*path, ssl_path);
-            assert!(source.raw_os_error().is_some());
-        }
-        other => panic!("expected ssl metadata error, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn lenient_profile_names_remains_compatible() {
-    let temp = TempDir::new("strict-lenient-compatible");
-    create_profile(temp.path(), "reimu.pilot");
-    fs::create_dir_all(temp.path().join("123")).unwrap();
-    let home = DhttpHome::new(temp.path().to_path_buf());
-
+    let temp = TempDir::new("symlink-home");
+    let link = temp.path().join("home-link");
+    symlink(temp.path(), &link).unwrap();
+    let home = DhttpHome::new(link);
     let names: Vec<_> = home.identity_profile_names().collect().await;
-
-    assert_eq!(names.len(), 1);
-    assert_eq!(names[0].as_ref().unwrap().as_str(), "reimu.pilot.dhttp.net");
+    assert!(matches!(
+        names.as_slice(),
+        [Err(ListIdentityProfilesError::ReadDir { source, .. })]
+            if source.kind() == io::ErrorKind::InvalidInput
+    ));
 }
 
 #[tokio::test]
@@ -244,13 +118,10 @@ async fn missing_certificate_reports_certificate_path() {
     let profile = IdentityProfile::try_from(temp.path().join("reimu.pilot")).unwrap();
 
     let error = profile.load_certs().await.unwrap_err();
-
-    match error {
-        LoadCertsError::Read { path, .. } => {
-            assert_eq!(path, profile.ssl_dir().join(CERT_FILE_NAME));
-        }
-        other => panic!("expected certificate read error, got {other:?}"),
-    }
+    assert!(matches!(
+        error,
+        LoadCertsError::Read { path, .. } if path == profile.cert_path()
+    ));
 }
 
 #[tokio::test]
@@ -259,16 +130,15 @@ async fn missing_key_reports_key_path() {
     let profile = IdentityProfile::try_from(temp.path().join("reimu.pilot")).unwrap();
 
     let error = profile.load_key().await.unwrap_err();
-
     #[cfg(unix)]
     assert!(matches!(
         error,
-        LoadKeyError::Metadata { path, .. } if path == profile.ssl_dir().join(KEY_FILE_NAME)
+        LoadKeyError::Metadata { path, .. } if path == profile.key_path()
     ));
     #[cfg(not(unix))]
     assert!(matches!(
         error,
-        LoadKeyError::Read { path, .. } if path == profile.ssl_dir().join(KEY_FILE_NAME)
+        LoadKeyError::Read { path, .. } if path == profile.key_path()
     ));
 }
 
@@ -296,80 +166,15 @@ async fn ocsp_staple_must_exist_and_be_nonempty() {
 async fn missing_identity_profile_reports_exact_and_wildcard_paths() {
     let temp = TempDir::new("missing-identity-profile");
     let home = DhttpHome::new(temp.path().to_path_buf());
-    let name = "reimu.pilot";
 
-    let error = home.resolve_identity_profile(name).await.unwrap_err();
-
-    match error {
-        ResolveIdentityProfileError::NotFound { exact, wildcard } => {
-            assert_eq!(exact, temp.path().join("reimu.pilot"));
-            assert_eq!(wildcard, temp.path().join("*.pilot"));
-        }
-        other => panic!("expected not-found error, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn save_identity_replaces_material_without_touching_profile_files() {
-    let temp = TempDir::new("replace-material");
-    let profile = IdentityProfile::try_from(temp.path().join("alice.smith")).unwrap();
-    tokio::fs::create_dir_all(profile.ssl_dir()).await.unwrap();
-    tokio::fs::write(profile.ssl_dir().join(CERT_FILE_NAME), b"old cert")
+    let error = home
+        .resolve_identity_profile("reimu.pilot")
         .await
-        .unwrap();
-    tokio::fs::write(profile.ssl_dir().join(KEY_FILE_NAME), b"old key")
-        .await
-        .unwrap();
-    tokio::fs::write(profile.ocsp_path(), b"old ocsp")
-        .await
-        .unwrap();
-    tokio::fs::write(profile.config_db_path(), b"keep me")
-        .await
-        .unwrap();
-
-    profile
-        .save_identity(b"new cert", b"new key", b"new ocsp")
-        .await
-        .unwrap();
-
-    assert_eq!(
-        tokio::fs::read(profile.ssl_dir().join(CERT_FILE_NAME))
-            .await
-            .unwrap(),
-        b"new cert"
-    );
-    assert_eq!(
-        tokio::fs::read(profile.ssl_dir().join(KEY_FILE_NAME))
-            .await
-            .unwrap(),
-        b"new key"
-    );
-    assert_eq!(
-        tokio::fs::read(profile.ocsp_path()).await.unwrap(),
-        b"new ocsp"
-    );
-    assert_eq!(
-        tokio::fs::read(profile.config_db_path()).await.unwrap(),
-        b"keep me"
-    );
-}
-
-#[tokio::test]
-async fn empty_ocsp_does_not_replace_existing_identity() {
-    let temp = TempDir::new("empty-ocsp-save");
-    let profile = IdentityProfile::try_from(temp.path().join("alice.smith")).unwrap();
-    tokio::fs::create_dir_all(profile.ssl_dir()).await.unwrap();
-    tokio::fs::write(profile.ocsp_path(), b"old ocsp")
-        .await
-        .unwrap();
-
+        .unwrap_err();
     assert!(matches!(
-        profile.save_identity(b"new cert", b"new key", b"").await,
-        Err(SaveIdentityError::EmptyOcsp)
+        error,
+        ResolveIdentityProfileError::NotFound { exact, wildcard }
+            if exact == temp.path().join("reimu.pilot")
+                && wildcard == temp.path().join("*.pilot")
     ));
-    assert_eq!(
-        tokio::fs::read(profile.ocsp_path()).await.unwrap(),
-        b"old ocsp"
-    );
-    assert!(!profile.cert_path().exists());
 }

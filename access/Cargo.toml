@@ -17,7 +17,6 @@ default = []
 cli = ["dep:clap"]
 orm = [
     "dep:chrono",
-    "dep:dhttp-home",
     "dep:sea-orm",
     "dep:tokio",
     "dep:tracing",
@@ -35,8 +34,7 @@ derive_more = { workspace = true, features = [
     "into",
     "as_ref",
 ] }
-dhttp-home = { workspace = true, optional = true }
-dhttp-identity = { workspace = true }
+dhttp-home = { workspace = true, default-features = false }
 globset = { workspace = true }
 http = { workspace = true, optional = true }
 peg = { workspace = true }

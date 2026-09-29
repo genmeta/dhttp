@@ -3,39 +3,13 @@ use std::path::{Path, PathBuf};
 use crate::DhttpHome;
 use snafu::{OptionExt, Snafu};
 
-use crate::{InvalidName, normalize_name};
+use crate::{DHTTP_SUFFIX, InvalidName, normalize_name};
 
 pub(crate) fn normalize_profile_name(input: &str) -> Option<String> {
     if let Some(rest) = input.strip_prefix("*.") {
         Some(format!("*.{}", normalize_name(rest)?))
     } else {
         normalize_name(input)
-    }
-}
-
-#[cfg(feature = "ssl")]
-#[derive(Debug, Clone)]
-pub struct Identity {
-    pub name: String,
-    pub certs: std::sync::Arc<Vec<rustls::pki_types::CertificateDer<'static>>>,
-    pub key: std::sync::Arc<rustls::pki_types::PrivateKeyDer<'static>>,
-    pub ocsp: std::sync::Arc<Vec<u8>>,
-}
-
-#[cfg(feature = "ssl")]
-impl Identity {
-    pub fn new(
-        name: String,
-        certs: Vec<rustls::pki_types::CertificateDer<'static>>,
-        key: rustls::pki_types::PrivateKeyDer<'static>,
-        ocsp: Vec<u8>,
-    ) -> Self {
-        Self {
-            name,
-            certs: std::sync::Arc::new(certs),
-            key: std::sync::Arc::new(key),
-            ocsp: std::sync::Arc::new(ocsp),
-        }
     }
 }
 
@@ -88,7 +62,7 @@ impl IdentityProfile {
     }
 
     pub fn config_db_path(&self) -> PathBuf {
-        self.join(Self::CONFIG_DB_FILE)
+        self.db_dir().join(Self::CONFIG_DB_FILE)
     }
 
     pub fn db_dir(&self) -> PathBuf {
@@ -178,7 +152,7 @@ impl DhttpHome {
                 continue;
             };
             if normalize_profile_name(&directory_name).as_deref() != Some(profile.name())
-                || directory_name != profile.name().strip_suffix(".dhttp.net").unwrap()
+                || directory_name != profile.name().strip_suffix(DHTTP_SUFFIX).unwrap()
             {
                 continue;
             }
@@ -194,7 +168,7 @@ impl DhttpHome {
 
     pub fn join_identity_name(&self, name: &str) -> Result<PathBuf, InvalidName> {
         let full = normalize_profile_name(name).ok_or(InvalidName)?;
-        Ok(self.join(full.strip_suffix(".dhttp.net").unwrap()))
+        Ok(self.join(full.strip_suffix(DHTTP_SUFFIX).unwrap()))
     }
 
     /// Construct an [`IdentityProfile`] handle for `name` without touching disk.

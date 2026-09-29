@@ -36,12 +36,12 @@ impl Drop for TestHome {
 }
 
 #[tokio::test]
-async fn identity_access_db_path_adapter() {
+async fn profile_access_db_path_adapter() {
     let test_home = TestHome::new("path-adapter");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
 
-    let path = access_db_path(&home, identity.borrow());
+    let path = identity_access_db_path(&profile);
     assert_eq!(
         path,
         home.as_path()
@@ -55,13 +55,11 @@ async fn identity_access_db_path_adapter() {
 async fn explicit_init_creates_identity_db() {
     let test_home = TestHome::new("explicit-init");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
 
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
 
-    assert!(access_db_path(&home, identity.borrow()).is_file());
+    assert!(identity_access_db_path(&profile).is_file());
     LocationService::new(&db).ensure_store().await.unwrap();
 }
 
@@ -69,11 +67,9 @@ async fn explicit_init_creates_identity_db() {
 async fn open_missing_identity_store_fails() {
     let test_home = TestHome::new("missing-store");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
 
-    let error = open_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap_err();
+    let error = open_access_database(&profile).await.unwrap_err();
     assert!(matches!(error, AccessDbError::MissingStore { .. }));
 }
 
@@ -81,10 +77,8 @@ async fn open_missing_identity_store_fails() {
 async fn location_only_schema_init_smoke() {
     let test_home = TestHome::new("schema-smoke");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
 
     let tables: Vec<String> = db
         .query_all_raw(Statement::from_string(
@@ -169,10 +163,8 @@ async fn migration_keeps_latest_duplicate_rule() {
 async fn appending_duplicate_rules_is_idempotent() {
     let test_home = TestHome::new("duplicate-rules");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
 
     let first = service
@@ -210,10 +202,8 @@ async fn appending_duplicate_rules_is_idempotent() {
 async fn concurrent_appends_are_idempotent() {
     let test_home = TestHome::new("concurrent-duplicate-rules");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
     let location = "/api".parse().unwrap();
     let expr: crate::expr::exprs::LocationRuleExprs = "alice.pilot~".parse().unwrap();
@@ -260,10 +250,8 @@ async fn insert_duplicate_rule(db: &DatabaseConnection, original: &rule::Model) 
 async fn removing_rule_by_sequence_removes_duplicate_rows() {
     let test_home = TestHome::new("remove-duplicate-by-sequence");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
     let original = service
         .append_rule_with_id(
@@ -294,10 +282,8 @@ async fn removing_rule_by_sequence_removes_duplicate_rows() {
 async fn removing_rule_by_id_removes_duplicate_rows() {
     let test_home = TestHome::new("remove-duplicate-by-id");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
     let original = service
         .append_rule_with_id(
@@ -328,10 +314,8 @@ async fn removing_rule_by_id_removes_duplicate_rows() {
 async fn location_service_location_only_crud() {
     let test_home = TestHome::new("location-crud");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
 
     service
@@ -370,10 +354,8 @@ async fn location_service_location_only_crud() {
 async fn location_only_matcher_behavior() {
     let test_home = TestHome::new("location-matcher");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
 
     service
@@ -400,15 +382,11 @@ async fn location_only_matcher_behavior() {
 async fn identity_store_isolation() {
     let test_home = TestHome::new("identity-isolation");
     let home = test_home.home();
-    let alice: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let bob: identity::Name<'static> = "bob.pilot".parse().unwrap();
+    let alice = home.identity_profile("alice.pilot").unwrap();
+    let bob = home.identity_profile("bob.pilot").unwrap();
 
-    let alice_db = init_identity_access_database(&home, alice.borrow())
-        .await
-        .unwrap();
-    let bob_db = init_identity_access_database(&home, bob.borrow())
-        .await
-        .unwrap();
+    let alice_db = init_access_database_for(&alice).await.unwrap();
+    let bob_db = init_access_database_for(&bob).await.unwrap();
 
     LocationService::new(&alice_db)
         .append_rule(
@@ -436,10 +414,8 @@ async fn identity_store_isolation() {
 async fn service_rejects_foreign_rule_id() {
     let test_home = TestHome::new("foreign-rule-id");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
 
     let api_rule = service
@@ -491,10 +467,8 @@ async fn service_rejects_foreign_rule_id() {
 async fn service_id_batch_is_atomic() {
     let test_home = TestHome::new("id-batch-atomic");
     let home = test_home.home();
-    let identity: identity::Name<'static> = "alice.pilot".parse().unwrap();
-    let db = init_identity_access_database(&home, identity.borrow())
-        .await
-        .unwrap();
+    let profile = home.identity_profile("alice.pilot").unwrap();
+    let db = init_access_database_for(&profile).await.unwrap();
     let service = LocationService::new(&db);
 
     let first_rule = service

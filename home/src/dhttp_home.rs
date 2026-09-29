@@ -1,7 +1,5 @@
+pub mod certificate;
 pub mod identity;
-mod request_uri;
-
-pub use request_uri::{ResolveRequestUriError, resolve_request_uri};
 
 mod bootstrap;
 
@@ -20,41 +18,39 @@ impl std::fmt::Display for InvalidName {
 
 impl std::error::Error for InvalidName {}
 
+pub const DHTTP_SUFFIX: &str = ".dhttp.net";
+
+/// Expand a partial DHTTP identity name and return its canonical DNS form.
+pub fn normalize_name(input: &str) -> Option<String> {
+    let name = input.trim().to_ascii_lowercase();
+    let name = if name.ends_with(DHTTP_SUFFIX) {
+        name
+    } else if let Some(partial) = name.strip_suffix('~') {
+        format!("{partial}{DHTTP_SUFFIX}")
+    } else {
+        format!("{name}{DHTTP_SUFFIX}")
+    };
+    is_valid_dns_name(&name).then_some(name)
+}
+
+/// Check certserver's canonical lowercase ASCII DNS label rules.
+pub fn is_valid_dns_name(name: &str) -> bool {
+    name.len() <= 253
+        && name.split('.').count() >= 2
+        && name.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
 pub fn validate_name(input: &str) -> Result<(), InvalidName> {
     (normalize_name(input).as_deref() == Some(input))
         .then_some(())
         .ok_or(InvalidName)
-}
-
-/// Expand a short identity name and validate its canonical DNS form.
-pub fn normalize_name(input: &str) -> Option<String> {
-    let name = input.trim().to_ascii_lowercase();
-    let name = if name.ends_with(".dhttp.net") {
-        name
-    } else {
-        format!("{name}.dhttp.net")
-    };
-    if name.len() > 253
-        || name.split('.').any(|label| {
-            label.is_empty()
-                || label.len() > 63
-                || label.bytes().all(|byte| byte.is_ascii_digit())
-                || !label
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                || !label
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                || !label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-    {
-        return None;
-    }
-    Some(name)
 }
 
 const USER_HOME_ENV: &str = "DHTTP_HOME";

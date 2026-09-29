@@ -1,9 +1,11 @@
 //! Transport-independent tests: all HTTP/3 traffic stays inside Tokio duplex streams.
-use super::messages::send_request;
+use super::request::send_request;
 use super::*;
+use h3x::{ReadResponse, WriteRequest};
+use http_body::Frame;
 use http_body_util::{Empty, Full};
 use std::{sync::Mutex, time::Duration};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "../support/transport.rs"]
 mod support;
 
@@ -148,7 +150,7 @@ async fn standard_request_and_response_preserve_data_and_duplicate_trailers() {
             }
         })
         .boxed_clone();
-        let serving = tokio::spawn(serve_exchange(
+        let serving = tokio::spawn(handle_request(
             app,
             response_writer,
             request_reader,
@@ -203,7 +205,7 @@ async fn inbound_authority_must_match_handshake_before_service() {
                 ))
             })
             .boxed_clone();
-            let serving = tokio::spawn(serve_exchange(
+            let serving = tokio::spawn(handle_request(
                 app,
                 response_writer,
                 request_reader,
@@ -375,7 +377,7 @@ async fn dropped_request_body_does_not_cancel_early_service_response() {
             ))
         })
         .boxed_clone();
-        let serving = tokio::spawn(serve_exchange(
+        let serving = tokio::spawn(handle_request(
             app,
             response_writer,
             request_reader,
@@ -559,7 +561,7 @@ async fn service_call_and_readiness_failures_return_errors() {
                 .write_request(request, client.qpack().clone())
                 .await
                 .unwrap();
-            let serving = serve_exchange(
+            let serving = handle_request(
                 app,
                 response_writer,
                 request_reader,
@@ -586,7 +588,7 @@ async fn malformed_request_fails_peer_promptly() {
         let (response_writer, request_reader) = server.accept_bi().await.unwrap();
         writer.write_all(&[0, 1, 42]).await.unwrap(); // DATA before HEADERS is invalid.
         writer.shutdown().await.unwrap();
-        let serving = serve_exchange(
+        let serving = handle_request(
             ReadinessFailure.boxed_clone(),
             response_writer,
             request_reader,

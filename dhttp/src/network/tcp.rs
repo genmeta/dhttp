@@ -25,9 +25,7 @@ impl DhttpNetwork {
         service: BoxService,
     ) -> Result<()> {
         let port = tcp_mock_port(&name)?;
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-            .await
-            .map_err(io_error)?;
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
         let local = mock_authority(&name).await?;
         let handshake = Arc::new(qtls::HandshakeSummary {
             alpn: Some(Bytes::from_static(h3x::ALPN)),
@@ -46,23 +44,22 @@ impl DhttpNetwork {
         });
         eprintln!("h3x/TCP mock {name} on 127.0.0.1:{port}");
         loop {
-            let (socket, _) = listener.accept().await.map_err(io_error)?;
-            socket.set_nodelay(true).map_err(io_error)?;
+            let (socket, _) = listener.accept().await?;
+            socket.set_nodelay(true)?;
             let transport = TcpTransport::new(socket, h3x::Role::Server, handshake.clone());
-            let h3 =
-                h3x::H3Connection::new(transport, h3x::Settings::default()).map_err(h3_error)?;
+            let h3 = h3x::H3Connection::new(transport, h3x::Settings::default())?;
             tokio::spawn(serve_connection(self, name.clone(), h3));
         }
     }
 }
 
 async fn mock_authority(name: &Arc<str>) -> Result<qtls::LocalAuthority> {
-    let identity = crate::home::load_identity(name).await?;
+    let endpoint = crate::home::load_endpoint(name).await?;
     qtls::LocalAuthority::from_signing_key(
         name.clone(),
-        identity.cert_chain().to_vec(),
-        identity.signing_key().clone(),
-        identity.ocsp().to_vec(),
+        endpoint.cert_chain().to_vec(),
+        endpoint.signing_key().clone(),
+        endpoint.ocsp().to_vec(),
     )
     .map_err(|error| Error::InvalidRequest {
         message: error.to_string(),
@@ -90,10 +87,8 @@ fn tcp_mock_port(name: &str) -> Result<u16> {
 pub(super) async fn open_outbound((local_name, remote_name): ConnectionKey) -> Result<H3> {
     let port = tcp_mock_port(&remote_name)?;
     let client_local = mock_authority(&local_name).await?;
-    let socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-        .await
-        .map_err(io_error)?;
-    socket.set_nodelay(true).map_err(io_error)?;
+    let socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    socket.set_nodelay(true)?;
     let transport = TcpTransport::new(
         socket,
         h3x::Role::Client,
@@ -103,7 +98,7 @@ pub(super) async fn open_outbound((local_name, remote_name): ConnectionKey) -> R
             remote: None,
         }),
     );
-    h3x::H3Connection::new(transport, h3x::Settings::default()).map_err(h3_error)
+    Ok(h3x::H3Connection::new(transport, h3x::Settings::default())?)
 }
 
 pub(super) fn forget_pool_connection(_: &DhttpNetwork, _: &Arc<str>, _: &H3) {}

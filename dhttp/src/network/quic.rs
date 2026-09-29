@@ -197,8 +197,7 @@ impl DhttpNetwork {
             }
             quic.listen(scopes, move |result| {
                 let _ = accepted.send(result);
-            })
-            .map_err(quic_error)?;
+            })?;
             listeners.insert(name.clone(), ListenerEntry { service, scopes });
         }
         update_bindings(self);
@@ -244,7 +243,7 @@ impl DhttpNetwork {
 }
 
 async fn quic_endpoint(name: &str) -> Result<qconn::QuicEndpoint> {
-    let mut endpoint = qconn::QuicEndpoint::new(crate::home::load_identity(name).await?);
+    let mut endpoint = qconn::QuicEndpoint::new(crate::home::load_endpoint(name).await?);
     endpoint.set_alpn(vec![h3x::ALPN.to_vec()]);
     Ok(endpoint)
 }
@@ -252,10 +251,7 @@ async fn quic_endpoint(name: &str) -> Result<qconn::QuicEndpoint> {
 pub(super) async fn open_outbound((local_name, remote_name): ConnectionKey) -> Result<H3> {
     let network = DhttpNetwork::global()?;
     let endpoint = quic_endpoint(&local_name).await?;
-    let (local, remote, connection) = endpoint
-        .connect(remote_name.to_string())
-        .await
-        .map_err(quic_error)?;
+    let (local, remote, connection) = endpoint.connect(remote_name.to_string()).await?;
     let connection = Arc::new(connection);
     let transport = QuicTransport {
         handshake: Arc::new(qtls::HandshakeSummary {
@@ -266,7 +262,7 @@ pub(super) async fn open_outbound((local_name, remote_name): ConnectionKey) -> R
         connection: connection.clone(),
         role: h3x::Role::Client,
     };
-    let h3 = h3x::H3Connection::new(transport, h3x::Settings::default()).map_err(h3_error)?;
+    let h3 = h3x::H3Connection::new(transport, h3x::Settings::default())?;
     tokio::spawn(serve_connection(network, local_name, h3.clone()));
     Ok(h3)
 }
@@ -280,11 +276,5 @@ pub(super) fn forget_pool_connection(
         network
             .pool
             .remove_connection(&(local_name.clone(), Arc::from(remote.name())), connection);
-    }
-}
-
-fn quic_error(source: qconn::Error) -> Error {
-    Error::Quic {
-        source: Arc::new(source),
     }
 }

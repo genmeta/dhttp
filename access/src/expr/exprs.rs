@@ -150,7 +150,7 @@ impl Display for LocationRuleExprs {
         {
             let pattern = pattern.as_ref().as_str();
             if let Some(prefix) = pattern
-                .strip_suffix(".dhttp.net")
+                .strip_suffix(dhttp_home::DHTTP_SUFFIX)
                 .filter(|prefix| !prefix.is_empty())
             {
                 return write!(f, "{prefix}~");

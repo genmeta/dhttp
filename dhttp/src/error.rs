@@ -89,15 +89,34 @@ impl From<http::uri::InvalidUri> for Error {
     }
 }
 
-impl From<dhttp_home::ResolveRequestUriError> for Error {
-    fn from(error: dhttp_home::ResolveRequestUriError) -> Self {
-        match error {
-            dhttp_home::ResolveRequestUriError::InvalidRemoteName { name } => {
-                Self::InvalidName { name }
-            }
-            error => Self::InvalidRequest {
-                message: error.to_string(),
-            },
+impl From<h3x::Error> for Error {
+    fn from(source: h3x::Error) -> Self {
+        Self::Http3 {
+            source: Arc::new(source),
+        }
+    }
+}
+
+impl From<qconn::Error> for Error {
+    fn from(source: qconn::Error) -> Self {
+        Self::Quic {
+            source: Arc::new(source),
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(source: std::io::Error) -> Self {
+        Self::Io {
+            source: Arc::new(source),
+        }
+    }
+}
+
+impl From<crate::BoxError> for Error {
+    fn from(source: crate::BoxError) -> Self {
+        Self::Io {
+            source: Arc::new(std::io::Error::other(source)),
         }
     }
 }

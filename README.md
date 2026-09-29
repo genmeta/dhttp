@@ -18,7 +18,7 @@ Endpoint 加载和请求构造不访问网络；首次 await 才取得共享连�
 
 Body 适配使用现成 `StreamBody` 和 `UnsyncBoxBody`，保留 DATA、多值 trailers、EOF、错误、提前丢弃和 HEAD/204/304 语义。操作等待期限为 16 分钟，连接期限为 30 秒；业务请求和终端会话期限由调用方决定。远端停止在后续流 I/O 中观察，不提供独立终态订阅。
 
-身份材料从 `DHTTP_HOME/<name>/ssl` 或用户默认 home 读取；TLS 身份和握手类型直接复用 qtls。`certificate` 提供 owner_hash 文本字节提取、现有规范算法的签名验证，以及实际握手的对端 authority 查询。仅证书规范算法复用旧 identity crate，不引入新的身份资源容器。
+身份材料从 `DHTTP_HOME/<name>/ssl` 或用户默认 home 读取；TLS 身份和握手类型直接复用 qtls。`dhttp-home` 承载 DHTTP 名称、证书链标识、SKI 解析和规范签名验证；需要这些规则的应用直接调用其证书接口，签名使用 qtls 的本端身份能力。入站请求的握手信息作为 `qtls::HandshakeSummary` 放在 request extensions 中。
 
 当前依赖相邻 `../dquic` 和 `../h3x`。**qconn 的出站 connect 仍缺路径发现/插入，真实出站握手不能完成**；本层实施了有界等待，并未补建其他 HTTP 客户端或降级传输。HTTP 消息、全双工、trailers 和取消通过内存双向流测试验收，真实联网互通仍待底层完成后验收。WASM、授权、应用路由和终端执行由 Pishoo 负责。
 

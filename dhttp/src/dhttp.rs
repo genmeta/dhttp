@@ -4,8 +4,8 @@ mod bootstrap;
 mod transport;
 #[cfg(not(feature = "tcp-mock"))]
 mod trust;
+mod uri;
 
-pub mod certificate;
 pub mod client;
 pub mod endpoint;
 pub mod error;

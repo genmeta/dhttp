@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dhttp", "identity", "home", "access", "log"]
+members = ["dhttp", "home", "access", "log"]
 
 [workspace.package]
 version = "0.6.2"
@@ -48,9 +48,7 @@ qprotocol = { path = "../dquic/qprotocol" }
 qrecovery = { path = "../dquic/qrecovery" }
 qtls = { path = "../dquic/qtls" }
 h3x = { path = "../h3x" }
-# Legacy workspace consumers still depend on these crates pending migration.
-dhttp-identity = "0.3.0"
-dhttp-home = { path = "home", version = "0.5.0" }
+dhttp-home = { path = "home", version = "0.5.0", default-features = false }
 dhttp = { path = "dhttp", version = "0.6.2" }
 dhttp-access = { path = "access", version = "0.4.2" }
 dhttp-log = { path = "log", version = "0.1.0" }

@@ -253,6 +253,14 @@ impl fmt::Display for DhttpSubjectKeyIdentifier {
     }
 }
 
+#[cfg(feature = "ssl")]
+mod rules;
+#[cfg(feature = "ssl")]
+pub use rules::{
+    ExtractDhttpSubjectKeyIdentifierError, ExtractSubjectKeyIdentifierError, VerifyError,
+    extract_dhttp_subject_key_identifier, extract_subject_key_identifier, verify_signature,
+};
+
 #[cfg(test)]
 #[path = "../tests/unit/certificate.rs"]
 mod tests;

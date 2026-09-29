@@ -1,21 +1,24 @@
 //! Identity-bound request and response handling.
-use crate::{Body, BoxError, EmptyBody, Error, RequestFuture, Result, network::DhttpNetwork};
+use crate::{Body, BoxError, EmptyBody, Error, Result, network::DhttpNetwork};
 use bytes::Bytes;
-use futures::StreamExt;
-use h3x::{ReadRequest, ReadResponse, WriteRequest, WriteResponse};
-use http_body::Frame;
+use h3x::{ReadRequest, WriteResponse};
 use http_body_util::{BodyExt, StreamBody};
 use qconn::Scopes;
 use qrecovery::{recv::StopSending, send::CancelStream};
-use std::{future::IntoFuture, sync::Arc};
-use tokio::io::AsyncWriteExt;
+use std::sync::Arc;
 use tower::ServiceExt;
 use tower_service::Service;
 
 const BODY_WINDOW_BYTES: usize = 64 * 1024;
 // Match h3x's receive chunk so each Body frame can transfer its Bytes directly.
 const BODY_READ_CHUNK_BYTES: usize = 8 * 1024;
+mod body;
+mod request;
+mod response;
+use body::forward_inbound_body;
+use response::send_response;
 
+// TODO: 这个替换成 dquic endpoint
 #[derive(Clone)]
 pub struct Endpoint {
     name: Arc<str>,
@@ -27,8 +30,6 @@ pub struct Request<B> {
     message: http::Request<B>,
 }
 
-mod messages;
-use messages::{forward_inbound_body, send_response};
 impl Endpoint {
     pub async fn load(name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
@@ -96,102 +97,73 @@ impl Endpoint {
     }
 }
 
-pub async fn resolve_remote(endpoint: &Endpoint, name: &str) -> Result<qtls::RemoteAuthority> {
-    DhttpNetwork::global()?
-        .resolve_remote(endpoint.name.clone(), name)
-        .await
-}
-
-pub(crate) fn h3_error(source: h3x::Error) -> Error {
-    Error::Http3 {
-        source: Arc::new(source),
-    }
-}
-pub(crate) fn io_error(source: impl Into<BoxError>) -> Error {
-    Error::Io {
-        source: Arc::new(std::io::Error::other(source.into())),
-    }
-}
-fn box_error(source: BoxError) -> Error {
-    Error::Io {
-        source: Arc::new(std::io::Error::other(source)),
-    }
-}
-
-pub(crate) fn serve_exchange<W, R>(
+pub(crate) async fn handle_request<W, R>(
     app: crate::network::BoxService,
     writer: W,
     reader: R,
     qpack: h3x::ArcQpack,
     handshake: Arc<qtls::HandshakeSummary>,
-) -> impl std::future::Future<Output = Result<()>>
+) -> Result<()>
 where
     W: WriteResponse + CancelStream,
     R: ReadRequest,
 {
-    async move {
-        // Application failures have no response to encode, so end our write direction.
-        let writer = scopeguard::guard(writer, |mut writer| {
-            writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
-        });
-        let incoming = reader.read_request(qpack.clone()).await.map_err(h3_error)?;
-        let (mut parts, mut inbound) = incoming.into_parts();
-        let method = parts.method.clone();
-        let uri = handshake.local.as_ref().and_then(|local| {
-            let identity =
-                dhttp_identity::name::DhttpName::try_from(local.name().to_owned()).ok()?;
-            let uri = identity.expand_uri(parts.uri.clone()).ok()?;
-            let authority = uri.authority()?;
-            (!authority.as_str().contains('@')
-                && dhttp_home::normalize_name(authority.host()).as_deref() == Some(local.name()))
-            .then_some(uri)
-        });
-        let Some(uri) = uri else {
-            inbound.stop(h3x::ErrorCode::NoError.as_u64());
-            let mut response = http::Response::new(
-                EmptyBody::new()
-                    .map_err(|never| match never {})
-                    .boxed_unsync(),
-            );
-            *response.status_mut() = http::StatusCode::MISDIRECTED_REQUEST;
-            return send_response(
-                response,
-                method,
-                scopeguard::ScopeGuard::into_inner(writer),
-                qpack,
-            )
-            .await;
-        };
-        parts.uri = uri;
-        let trailers = parts
-            .extensions
-            .remove::<h3x::Trailers>()
-            .unwrap_or_default();
-        parts.extensions.insert((*handshake).clone());
-        let body = StreamBody::new(forward_inbound_body(inbound, trailers))
-            .map_err(|error: Error| Box::new(error) as BoxError)
-            .boxed_unsync();
-        let request: http::Request<Body> = http::Request::from_parts(parts, body);
-        let mut app = app;
-        futures::future::poll_fn(|cx| app.poll_ready(cx))
-            .await
-            .map_err(box_error)?;
-        let response: std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = std::result::Result<http::Response<Body>, BoxError>,
-                    > + Send,
-            >,
-        > = app.call(request);
-        let response = response.await.map_err(box_error)?;
-        send_response(
+    // Application failures have no response to encode, so end our write direction.
+    let writer = scopeguard::guard(writer, |mut writer| {
+        writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
+    });
+    let incoming = reader.read_request(qpack.clone()).await?;
+    let (mut parts, mut inbound) = incoming.into_parts();
+    let method = parts.method.clone();
+    let uri = handshake.local.as_ref().and_then(|local| {
+        let uri = crate::uri::expand_uri_with_base(Some(local.name()), parts.uri.clone()).ok()?;
+        let authority = uri.authority()?;
+        (!authority.as_str().contains('@')
+            && dhttp_home::normalize_name(authority.host()).as_deref() == Some(local.name()))
+        .then_some(uri)
+    });
+    let Some(uri) = uri else {
+        inbound.stop(h3x::ErrorCode::NoError.as_u64());
+        let mut response = http::Response::new(
+            EmptyBody::new()
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        );
+        *response.status_mut() = http::StatusCode::MISDIRECTED_REQUEST;
+        return send_response(
             response,
             method,
             scopeguard::ScopeGuard::into_inner(writer),
             qpack,
         )
-        .await
-    }
+        .await;
+    };
+    parts.uri = uri;
+    let trailers = parts
+        .extensions
+        .remove::<h3x::Trailers>()
+        .unwrap_or_default();
+    parts.extensions.insert((*handshake).clone());
+    let body = StreamBody::new(forward_inbound_body(inbound, trailers))
+        .map_err(|error: Error| Box::new(error) as BoxError)
+        .boxed_unsync();
+    let request: http::Request<Body> = http::Request::from_parts(parts, body);
+    let mut app = app;
+    futures::future::poll_fn(|cx| app.poll_ready(cx)).await?;
+    let response: std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<http::Response<Body>, BoxError>>
+                + Send,
+        >,
+    > = app.call(request);
+    let response = response.await?;
+    send_response(
+        response,
+        method,
+        scopeguard::ScopeGuard::into_inner(writer),
+        qpack,
+    )
+    .await
 }
 
 #[cfg(test)]

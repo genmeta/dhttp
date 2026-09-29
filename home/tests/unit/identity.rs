@@ -52,12 +52,18 @@ fn identity_profile_from_path_rejects_path_without_directory_name() {
 
 #[test]
 fn identity_profile_from_path_rejects_invalid_directory_name() {
-    let error = IdentityProfile::try_from(Path::new("/tmp/123")).unwrap_err();
+    let error = IdentityProfile::try_from(Path::new("/tmp/bad_name")).unwrap_err();
 
     assert!(matches!(
         error,
         IdentityProfileFromPathError::InvalidName { .. }
     ));
+}
+
+#[test]
+fn identity_profile_from_path_accepts_numeric_label() {
+    let profile = IdentityProfile::try_from(Path::new("/tmp/123")).unwrap();
+    assert_eq!(profile.name(), "123.dhttp.net");
 }
 
 #[test]
@@ -78,7 +84,7 @@ fn shared_layout_paths_use_the_profile_directory() {
     let profile = IdentityProfile::try_from(Path::new("/tmp/reimu.pilot")).unwrap();
     assert_eq!(
         profile.config_db_path(),
-        PathBuf::from("/tmp/reimu.pilot/config.db")
+        PathBuf::from("/tmp/reimu.pilot/db/config.db")
     );
     assert_eq!(
         profile.access_db_path(),

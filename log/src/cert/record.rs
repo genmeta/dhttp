@@ -1,5 +1,5 @@
 use chrono::{DateTime, FixedOffset, Utc};
-use dhttp_identity::certificate::CertificateChainKey;
+use dhttp_home::certificate::CertificateChainKey;
 use sha2::{Digest, Sha256};
 use snafu::{OptionExt, ResultExt, Snafu};
 use x509_parser::{certificate::X509Certificate, prelude::FromDer};

@@ -6,7 +6,7 @@ use crate::{Error, Result};
 
 /// Resolve the default identity files using DHTTP_HOME or the user's .dhttp
 /// directory. No implicit directory creation, registration or network startup.
-pub(crate) async fn load_identity(servername: &str) -> Result<Arc<qbase::endpoint::Endpoint>> {
+pub(crate) async fn load_endpoint(servername: &str) -> Result<Arc<qbase::endpoint::Endpoint>> {
     let root = dhttp_home::DhttpHome::load(dhttp_home::HomeScope::User).map_err(|error| {
         Error::HomeUnavailable {
             message: error.to_string(),
@@ -34,7 +34,7 @@ pub(crate) async fn load_identity(servername: &str) -> Result<Arc<qbase::endpoin
     })?;
     qbase::endpoint::Endpoint::new(
         &qtls::default_provider(),
-        servername,
+        profile.name(),
         certificates,
         key,
         ocsp,

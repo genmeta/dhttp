@@ -40,8 +40,6 @@ pub use http::{Method, Uri, StatusCode, HeaderMap, HeaderName, HeaderValue};
 
 // 只保留必要的本地加载与 DHTTP 规则，不重导出旧 identity 模型。
 pub mod home;
-pub mod name;
-pub mod certificate;
 #[cfg(feature = "access")]
 pub use dhttp_access as access;
 #[cfg(feature = "log")]
@@ -333,32 +331,33 @@ Pishoo 文档中的组件执行、OpenAPI 和身份沙盒方案属于应用层�
 
 ## 6. 身份与 home：最小模型
 
-目标删除独立的 dhttp-identity crate 及其重复身份模型，不再为了 gmutils 兼容保留旧 Identity、LocalAuthority/RemoteAuthority traits 或多层名称存储包装。gmutils、access/log 等调用方可以随实现迁移，不在本次顶层接口设计里补兼容层。
+独立的 dhttp-identity crate 已删除；仍在使用的名称、证书链标识和证书规则迁入 dhttp-home。旧 Identity、LocalAuthority/RemoteAuthority traits 不再保留。
 
 | 能力 | 归属与最小表达 |
 |---|---|
 | 名称输入与存储 | &str / String / Arc<str> |
-| DHTTP 名称规范化、简写展开 | 独立 `dhttp-home` 的名称能力 |
+| DHTTP 名称规范化 | `dhttp-home` 的纯函数，供目录定位和运行层共用 |
+| 请求 URI 简写展开 | dhttp 内部 URI 处理，不进入 home |
 | 证书链、私钥加载后的签名能力 | 直接复用 dquic/qtls 的已有类型 |
 | QUIC endpoint 使用的本地材料 | qbase::endpoint::Endpoint（当前 qconn 的既有输入） |
 | 握手中的本端/对端身份 | qtls::LocalAuthority / RemoteAuthority |
-| DHTTP 证书字段解析与校验 | dhttp::certificate 中必要的规则与函数，不为每个字段机械增加 newtype |
+| DHTTP 证书字段解析与校验 | 当前由 dhttp-home::certificate 提供，dhttp 不再包装这些规则 |
 | 定位身份目录、读取默认凭据文件和身份级通信日志路径 | dhttp-home；dhttp::home 使用它装配端点 |
 
 home 与 Endpoint 之间只需要一个内部读取边界：
 
 ```rust
 // 内部示意，不增加调用方需要理解的身份包装或构造步骤。
-pub(crate) async fn load_identity(
+pub(crate) async fn load_endpoint(
     servername: &str,
 ) -> Result<Arc<qbase::endpoint::Endpoint>>;
 ```
 
 本轮不定义 HomeConfig、HomeSettings、身份注册表、全局初始化、重扫快照、热替换、默认身份管理或保存事务等新 API，也不要求保留它们的旧签名。已有可用的文件读写代码可以按实现需要复用；具体如何组织不是这份顶层接口稿的前置条件。
 
-名称和证书的 DHTTP 规则不能随结构一起丢掉。必要的签名算法选择、SKI 编解码等保留为具体协议逻辑；通用密钥与握手能力交给 dquic/qtls，不把整个旧 identity 原样搬入 home。
+名称和证书的 DHTTP 规则不能随结构一起丢掉。Pishoo 宿主直接使用 qtls 的签名能力和现有 DHTTP 算法选择；SKI 编解码与验签暂由 dhttp-home::certificate 提供。dhttp 不再提供只转发这些操作的 certificate 模块。
 
-这里是重构目标，不代表当前目录和 Cargo 依赖已经删除。实际删除 identity crate 时同步迁移所有依赖它的代码，不保留两套长期身份模型，也不引入反向依赖 dhttp 的 home crate 造成依赖环。本轮仍只收敛顶层接口，不展开 home 实现设计。
+当前 workspace 已移除 identity crate 与对应 Cargo 依赖。home 不反向依赖 dhttp，access/log 直接使用 home 的名称和证书类型。
 
 ## 7. Network：汇总活动服务范围的全局网络
 

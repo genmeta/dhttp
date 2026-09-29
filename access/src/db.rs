@@ -6,7 +6,6 @@
 
 pub mod entities;
 pub mod evaluator;
-pub mod identity;
 pub mod service;
 
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ pub use crate as base;
 #[cfg(feature = "migration")]
 pub use crate::migration;
 use dhttp_home::identity::IdentityProfile;
-pub use identity::{DhttpHome, Name};
+pub use dhttp_home::{DhttpHome, LoadDhttpHomeError};
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
 #[cfg(feature = "migration")]
 use sea_orm_migration::MigratorTrait;
@@ -26,9 +25,7 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 #[derive(Debug, Snafu)]
 pub enum AccessDbError {
     #[snafu(display("failed to locate DHTTP_HOME"))]
-    LocateDhttpHome {
-        source: identity::LoadDhttpHomeError,
-    },
+    LocateDhttpHome { source: LoadDhttpHomeError },
 
     #[snafu(display("access store does not exist at `{}`", path.display()))]
     MissingStore { path: PathBuf },
@@ -52,12 +49,6 @@ pub enum AccessDbError {
 
 pub fn load_dhttp_home() -> Result<DhttpHome, AccessDbError> {
     DhttpHome::load(dhttp_home::HomeScope::User).context(LocateDhttpHomeSnafu)
-}
-
-pub fn access_db_path(home: &DhttpHome, identity: identity::Name<'_>) -> PathBuf {
-    home.identity_profile(identity.as_full())
-        .expect("validated DHTTP identity name")
-        .access_db_path()
 }
 
 pub fn identity_access_db_path(identity_profile: &IdentityProfile) -> PathBuf {
@@ -137,21 +128,6 @@ pub async fn init_access_database(
         .await
         .context(InitializeDatabaseSnafu)?;
     Ok(database)
-}
-
-pub async fn open_identity_access_database(
-    home: &DhttpHome,
-    identity: identity::Name<'_>,
-) -> Result<DatabaseConnection, AccessDbError> {
-    open_existing_access_database(access_db_path(home, identity)).await
-}
-
-#[cfg(feature = "migration")]
-pub async fn init_identity_access_database(
-    home: &DhttpHome,
-    identity: identity::Name<'_>,
-) -> Result<DatabaseConnection, AccessDbError> {
-    init_access_database(access_db_path(home, identity)).await
 }
 
 pub async fn open_access_database(

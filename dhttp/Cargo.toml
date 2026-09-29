@@ -26,7 +26,7 @@ access-peg-trace = ["access", "dhttp-access/peg-trace"]
 [dependencies]
 bytes.workspace = true
 futures.workspace = true
-dhttp-home.workspace = true
+dhttp-home = { workspace = true, features = ["ssl"] }
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
@@ -44,7 +44,6 @@ tracing.workspace = true
 tower = { version = "0.5", features = ["util"] }
 async-stream = "0.3"
 scopeguard = "1"
-dhttp-identity = { path = "../identity" }
 qtls = { workspace = true }
 dhttp-access = { workspace = true, optional = true }
 dhttp-log = { workspace = true, optional = true }
