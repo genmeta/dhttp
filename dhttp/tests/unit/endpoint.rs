@@ -57,35 +57,28 @@ fn window(initial: Bytes) -> WndBuf {
 }
 
 #[tokio::test]
-async fn anonymous_endpoint_requests_require_an_explicit_remote_name() {
-    let endpoint = Endpoint::new(None);
-    assert_eq!(endpoint.name(), None);
-    assert!(endpoint.quic.is_none());
-    let standard = Request::new(
-        http::Request::builder()
-            .uri("https://~/profile")
-            .body(Empty::<Bytes>::new())
-            .unwrap(),
-    );
-    assert!(
-        matches!(standard.await, Err(Error::InvalidRequest { message })
-        if message == "cannot expand bare dhttp shorthand without a base name")
-    );
-    let error = endpoint
-        .get("https://~/profile".parse().unwrap())
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        Error::InvalidRequest { message }
-            if message == "cannot expand bare dhttp shorthand without a base name"
-    ));
+async fn anonymous_requests_require_an_explicit_remote_name() {
+    for request in [
+        Anonymous.get("https://~/profile".parse().unwrap()),
+        Anonymous.from_request(
+            http::Request::builder()
+                .uri("https://~/profile")
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        ),
+    ] {
+        assert!(request.endpoint.is_none());
+        assert!(
+            matches!(request.await, Err(Error::InvalidRequest { message })
+            if message == "cannot expand bare dhttp shorthand without a base name")
+        );
+    }
 }
 
 #[tokio::test]
 async fn builder_works_without_network_and_preserves_headers_when_replacing_body() {
     let endpoint = test_support::named("ALICE");
-    assert_eq!(endpoint.name(), Some("alice.dhttp.net"));
+    assert_eq!(endpoint.name(), "alice.dhttp.net");
     let uri = "https://bob~/upload".parse().unwrap();
     let request = endpoint
         .get(uri)
@@ -381,7 +374,7 @@ async fn response_headers_arrive_before_upload_eof() {
             .unwrap();
             request.into_body().collect().await.unwrap().to_bytes()
         });
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .message;
         let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
@@ -403,7 +396,7 @@ async fn dropping_request_writer_resets_unfinished_upload() {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (_response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .message;
         let (upload, response) = send_upload(message, writer, reader, client.qpack().clone());
@@ -447,7 +440,7 @@ async fn response_drop_keeps_upload_alive_until_the_writer_is_cancelled() {
             seen.send(()).unwrap();
             incoming.into_body().collect().await.unwrap_err()
         });
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .message;
         let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
@@ -470,7 +463,7 @@ async fn cancelling_before_the_upload_task_is_polled_preserves_the_code() {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (_response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .body(window(Bytes::from_static(b"initial")))
             .message;
@@ -493,7 +486,7 @@ async fn response_failure_closes_the_writers_window() {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (mut response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .message;
         let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
@@ -795,7 +788,7 @@ fn request_entry_points_have_the_expected_output_types() {
         _: impl std::future::IntoFuture<Output = Result<(RequestWriter, crate::RequestFuture)>>,
     ) {
     }
-    let endpoint = Endpoint::new(None);
+    let endpoint = test_support::named("alice");
     let uri: http::Uri = "https://example.com/".parse().unwrap();
     response_only(endpoint.get(uri.clone()));
     response_only(endpoint.head(uri.clone()));
@@ -809,6 +802,21 @@ fn request_entry_points_have_the_expected_output_types() {
     with_writer(endpoint.post(uri.clone()).write(b"initial"));
     with_writer(
         endpoint
+            .post(uri.clone())
+            .body(window(Bytes::from_static(b"initial"))),
+    );
+    response_only(Anonymous.get(uri.clone()));
+    response_only(Anonymous.head(uri.clone()));
+    response_only(Anonymous.delete(uri.clone()));
+    response_only(Anonymous.options(uri.clone()));
+    response_only(Anonymous.post(uri.clone()).body(Empty::<Bytes>::new()));
+    with_writer(Anonymous.post(uri.clone()));
+    with_writer(Anonymous.put(uri.clone()));
+    with_writer(Anonymous.patch(uri.clone()));
+    with_writer(Anonymous.request(http::Method::GET, uri.clone()));
+    with_writer(Anonymous.post(uri.clone()).write(b"initial"));
+    with_writer(
+        Anonymous
             .post(uri)
             .body(window(Bytes::from_static(b"initial"))),
     );
@@ -817,7 +825,7 @@ fn request_entry_points_have_the_expected_output_types() {
 #[tokio::test]
 async fn empty_requests_send_eof_before_waiting_for_response() {
     bounded(async {
-        let endpoint = Endpoint::new(None);
+        let endpoint = test_support::named("alice");
         let uri: http::Uri = "https://example.com/".parse().unwrap();
         for request in [
             endpoint.get(uri.clone()),
@@ -825,6 +833,11 @@ async fn empty_requests_send_eof_before_waiting_for_response() {
             endpoint.delete(uri.clone()),
             endpoint.options(uri.clone()),
             endpoint.post(uri.clone()).body(Empty::<Bytes>::new()),
+            Anonymous.get(uri.clone()),
+            Anonymous.head(uri.clone()),
+            Anonymous.delete(uri.clone()),
+            Anonymous.options(uri.clone()),
+            Anonymous.post(uri.clone()).body(Empty::<Bytes>::new()),
         ] {
             let (client, server) = support::connection_pair();
             let (writer, reader) = client.open_bi().await.unwrap();
@@ -936,7 +949,7 @@ async fn window_requests_can_shutdown_before_the_server_returns_headers() {
                 .unwrap();
                 body
             });
-            let endpoint = Endpoint::new(None);
+            let endpoint = test_support::named("alice");
             let request = endpoint.post("https://example.com/".parse().unwrap());
             let initial = Bytes::from(vec![0x5a; 96 * 1024]);
             let request = match mode {
@@ -982,7 +995,7 @@ async fn cancelling_shutdown_does_not_detach_the_owned_upload() {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let message = Endpoint::new(None)
+        let message = test_support::named("alice")
             .post("https://example.com/".parse().unwrap())
             .body(window(Bytes::from(vec![42; 2 * 1024 * 1024])))
             .message;

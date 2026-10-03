@@ -12,20 +12,19 @@ let response = endpoint.get(uri)
     .await?;
 ```
 
-匿名请求使用 `Endpoint::new(None)`，无需本地身份材料；远端身份仍会验证。与具名请求一样，发送前需要注册解析器并初始化 Network：
+匿名请求使用 `Anonymous.get(uri)` 等方法，与 Endpoint 的请求方法对称，无需本地身份材料；远端身份仍会验证。与具名请求一样，发送前需要注册解析器并初始化 Network：
 
 ```rust,ignore
 dhttp::resolve::Resolver::add(my_resolver);
 dhttp::DhttpNetwork::init().await?;
-let endpoint = dhttp::Endpoint::new(None);
-let response = endpoint.get("https://bob~/profile".parse()?).await?;
+let response = dhttp::Anonymous.get("https://bob~/profile".parse()?).await?;
 ```
 
 `Endpoint` 持有 `Arc<qconn::QuicEndpoint>`；`Endpoint::load` 读取名称对应的证书链、私钥和 OCSP，加载失败立即返回错误，clone 共享已加载的端点。监听和新建连接直接使用这些凭据，池仍按双方名称复用连接；匿名与具名请求使用不同池条目。凭据文件更新后需要重新 load，已有 Endpoint 保留加载时的材料。
 
-`Endpoint::new(Some(identity))` 直接接收已准备好的 `Arc<qbase::endpoint::Endpoint>`，与底层 QUIC 的构造参数一致。`name()` 返回 `Option<&str>`；匿名端点返回 `None`，只能发起请求，调用 `listen` 会返回错误。`Request::new(http_request)` 也通过 `Endpoint::new(None)` 发送已有的标准 HTTP 请求。
+`Endpoint::new(identity)` 必须接收已准备好的 `Arc<qbase::endpoint::Endpoint>`，与底层 QUIC 的构造参数一致。`name()` 返回 `&str`；Endpoint 始终有身份，可以发起请求和监听。`Anonymous` 是无状态的出站入口，提供相同的 get/head/post/put/patch/delete/options/request/from_request 方法，不提供 listen。`Anonymous.from_request(http_request)` 和 `Request::new(http_request)` 都可接入已有的标准 HTTP 请求。
 
-Endpoint 加载和请求构造不访问网络；await 请求时才取得共享连接。`Request<B>` 组合 Endpoint 和 `http::Request<B>`；`B` 为 `Empty` 或 `WndBuf`。`dhttp::Empty` 是标准 `http_body_util::Empty<Bytes>` 的别名，其 `Body::Data` 为 Bytes，本身不保存数据。GET/HEAD（以及默认的 DELETE/OPTIONS）返回 `Request<Empty>`，await 时直接发送空 body、结束请求方向并等待响应。POST/PUT/PATCH 和通用 `request(method, uri)` 返回 `Request<WndBuf>`，构造时就持有 h3x 的可写缓冲；首次 await 消费构造器、建连、开流并启动上传，返回 `(RequestWriter, RequestFuture)`。同一个 WndBuf 直接交给 h3x，与 RequestWriter 共享。通过 RequestWriter 继续写入，响应 future 可独立等待响应头。两种请求分别实现 IntoFuture，共用 URI 处理和连接获取逻辑。
+Endpoint 加载和请求构造不访问网络；await 请求时才取得共享连接。`Request<B>` 组合可选的具名 Endpoint 和 `http::Request<B>`；`B` 为 `Empty` 或 `WndBuf`。`dhttp::Empty` 是标准 `http_body_util::Empty<Bytes>` 的别名，其 `Body::Data` 为 Bytes，本身不保存数据。GET/HEAD（以及默认的 DELETE/OPTIONS）返回 `Request<Empty>`，await 时直接发送空 body、结束请求方向并等待响应。POST/PUT/PATCH 和通用 `request(method, uri)` 返回 `Request<WndBuf>`，构造时就持有 h3x 的可写缓冲；首次 await 消费构造器、建连、开流并启动上传，返回 `(RequestWriter, RequestFuture)`。同一个 WndBuf 直接交给 h3x，与 RequestWriter 共享。通过 RequestWriter 继续写入，响应 future 可独立等待响应头。两种请求分别实现 IntoFuture，共用 URI 处理和连接获取逻辑。
 
 ```rust,ignore
 use tokio::io::AsyncWriteExt;
@@ -89,7 +88,7 @@ h3x 内部保留有界收发缓冲，接收消息和 Service 响应使用标准 
 
 `dhttp-home` 负责目录定位，`Endpoint::load` 从 `DHTTP_HOME/<name>/ssl` 或用户默认 home 读取身份材料并装配 QUIC 端点。TLS 身份和握手类型直接复用 qtls。`dhttp-home` 同时承载 DHTTP 名称、证书链标识、SKI 解析和规范签名验证；需要这些规则的应用直接调用其证书接口，签名使用 qtls 的本端身份能力。入站请求的握手信息作为 `qtls::HandshakeSummary` 放在 request extensions 中。
 
-当前依赖相邻 `../dquic` 和 `../h3x`，传输仅使用 QUIC。出站路径发现由 qconnection 消费全局 Resolver 和 AddressBook；双方显式采用 dquic 的 client/server transport parameters，开放 HTTP/3 所需的流和流控额度。qconnection 两端使用全局默认 `h3` ALPN；dhttp 在装配 H3 前校验实际协商值，握手摘要保留实际结果。WASM、授权、应用路由和终端执行由 Pishoo 负责。
+当前依赖相邻 `../dquic` 和 `../h3x`，传输仅使用 QUIC。具名请求通过 QuicEndpoint 建连，匿名请求调用 qconnection 的 connect_anonymously，两者共用底层流程。QuicEndpoint 始终持有身份；匿名只表示不提交客户端凭据，仍验证服务器身份。出站路径发现由 qconnection 消费全局 Resolver 和 AddressBook；双方显式采用 dquic 的 client/server transport parameters，开放 HTTP/3 所需的流和流控额度。dhttp 显式配置两端的 `h3` ALPN，在装配 H3 前校验实际协商值，握手摘要保留实际结果。未交付建连的取消及 QUIC 清理由 dquic 管理。WASM、授权、应用路由和终端执行由 Pishoo 负责。
 
 ```sh
 cargo test -p dhttp --lib --tests
@@ -98,5 +97,12 @@ cargo check -p dhttp --no-default-features --all-targets
 cargo test -p dhttp --test quic_roundtrip -- --ignored
 cargo test -p dhttp --test dns_bootstrap -- --ignored
 ```
+
+真实网络测试使用自建 CA、实际生成的证书/私钥和有效 OCSP。生成器明确指定 named_curve 与 SHA-256，并核对证书/私钥公钥一致、证书链和域名、OCSP 签名。需要支持 `pkey -check` 与 `ocsp -rmd` 的 OpenSSL；若子进程命中系统自带的兼容实现，可通过 `DHTTP_TEST_OPENSSL` 指定可执行文件。例如 macOS：
+
+```sh
+DHTTP_TEST_OPENSSL=/opt/homebrew/bin/openssl cargo test -p dhttp --lib --tests -- --include-ignored
+```
+
 
 旧 Node.js/Python 包装已移除；语言绑定和发布版本固定待 Rust 接口及真实联网验证完成后处理。

@@ -1,7 +1,8 @@
 use std::{fs, path::Path, process::Command};
 
 fn openssl(root: &Path, args: &[&str]) {
-    let output = Command::new("openssl")
+    let executable = std::env::var_os("DHTTP_TEST_OPENSSL").unwrap_or_else(|| "openssl".into());
+    let output = Command::new(executable)
         .args(args)
         .current_dir(root)
         .output()
@@ -21,10 +22,13 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
         &[
             "req",
             "-x509",
+            "-sha256",
             "-newkey",
             "ec",
             "-pkeyopt",
             "ec_paramgen_curve:prime256v1",
+            "-pkeyopt",
+            "ec_param_enc:named_curve",
             "-nodes",
             "-keyout",
             "ca.key",
@@ -52,10 +56,13 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
             &[
                 "req",
                 "-new",
+                "-sha256",
                 "-newkey",
                 "ec",
                 "-pkeyopt",
                 "ec_paramgen_curve:prime256v1",
+                "-pkeyopt",
+                "ec_param_enc:named_curve",
                 "-nodes",
                 "-keyout",
                 &key,
@@ -73,6 +80,7 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
             &[
                 "x509",
                 "-req",
+                "-sha256",
                 "-in",
                 "leaf.csr",
                 "-CA",
@@ -89,6 +97,41 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
                 "leaf.ext",
             ],
         );
+        // Validate actual credentials before starting QUIC. These are public
+        // key files; private key bytes never appear in test output.
+        openssl(root, &["pkey", "-in", &key, "-check", "-noout"]);
+        openssl(
+            root,
+            &["pkey", "-in", &key, "-pubout", "-out", "leaf-key.pub"],
+        );
+        openssl(
+            root,
+            &[
+                "x509",
+                "-in",
+                &cert,
+                "-pubkey",
+                "-noout",
+                "-out",
+                "leaf-cert.pub",
+            ],
+        );
+        assert_eq!(
+            fs::read(root.join("leaf-key.pub")).unwrap(),
+            fs::read(root.join("leaf-cert.pub")).unwrap(),
+            "certificate and private key must match for {hostname}"
+        );
+        openssl(
+            root,
+            &[
+                "verify",
+                "-CAfile",
+                "ca.crt",
+                "-verify_hostname",
+                hostname,
+                &cert,
+            ],
+        );
         fs::write(
             root.join("index.txt"),
             format!("V\t491231235959Z\t\t{serial}\tunknown\t{subject}\n"),
@@ -98,6 +141,8 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
             root,
             &[
                 "ocsp",
+                "-rmd",
+                "sha256",
                 "-index",
                 "index.txt",
                 "-rsigner",
@@ -114,6 +159,21 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
                 &format!("{directory}/ocsp.der"),
                 "-ndays",
                 "1",
+            ],
+        );
+        openssl(
+            root,
+            &[
+                "ocsp",
+                "-respin",
+                &format!("{directory}/ocsp.der"),
+                "-issuer",
+                "ca.crt",
+                "-cert",
+                &cert,
+                "-CAfile",
+                "ca.crt",
+                "-no_nonce",
             ],
         );
         #[cfg(unix)]

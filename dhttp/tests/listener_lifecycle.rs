@@ -76,7 +76,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     unsafe { std::env::set_var("DHTTP_HOME", &root) };
 
     let endpoint = Endpoint::load("TEST").await.unwrap();
-    assert_eq!(endpoint.name(), Some("test.dhttp.net"));
+    assert_eq!(endpoint.name(), "test.dhttp.net");
     assert!(matches!(
         Endpoint::load("").await,
         Err(Error::InvalidName { .. })
@@ -86,10 +86,6 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         Err(Error::Home { .. })
     ));
     DhttpNetwork::init().await.unwrap();
-    assert!(matches!(
-        Endpoint::new(None).listen(Scope::Loopback.into(), EmptyApp).await,
-        Err(Error::InvalidRequest { message }) if message == "listening requires a local identity"
-    ));
     let endpoints = network::loopback_endpoints();
     assert!(!endpoints.is_empty());
     let listening = tokio::spawn({
@@ -99,7 +95,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if qconn::ServerRegistry::global()
-                .get(endpoint.name().unwrap())
+                .get(endpoint.name())
                 .is_some()
             {
                 break;
@@ -120,10 +116,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     });
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if qconn::ServerRegistry::global()
-                .get(other.name().unwrap())
-                .is_some()
-            {
+            if qconn::ServerRegistry::global().get(other.name()).is_some() {
                 break;
             }
             tokio::task::yield_now().await;
@@ -132,11 +125,9 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     .await
     .unwrap();
     let first = qconn::ServerRegistry::global()
-        .get(endpoint.name().unwrap())
+        .get(endpoint.name())
         .unwrap();
-    let second = qconn::ServerRegistry::global()
-        .get(other.name().unwrap())
-        .unwrap();
+    let second = qconn::ServerRegistry::global().get(other.name()).unwrap();
     (first.accept_cb)(Err(qbase::error::QuicError::with_default_fty(
         qbase::error::ErrorKind::Internal,
         "test rejected handshake",
@@ -150,7 +141,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     assert!(std::sync::Arc::ptr_eq(
         &first,
         &qconn::ServerRegistry::global()
-            .get(endpoint.name().unwrap())
+            .get(endpoint.name())
             .unwrap()
     ));
     assert!(first.scopes.contains(Scope::Loopback));
@@ -174,7 +165,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if qconn::ServerRegistry::global()
-                .get(endpoint.name().unwrap())
+                .get(endpoint.name())
                 .is_none()
             {
                 break;
@@ -187,10 +178,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     other_listening.abort();
     let _ = other_listening.await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while qconn::ServerRegistry::global()
-            .get(other.name().unwrap())
-            .is_some()
-        {
+        while qconn::ServerRegistry::global().get(other.name()).is_some() {
             tokio::task::yield_now().await;
         }
     })

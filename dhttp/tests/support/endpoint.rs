@@ -10,5 +10,5 @@ pub fn named(name: &str) -> crate::Endpoint {
         b"test-ocsp".to_vec(),
     )
     .unwrap();
-    crate::Endpoint::new(Some(identity))
+    crate::Endpoint::new(identity)
 }

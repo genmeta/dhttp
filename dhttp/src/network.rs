@@ -25,7 +25,7 @@ enum ConnectionKey {
         remote: Option<Arc<str>>,
     },
     Outgoing {
-        local: Endpoint,
+        local: Option<Endpoint>,
         remote: Arc<str>,
     },
 }
@@ -34,7 +34,7 @@ impl ConnectionKey {
     fn names(&self) -> (Option<&str>, Option<&str>) {
         match self {
             Self::Incoming { local, remote } => (Some(local), remote.as_deref()),
-            Self::Outgoing { local, remote } => (local.name(), Some(remote)),
+            Self::Outgoing { local, remote } => (local.as_ref().map(Endpoint::name), Some(remote)),
         }
     }
 }
@@ -96,7 +96,7 @@ impl DhttpNetwork {
 
     pub(crate) async fn get_connection(
         &'static self,
-        local: Endpoint,
+        local: Option<Endpoint>,
         remote: Arc<str>,
     ) -> Result<H3> {
         let key = ConnectionKey::Outgoing { local, remote };
@@ -111,12 +111,7 @@ impl DhttpNetwork {
         scopes: Scopes,
         service: BoxService,
     ) -> Result<()> {
-        let quic = endpoint
-            .quic
-            .as_ref()
-            .ok_or_else(|| Error::InvalidRequest {
-                message: "listening requires a local identity".into(),
-            })?;
+        let quic = &endpoint.quic;
         let name: Arc<str> = Arc::from(quic.identity.name());
         {
             let mut listeners = self.listeners.lock().unwrap();
@@ -382,9 +377,16 @@ async fn connect(key: ConnectionKey) -> Result<H3> {
         });
     };
     let network = DhttpNetwork::global()?;
-    let (local, remote, connection) = match &local.quic {
-        Some(quic) => quic.connect(remote.to_string()).await?,
-        None => crate::endpoint::anonymous::connect(remote.to_string()).await?,
+    let (local, remote, connection) = match local {
+        Some(endpoint) => endpoint.quic.connect(remote.to_string()).await?,
+        None => {
+            qconn::connect_anonymously(
+                remote.to_string(),
+                qbase::param::handy::client_parameters(),
+                vec![h3x::ALPN.to_vec()],
+            )
+            .await?
+        }
     };
     let transport = QuicTransport::new(connection, local, Some(remote), h3x::Role::Client)?;
     let h3 = H3::new(transport, h3x::Settings::default())?;
@@ -409,7 +411,7 @@ mod tests {
         )]);
         assert_eq!(
             entries.get(&ConnectionKey::Outgoing {
-                local: crate::endpoint::test_support::named("alice"),
+                local: Some(crate::endpoint::test_support::named("alice")),
                 remote: Arc::from("bob.dhttp.net"),
             }),
             Some(&"named"),
@@ -423,7 +425,7 @@ mod tests {
         );
         entries.insert(
             ConnectionKey::Outgoing {
-                local: Endpoint::new(None),
+                local: None,
                 remote: local,
             },
             "anonymous local",
@@ -434,7 +436,7 @@ mod tests {
     #[test]
     fn different_origin_ports_do_not_share_connections() {
         let key = |remote: &str| ConnectionKey::Outgoing {
-            local: crate::endpoint::test_support::named("alice"),
+            local: Some(crate::endpoint::test_support::named("alice")),
             remote: Arc::from(remote),
         };
         let entries = HashMap::from([

@@ -110,7 +110,7 @@ fn endpoint(root: &Path, directory: &str, name: &str) -> Endpoint {
         fs::read(ssl.join("ocsp.der")).unwrap(),
     )
     .unwrap();
-    Endpoint::new(Some(identity))
+    Endpoint::new(identity)
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 # Network 详细设计
 
-日期：2026-10-02。本文描述 dhttp 对当前 dquic 接口的适配，与[职责划分](network-quic-responsibilities.md)配套。
+日期：2026-10-03。本文描述 dhttp 对当前 dquic 接口的适配，与[职责划分](network-quic-responsibilities.md)配套。
 
 ## 1. 资源归属
 
@@ -43,7 +43,7 @@ pub struct DhttpNetwork {
 
 enum ConnectionKey {
     Incoming { local: Arc<str>, remote: Option<Arc<str>> },
-    Outgoing { local: Endpoint, remote: Arc<str> },
+    Outgoing { local: Option<Endpoint>, remote: Arc<str> },
 }
 ```
 
@@ -198,30 +198,32 @@ Dock 的接收任务结束时会清除自己的登记和 QUIC 别名，AddressBo
 
 ```rust
 pub struct Endpoint {
-    pub(crate) quic: Option<Arc<qconn::QuicEndpoint>>,
+    pub(crate) quic: Arc<qconn::QuicEndpoint>,
 }
 ```
 
-可选状态属于 dhttp。`Endpoint::new(Some(identity))` 把 `Arc<qbase::endpoint::Endpoint>` 传给 `QuicEndpoint::new`，装配现有 client/server transport parameters。名称读取使用 `quic.identity.name()`。
+`Endpoint::new(identity)` 把必填身份传给 `QuicEndpoint::new`，显式配置 h3 ALPN 和现有 client/server transport parameters。Endpoint 始终持有 `Arc<QuicEndpoint>`，不能构造无身份端点；name() 返回 &str，读取 `quic.identity.name()`。
 
 `Endpoint::load` 规范化 DHTTP 名称，并一次性读取证书链、私钥和 OCSP。克隆共享内存中的 QUIC endpoint；新连接和 listen 不重新读取身份文件。凭据加载或验证失败返回错误。
 
 ### 5.2 匿名出站
 
-`Endpoint::new(None)` 不创建 QuicEndpoint，`name()` 返回 None；`Request::new(http::Request<B>)` 使用相同的匿名 Endpoint。匿名端点不能 listen，也不能使用需要本端名称的裸 `~` URI。
+`Anonymous` 是无状态的匿名出站入口，提供与 Endpoint 对称的 get/head/post/put/patch/delete/options/request/from_request 方法。GET/HEAD/DELETE/OPTIONS 返回 Request<Empty>，POST/PUT/PATCH/request 返回 Request<WndBuf>，上传和响应接口与具名请求相同。
 
-连接池 factory 按是否存在具名 QUIC endpoint 分流：
+`Anonymous.from_request` 和 `Request::new(http::Request<B>)` 不绑定 Endpoint；Anonymous 与 Request 都不提供 listen，也不能使用需要本端名称的裸 `~` URI。Endpoint.from_request 绑定具名 Endpoint；可选状态只存在于出站 Request 和连接池键中，不存在于任何监听端点中。
+
+连接池 factory 选择 dquic 的两种入口，两者共用内部建连实现：
 
 ```text
-Some(quic) → quic.connect(server_name)
-None       → dhttp::endpoint::anonymous::connect(server_name)
+Some(endpoint) → endpoint.quic.connect(server_name)
+None           → qconn::connect_anonymously(server_name, client_parameters, alpn)
 ```
 
-匿名适配只负责客户端启动：构造 `qtls::ClientTlsConfig { local: None, ... }`，使用 h3 ALPN 和默认客户端参数，创建初始 CID、密钥、TLS context 和 Paths，再启动 `qconn::client_growing` 与 `qconn::recv::tick`。
+qconn 的具名 connect 提供本端 LocalAuthority，匿名函数传入 None；共有的内部流程统一创建初始 CID、密钥、TLS context 和 Paths，并启动 `client_growing` 与 `recv::tick`。dhttp 只装配 HTTP/3 所需配置，不实现匿名 QUIC 启动。
 
-解析源、地址流、路径发现和 QUIC/TLS 生命周期仍由现有下层客户端流程处理。TLS 验证目标服务器身份；匿名只表示不提交本端身份。握手名称去掉 authority 的端口，解析和连接池键保留端口。回调无法交付已经建立的连接时关闭该连接。
+解析源、地址流、路径发现和 QUIC/TLS 生命周期由下层客户端流程处理。TLS 验证目标服务器身份；匿名只表示不提交本端身份。握手名称去掉 authority 的端口，解析和连接池键保留端口。取消尚未交付的 connect future 会发出关闭信号，停止解析并按现有关闭流程清理路径及 CID；回调无法交付已经建立的连接时同样关闭该连接。
 
-两个匿名入口共享同一连接池语义，可复用同目标的匿名连接，并与具名请求隔离。qconn 的 `QuicEndpoint::identity` 和构造参数保持必填身份。
+匿名请求可复用同目标的匿名连接，并与具名请求隔离。dhttp Endpoint 和 qconn QuicEndpoint.identity 都保持必填；实际认证身份来自握手结果，错误不表示匿名。
 
 ## 6. H3 接入与服务生命周期
 

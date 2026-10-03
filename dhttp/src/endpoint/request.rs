@@ -18,19 +18,26 @@ pub type Empty = http_body_util::Empty<Bytes>;
 
 pub(super) const REQUEST_WINDOW_BYTES: usize = 64 * 1024;
 
-/// A request accepted by h3x, bound to its outbound endpoint.
+/// An outbound request, optionally bound to a named endpoint.
 /// Awaiting `Request<Empty>` returns the response. Awaiting `Request<WndBuf>`
 /// consumes the request and returns a [`RequestWriter`] and a response future.
+/// Only these two body types support awaiting an outbound request.
+///
+/// ```compile_fail,E0277
+/// async fn send(uri: dhttp::Uri) {
+///     let _ = dhttp::Anonymous.post(uri).body(dhttp::Body::default()).await;
+/// }
+/// ```
 #[must_use = "configure and await the request to send it"]
 pub struct Request<B = Empty> {
-    pub(super) endpoint: Endpoint,
+    pub(super) endpoint: Option<Endpoint>,
     pub(super) message: http::Request<B>,
 }
 
 impl<B: fmt::Debug> fmt::Debug for Request<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Request")
-            .field("endpoint", &self.endpoint.name())
+            .field("endpoint", &self.endpoint.as_ref().map(Endpoint::name))
             .field("message", &self.message)
             .finish()
     }
@@ -38,13 +45,31 @@ impl<B: fmt::Debug> fmt::Debug for Request<B> {
 
 impl<B> Request<B> {
     pub(super) fn bound(endpoint: Endpoint, message: http::Request<B>) -> Self {
-        Self { endpoint, message }
+        Self {
+            endpoint: Some(endpoint),
+            message,
+        }
     }
 
     /// Construct an anonymous outbound request with `Empty` or `WndBuf` as its body.
+    /// For fluent request methods, use [`crate::Anonymous`].
     /// The server's identity is still verified.
+    /// Anonymous requests have no listening capability:
+    ///
+    /// ```compile_fail,E0599
+    /// let request = dhttp::Request::new(
+    ///     http::Request::builder()
+    ///         .uri("https://example.com/")
+    ///         .body(dhttp::Empty::new())
+    ///         .unwrap(),
+    /// );
+    /// request.listen();
+    /// ```
     pub fn new(message: http::Request<B>) -> Self {
-        Endpoint::new(None).from_request(message)
+        Self {
+            endpoint: None,
+            message,
+        }
     }
 
     /// Set a header before sending the request.
@@ -78,7 +103,7 @@ impl<B> Request<B> {
         self
     }
 
-    /// Replace the body before sending. Use `Empty` or a `WndBuf`.
+    /// Replace the body before sending. Use `Empty` or `WndBuf`.
     /// A window body stays open until the returned writer is shut down.
     pub fn body<T>(self, body: T) -> Request<T> {
         Request {
@@ -96,8 +121,10 @@ impl<B> Request<B> {
     }
 
     async fn connect(&mut self) -> Result<h3x::H3Connection<crate::transport::QuicTransport>> {
-        let (uri, remote) =
-            crate::uri::resolve_request_uri(self.endpoint.name(), self.message.uri().clone())?;
+        let (uri, remote) = crate::uri::resolve_request_uri(
+            self.endpoint.as_ref().map(Endpoint::name),
+            self.message.uri().clone(),
+        )?;
         *self.message.uri_mut() = uri;
         let network = DhttpNetwork::global()?;
         network

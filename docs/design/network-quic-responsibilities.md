@@ -1,6 +1,6 @@
 # Network 与 QUIC 接入：职责划分和实施清单
 
-日期：2026-10-02。本文以当前相邻 dquic 工作区的接口为准；结构、生命周期及调用顺序见 [Network 详细设计](network-detailed-design.md)。
+日期：2026-10-03。本文以当前相邻 dquic 工作区的接口为准；结构、生命周期及调用顺序见 [Network 详细设计](network-detailed-design.md)。
 
 ## 1. 职责边界
 
@@ -16,8 +16,8 @@
 | STUN/NAT | 提供协议探测、映射和打洞能力 | 决定何时启用；负责停止本绑定的探测及发布任务后再撤回 |
 | 名称解析 | qresolve 提供全局 resolver；qconnection 消费地址流 | 保留应用注册的解析源，规范化请求名称和 authority |
 | 名称发布 | AddressBook 提供准确的地址集合与变化订阅 | 将 DHTTP 名称与地址关联；装配实际 DDNS/mDNS 发布服务 |
-| 具名端点 | QuicEndpoint 持有必填身份，提供 listen/connect | 加载身份材料，构造具名 endpoint，保存和复用内存凭据 |
-| 匿名请求 | qtls 支持客户端 local 为 None；qconn 提供客户端生命周期 | 独立启动匿名客户端，不构造无身份的 QuicEndpoint |
+| 具名端点 | QuicEndpoint 持有必填身份，提供 listen/connect | 加载身份材料，保存和复用内存凭据 |
+| 匿名请求 | connect_anonymously 独立发起连接，与具名 connect 共用内部流程，仍验证服务器身份 | 调用匿名入口、配置 h3 和传输参数、隔离连接池条目 |
 | TLS 与来源 | qtls 验证身份；qconn 处理逐名称 scopes、QUIC 路径与流 | 传入 scopes、核对实际 h3 ALPN、检查 HTTP authority |
 | HTTP/3 | h3x 负责协议、QPACK、Body、流和通用 Pool | 名称到 Service 映射、池键、双向请求驱动及可信 extensions |
 
@@ -97,13 +97,15 @@ watch 在系统事件之外，每秒检查一次自己的绑定，复用最近�
 
 系统接口只由 netwatcher 监测，定时器不枚举网卡。该机制允许最多一个正常检查间隔的地址滞后；运行时被阻塞时可能更久。所有写入与撤回由一个维护任务串行执行。
 
-## 5. 具名和匿名端点
+## 5. 具名端点和匿名请求
 
-`Endpoint::new(Some(identity))` 使用必填身份构造 QuicEndpoint。`Endpoint::load` 读取 DHTTP home 的证书、私钥和 OCSP，之后连接与监听直接使用已加载材料。具名连接保留 `connect(server_name)` 调用方式。
+`Endpoint::new(identity)` 必须提供身份，构造具名 QuicEndpoint。`Endpoint::load` 读取 DHTTP home 的证书、私钥和 OCSP，之后连接与监听直接使用已加载材料。dhttp 的 Endpoint 始终持有 `Arc<QuicEndpoint>`，不能构造无身份 Endpoint，name() 返回 &str。
 
-`Endpoint::new(None)` 在 dhttp 中表示匿名出站，没有下层 QuicEndpoint；`Request::new` 使用同一路径。匿名端点不能监听，也没有可供裸 `~` 展开的本端名称。
+`Anonymous.get(uri)` 等方法创建未绑定 Endpoint 的匿名出站请求，与 Endpoint 的请求方法对称；`Anonymous.from_request` 和 `Request::new(http_request)` 用于标准请求。不创建 QuicEndpoint，也没有可供裸 `~` 展开的本端名称。Anonymous 和 Request 不提供监听能力；Request 的可选 Endpoint 只表达出站身份。dquic 的 QuicEndpoint 保持必填身份，匿名函数只有出站建连能力。
 
-匿名连接由 `endpoint/anonymous.rs` 创建 `ClientTlsConfig { local: None, ... }`，装配 h3 ALPN、默认客户端参数和初始 QUIC 组件，然后调用现有 `client_growing` 与 `tick`。解析、TLS 验证、路径发现和连接生命周期继续由下层执行。匿名请求仍验证服务器身份。
+具名请求调用 QuicEndpoint::connect，匿名请求调用 qconn::connect_anonymously；两者共用 dquic 的内部建连流程。dhttp 显式配置 h3 ALPN 和 transport parameters。CID、初始密钥、TLS、路径、解析及后台任务全部由 dquic 创建和管理；dhttp 不再保留匿名建连模块。匿名请求仍验证服务器身份，握手失败不降级为匿名。
+
+取消尚未交付的 connect future 时，dquic 发出连接关闭信号；客户端生命周期停止解析，并按既有 Closing/Draining 流程清理路径和 CID。已经排队但尚未被调用方取得的连接同样受此取消保护；成功交付后由连接句柄管理生命周期。
 
 池键沿用名称值和远端端口。同目标的匿名请求可复用连接；具名请求与匿名请求隔离。匿名入站不会被当作某个具名远端复用。
 
@@ -132,7 +134,7 @@ watch 在系统事件之外，每秒检查一次自己的绑定，复用最近�
 ## 8. 代码入口
 
 - [Network](../../dhttp/src/network.rs)：初始化、绑定维护、地址生命周期、Pool 与请求驱动。
-- [Endpoint](../../dhttp/src/endpoint.rs)、[匿名客户端](../../dhttp/src/endpoint/anonymous.rs)：身份构造和匿名启动。
+- [Endpoint](../../dhttp/src/endpoint.rs)：HTTP/3 配置与具名端点构造；匿名启动由 qconnection 的 connect_anonymously 提供。
 - [QuicTransport](../../dhttp/src/transport.rs)：h3 校验、握手摘要和流适配。
 - [qconnection endpoint](../../../dquic/qconnection/src/endpoint.rs)：具名 listen/connect。
 - [Dock](../../../dquic/qprotocol/src/dock.rs)、[AddressBook](../../../dquic/qprotocol/src/addr_book.rs)、[QuicProtocol](../../../dquic/qprotocol/src/protocol/quic.rs)：各自登记和清理契约。

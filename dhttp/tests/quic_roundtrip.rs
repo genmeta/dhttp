@@ -89,7 +89,7 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
     );
 
     let server = Endpoint::load("SERVER").await.unwrap();
-    assert_eq!(server.name(), Some("server.dhttp.net"));
+    assert_eq!(server.name(), "server.dhttp.net");
     // Listening must use the credentials retained by Endpoint::load.
     fs::remove_dir_all(root.join("server")).unwrap();
     let listening = tokio::spawn({
@@ -198,10 +198,10 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
     wait_listener("client.dhttp.net").await;
     // Anonymous requests work without either local identity directory.
     for request in [
-        Endpoint::new(None)
+        dhttp::Anonymous
             .post("https://server~/anonymous".parse().unwrap())
             .write(b"anonymous"),
-        dhttp::Request::new(
+        dhttp::Anonymous.from_request(
             http::Request::builder()
                 .method("POST")
                 .uri("https://server~/anonymous")
@@ -316,7 +316,7 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
     wait_listener("wrong.dhttp.net").await;
     let wrong_peer = tokio::time::timeout(
         Duration::from_secs(3),
-        Endpoint::new(None).get("https://wrong~/anonymous".parse().unwrap()),
+        dhttp::Anonymous.get("https://wrong~/anonymous".parse().unwrap()),
     )
     .await
     .expect("an invalid server certificate must fail promptly");

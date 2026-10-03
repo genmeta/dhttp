@@ -223,19 +223,26 @@ dhttp 不让 h3x 查找身份、建立连接或管理全局池。`Request<B>::in
 
 `IntoFuture` 只表示请求可直接 await，不表示两种调用返回相同结果，也不表示调用方必须知道具体 future 类型。本文不再把它称为“匿名异步操作”。通过 Endpoint.load(servername) 创建的端点及其请求都使用该名称对应的身份；以下单列的不提供本端证书的客户端能力，是另一项底层能力，不是 Endpoint.get 的默认行为。
 
-本地 dquic `dev@bc039623` 的现有能力：
+当前相邻 dquic 工作区的能力（2026-10-03 更新）：
 
-| 路径 | 已有匿名能力 | 当前限制 |
+| 路径 | 身份约束 | 入口 |
 |---|---|---|
-| dquic 门面的 QuicClient | `QuicClientBuilder::without_cert()` 使用无客户端证书配置 | 属于旧 qconnection 路径，不是当前草案选用的 qconn 端点 |
-| 新 qtls | `ClientTlsConfig { local: None, .. }`，已有匿名握手测试 | 这是 TLS 配置，不是一个完整的匿名 Endpoint |
-| 新 qconn::QuicEndpoint | 连接结果允许可选本端 authority | identity 成员仍必填，connect 固定传 local: Some(...)，尚无匿名构造入口 |
+| qtls | ClientTlsConfig.local 可为 None；服务器身份必填 | 无客户端证书时仍验证服务器身份 |
+| qconnection::QuicEndpoint | identity 保持必填，支持具名出站及监听 | QuicEndpoint::new(identity)、connect、listen |
+| qconnection::connect_anonymously | 不创建无身份 QuicEndpoint，只发起连接 | 显式传入目标名称、客户端参数和 ALPN，与具名 connect 共用内部流程 |
 
-因此不另造 AnonymousIdentity 或 PreparedIdentity。后续匿名请求应复用底层无本端凭据能力，并继续验证服务端身份、使用全局网络及连接池；不要求初始化 home，也不能借匿名请求发起 servername 监听。连接池必须区分匿名与有身份的连接，不能互相复用。
+不新增 QuicClient、AnonymousIdentity 或 PreparedIdentity。dhttp 匿名请求调用底层匿名函数，
+继续使用全局网络及连接池，不要求初始化 home。连接池区分匿名与具名连接，不能互相复用。
+握手失败返回错误，无效证书不会降级为匿名；取消未交付的连接由 dquic 生命周期清理。
 
-当前没有发现独立的 AnonymousEndpoint 结构。若沿用 qconn，则需先把 qtls 已有的匿名配置接到 qconn 的端点/客户端入口；不在 dhttp 偷混旧 QuicClient 和新 qconn 两套连接类型。匿名构造 API 待这一步确认后再定；Endpoint.load(servername) 仍表示从 home 选择命名身份，空字符串不表示匿名。
+dhttp::Endpoint 同样始终有身份：new(identity) 接收必填凭据，name() 返回 &str，支持请求和 listen。
+Anonymous 提供与 Endpoint 对称的出站方法：get/head/post/put/patch/delete/options/request/from_request。
+Anonymous.get(uri) 等方法构造匿名 HTTP 请求，不绑定 Endpoint，也不提供 listen；标准请求可交给
+Anonymous.from_request(http_request) 或 Request::new(http_request)。它们共用上传、响应及底层建连流程。
 
-核对入口：[旧 QuicClient 无证书配置](/Users/lixiaofeng/code/genmeta/dquic/dquic/src/client.rs)、[qtls 客户端身份选项](/Users/lixiaofeng/code/genmeta/dquic/qtls/src/config.rs)、[qconn 端点](/Users/lixiaofeng/code/genmeta/dquic/qconn/src/endpoint.rs)。
+Endpoint.load(servername) 仍表示从 home 选择命名身份，空字符串不表示匿名。
+
+核对入口：[qtls 客户端身份选项](../../../dquic/qtls/src/config.rs)、[qconnection 端点及匿名函数](../../../dquic/qconnection/src/endpoint.rs)。
 
 ## 5. Tower Service 与应用边界
 

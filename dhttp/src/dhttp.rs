@@ -1,4 +1,4 @@
-//! HTTP/3 endpoints with optional client identity and a process-wide network.
+//! Named HTTP/3 endpoints, anonymous outbound requests and a process-wide network.
 mod bootstrap;
 mod transport;
 mod trust;
@@ -9,7 +9,7 @@ pub mod endpoint;
 pub mod error;
 pub mod network;
 
-pub use endpoint::{Empty, Endpoint, Request, RequestWriter};
+pub use endpoint::{Anonymous, Empty, Endpoint, Request, RequestWriter};
 pub use error::{Error, Result};
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 pub use network::DhttpNetwork;

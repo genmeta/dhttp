@@ -1,4 +1,4 @@
-//! Request and response handling with optional outbound identity.
+//! Named HTTP/3 endpoints and request handling.
 use crate::{Body, BoxError, Error, Result, network::DhttpNetwork};
 use bytes::Bytes;
 use h3x::{ReadRequest, WndBuf, WriteResponse};
@@ -9,28 +9,88 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use tower_service::Service;
 
-pub(crate) mod anonymous;
 mod request;
 pub use request::{Empty, Request, RequestWriter};
 
-/// An HTTP/3 endpoint with optional local QUIC credentials.
+/// Anonymous outbound HTTP/3 requests. The server's identity is still verified.
+/// Request methods match [`Endpoint`], without local credentials or listening.
+///
+/// ```no_run
+/// # async fn example(uri: dhttp::Uri) -> dhttp::Result<()> {
+/// let response = dhttp::Anonymous.get(uri).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ```compile_fail,E0599
+/// dhttp::Anonymous.listen(Default::default(), ());
+/// ```
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Anonymous;
+
+impl Anonymous {
+    pub fn get(&self, uri: http::Uri) -> Request<Empty> {
+        empty_request(None, http::Method::GET, uri)
+    }
+    pub fn head(&self, uri: http::Uri) -> Request<Empty> {
+        empty_request(None, http::Method::HEAD, uri)
+    }
+    pub fn post(&self, uri: http::Uri) -> Request<WndBuf> {
+        self.request(http::Method::POST, uri)
+    }
+    pub fn put(&self, uri: http::Uri) -> Request<WndBuf> {
+        self.request(http::Method::PUT, uri)
+    }
+    pub fn patch(&self, uri: http::Uri) -> Request<WndBuf> {
+        self.request(http::Method::PATCH, uri)
+    }
+    pub fn delete(&self, uri: http::Uri) -> Request<Empty> {
+        empty_request(None, http::Method::DELETE, uri)
+    }
+    pub fn options(&self, uri: http::Uri) -> Request<Empty> {
+        empty_request(None, http::Method::OPTIONS, uri)
+    }
+    /// Open a streaming request. Await it for a RequestWriter and a response future.
+    /// Call AsyncWriteExt::shutdown() on the returned writer to end the request body.
+    pub fn request(&self, method: http::Method, uri: http::Uri) -> Request<WndBuf> {
+        empty_request(None, method, uri).body(WndBuf::new(request::REQUEST_WINDOW_BYTES))
+    }
+    /// Use a standard request with `Empty` or `WndBuf` without local credentials.
+    pub fn from_request<B>(&self, request: http::Request<B>) -> Request<B> {
+        Request::new(request)
+    }
+}
+
+fn empty_request(
+    endpoint: Option<Endpoint>,
+    method: http::Method,
+    uri: http::Uri,
+) -> Request<Empty> {
+    let mut message = http::Request::new(Empty::new());
+    *message.method_mut() = method;
+    *message.uri_mut() = uri;
+    Request { endpoint, message }
+}
+
+/// A named HTTP/3 endpoint with local QUIC credentials for requests and listening.
+///
+/// ```compile_fail
+/// let endpoint = dhttp::Endpoint::new(None);
+/// ```
 #[derive(Clone)]
 pub struct Endpoint {
-    pub(crate) quic: Option<Arc<qconn::QuicEndpoint>>,
+    pub(crate) quic: Arc<qconn::QuicEndpoint>,
 }
 
 impl Endpoint {
-    /// Create an endpoint with optional local QUIC credentials.
-    /// `None` permits anonymous requests while still verifying the server's identity.
-    /// Listening requires `Some(identity)`.
-    pub fn new(identity: Option<Arc<qbase::endpoint::Endpoint>>) -> Self {
+    /// Create a named endpoint from prepared local QUIC credentials.
+    pub fn new(identity: Arc<qbase::endpoint::Endpoint>) -> Self {
+        let mut quic = qconn::QuicEndpoint::new(identity);
+        quic.alpn = vec![h3x::ALPN.to_vec()];
+        quic.client_parameters = qbase::param::handy::client_parameters();
+        quic.server_parameters = qbase::param::handy::server_parameters();
         Self {
-            quic: identity.map(|identity| {
-                let mut quic = qconn::QuicEndpoint::new(identity);
-                quic.client_parameters = qbase::param::handy::client_parameters();
-                quic.server_parameters = qbase::param::handy::server_parameters();
-                Arc::new(quic)
-            }),
+            quic: Arc::new(quic),
         }
     }
 
@@ -70,11 +130,11 @@ impl Endpoint {
         .map_err(|source| Error::Credentials {
             source: Arc::new(source),
         })?;
-        Ok(Self::new(Some(identity)))
+        Ok(Self::new(identity))
     }
-    /// The local identity's name, or `None` for an anonymous endpoint.
-    pub fn name(&self) -> Option<&str> {
-        self.quic.as_ref().map(|quic| quic.identity.name())
+    /// The local identity's name.
+    pub fn name(&self) -> &str {
+        self.quic.identity.name()
     }
     pub fn get(&self, uri: http::Uri) -> Request<Empty> {
         self.empty_request(http::Method::GET, uri)
@@ -105,10 +165,7 @@ impl Endpoint {
     }
 
     fn empty_request(&self, method: http::Method, uri: http::Uri) -> Request<Empty> {
-        let mut message = http::Request::new(Empty::new());
-        *message.method_mut() = method;
-        *message.uri_mut() = uri;
-        self.from_request(message)
+        empty_request(Some(self.clone()), method, uri)
     }
     /// Bind a standard request with `Empty` or `WndBuf` to this endpoint.
     pub fn from_request<B>(&self, request: http::Request<B>) -> Request<B> {
