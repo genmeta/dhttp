@@ -91,6 +91,18 @@ async fn builder_works_without_network_and_preserves_headers_when_replacing_body
         .get(uri)
         .header(http::header::ACCEPT, http::HeaderValue::from_static("one"))
         .append_header(http::header::ACCEPT, http::HeaderValue::from_static("two"))
+        .trailer(
+            http::HeaderName::from_static("x-tag"),
+            http::HeaderValue::from_static("replaced"),
+        )
+        .trailer(
+            http::HeaderName::from_static("x-tag"),
+            http::HeaderValue::from_static("one"),
+        )
+        .append_trailer(
+            http::HeaderName::from_static("x-tag"),
+            http::HeaderValue::from_static("two"),
+        )
         .body(window(Bytes::from_static(b"initial")))
         .body(window(Bytes::from_static(b"replacement")));
     let mut body = request.message.body().clone();
@@ -105,6 +117,135 @@ async fn builder_works_without_network_and_preserves_headers_when_replacing_body
         2
     );
     assert_eq!(parts.method, http::Method::GET);
+    let trailers = parts.extensions.get::<h3x::Trailers>().unwrap().headers();
+    assert_eq!(
+        trailers.get_all("x-tag").iter().collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+}
+
+#[tokio::test]
+async fn request_writer_sends_preset_and_updated_trailers_on_shutdown() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let qpack = server.qpack().clone();
+        let serving = tokio::spawn(async move {
+            let request = request_reader.read_request(qpack.clone()).await.unwrap();
+            let collected = request.into_body().collect().await.unwrap();
+            let trailers = collected.trailers().unwrap();
+            assert_eq!(
+                trailers.get_all("x-tag").iter().collect::<Vec<_>>(),
+                ["initial", "before-send", "after-send"]
+            );
+            assert_eq!(
+                trailers.get_all("x-checksum").iter().collect::<Vec<_>>(),
+                ["computed"]
+            );
+            assert!(trailers.get("x-checksum").unwrap().is_sensitive());
+            assert_eq!(collected.to_bytes(), "initial-chunk-one-chunk-two");
+            send_response(
+                http::Response::new(Empty::<Bytes>::new()),
+                http::Method::POST,
+                response_writer,
+                qpack,
+            )
+            .await
+            .unwrap();
+        });
+        let tag = http::HeaderName::from_static("x-tag");
+        let checksum = http::HeaderName::from_static("x-checksum");
+        let message = test_support::named("alice")
+            .post("https://example.com/".parse().unwrap())
+            .trailer(tag.clone(), http::HeaderValue::from_static("initial"))
+            .append_trailer(tag.clone(), http::HeaderValue::from_static("before-send"))
+            .trailer(
+                checksum.clone(),
+                http::HeaderValue::from_static("placeholder"),
+            )
+            .append_trailer(
+                checksum.clone(),
+                http::HeaderValue::from_static("also-replaced"),
+            )
+            .write(b"discarded")
+            .body(window(Bytes::from_static(b"initial-")))
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        upload.write_all(b"chunk-one-").await.unwrap();
+        upload
+            .append_trailer(tag.clone(), http::HeaderValue::from_static("after-send"))
+            .unwrap();
+        // Registering trailers must not prevent further DATA writes.
+        upload.write_all(b"chunk-two").await.unwrap();
+        let mut computed = http::HeaderValue::from_static("computed");
+        computed.set_sensitive(true);
+        upload.trailer(checksum.clone(), computed).unwrap();
+        upload.shutdown().await.unwrap();
+        upload.shutdown().await.unwrap();
+        assert_eq!(
+            upload
+                .trailer(checksum, http::HeaderValue::from_static("late"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            upload
+                .append_trailer(tag, http::HeaderValue::from_static("late"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            upload.write_all(b"late").await.unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(response.await.unwrap().status(), 200);
+        serving.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn empty_requests_send_preset_trailers_automatically() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let qpack = server.qpack().clone();
+        let serving = tokio::spawn(async move {
+            let request = request_reader.read_request(qpack.clone()).await.unwrap();
+            let collected = request.into_body().collect().await.unwrap();
+            assert_eq!(collected.trailers().unwrap()["x-tag"], "empty");
+            assert!(collected.to_bytes().is_empty());
+            send_response(
+                http::Response::new(Empty::<Bytes>::new()),
+                http::Method::GET,
+                response_writer,
+                qpack,
+            )
+            .await
+            .unwrap();
+        });
+        let message = Request::new(
+            http::Request::builder()
+                .uri("https://example.com/")
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+        .trailer(
+            http::HeaderName::from_static("x-tag"),
+            http::HeaderValue::from_static("empty"),
+        )
+        .message;
+        let response = send_empty_request(message, writer, reader, client.qpack().clone())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        serving.await.unwrap();
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -864,6 +1005,16 @@ async fn cancelling_shutdown_does_not_detach_the_owned_upload() {
                 .await
                 .is_err()
         );
+        for append in [false, true] {
+            let name = http::HeaderName::from_static("x-late");
+            let value = http::HeaderValue::from_static("rejected");
+            let result = if append {
+                upload.append_trailer(name, value)
+            } else {
+                upload.trailer(name, value)
+            };
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+        }
         drop(upload);
         let error = incoming.into_body().collect().await.unwrap_err();
         assert_eq!(

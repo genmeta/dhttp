@@ -43,6 +43,16 @@ writer.write_all(b"more").await?;
 writer.shutdown().await?;
 let response = response.await?;
 
+let tag = dhttp::HeaderName::from_static("x-tag");
+let (mut writer, response) = endpoint
+    .post(uri.clone())
+    .trailer(tag.clone(), dhttp::HeaderValue::from_static("initial"))
+    .await?;
+writer.write_all(b"content").await?;
+writer.append_trailer(tag, dhttp::HeaderValue::from_static("computed"))?;
+writer.shutdown().await?; // 自动发送剩余 DATA、trailers，再结束上传
+let response = response.await?;
+
 let body = dhttp::WndBuf::with_initial(64 * 1024, Bytes::from_static(b"content"));
 let (mut writer, response) = endpoint.post(uri).body(body).await?;
 writer.shutdown().await?;
@@ -50,6 +60,8 @@ let response = response.await?;
 ```
 
 `.body(window)` 设置请求使用的 WndBuf；`.write(data)` 用初始字节构造一个 WndBuf。后续可用 `write_all` 继续写入，调用 `AsyncWriteExt::shutdown()` 发送 EOF 并等待上传完成。空的 WndBuf 也需要 shutdown；显式 `.body(dhttp::Empty::new())` 则按空请求处理。`from_request` 和 `Request::new` 同样接受以 `Empty` 或 `WndBuf` 为 body 的标准请求。流式请求首次 await 不等待响应头，因此服务端可以等待完整请求后再响应。请求头和初始 body 在发送前配置；发送后的 RequestWriter 实现 AsyncWrite 和 dquic 的 CancelStream（由 dhttp 重导出）。在它上面调用 header、append_header、body 或再次 await 会在编译期报错。`cancel(error_code)` 按指定 HTTP/3 错误码 reset 请求方向；丢弃句柄会取消未完成的上传。响应 Body 的读取或丢弃不控制上传任务。
+
+Request 构造阶段支持 `.trailer(name, value)` 替换同名字段、`.append_trailer(name, value)` 追加同名值；替换 body 时保留这些字段。发送后，RequestWriter 提供同名方法并返回 `io::Result<()>`，可继续补充或修改 trailers；登记 trailers 后仍可写 DATA。首次轮询 `shutdown()` 时冻结字段，后台按剩余 DATA、trailers HEADERS、FIN 的顺序发送，并等待上传完成。开始 shutdown（包括等待期间）或取消后，再写 DATA 或修改 trailers 返回 `BrokenPipe`；重复成功的 shutdown 幂等。空请求预设的 trailers 在 await 时自动发送。
 
 服务请求携带实际 `qtls::HandshakeSummary`；对外不暴露 QUIC/H3 连接。
 
