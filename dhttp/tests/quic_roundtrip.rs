@@ -91,7 +91,12 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
     let server = Endpoint::load("SERVER").await.unwrap();
     assert_eq!(server.name(), "server.dhttp.net");
     // Listening must use the credentials retained by Endpoint::load.
+    let loaded_authority = server.local_authority().unwrap();
     fs::remove_dir_all(root.join("server")).unwrap();
+    assert_eq!(
+        server.local_authority().unwrap().certificates(),
+        loaded_authority.certificates()
+    );
     let listening = tokio::spawn({
         let server = server.clone();
         async move {
@@ -114,6 +119,8 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                         Ok::<_, dhttp::BoxError>(http::Response::new(Full::new(bytes)))
                     }),
                 )
+                .await
+                .unwrap()
                 .await
         }
     });
@@ -192,6 +199,8 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                         )))
                     }),
                 )
+                .await
+                .unwrap()
                 .await
         }
     });
@@ -282,6 +291,8 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                 }),
             )
             .await
+            .unwrap()
+            .await
     });
     wait_listener("server.dhttp.net").await;
     let resumed = tokio::time::timeout(
@@ -310,6 +321,8 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                     Ok::<_, dhttp::BoxError>(http::Response::new(Body::default()))
                 }),
             )
+            .await
+            .unwrap()
             .await
     });
     let _wrong = scopeguard::guard(wrong_listener, |task| task.abort());

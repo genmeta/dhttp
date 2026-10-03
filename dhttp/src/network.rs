@@ -110,7 +110,7 @@ impl DhttpNetwork {
         endpoint: &Endpoint,
         scopes: Scopes,
         service: BoxService,
-    ) -> Result<()> {
+    ) -> Result<crate::ListenFuture> {
         let quic = &endpoint.quic;
         let name: Arc<str> = Arc::from(quic.identity.name());
         {
@@ -156,12 +156,15 @@ impl DhttpNetwork {
             })?;
             listeners.insert(name.clone(), service);
         }
-        let _cleanup = scopeguard::guard(name.clone(), |name| {
+        let cleanup = scopeguard::guard(name.clone(), |name| {
             let mut listeners = self.listeners.lock().unwrap();
             listeners.remove(&name);
             qconn::ServerRegistry::global().remove(&name);
         });
-        std::future::pending().await
+        Ok(Box::pin(async move {
+            let _cleanup = cleanup;
+            std::future::pending::<()>().await;
+        }))
     }
 }
 
@@ -175,6 +178,10 @@ async fn serve_connection(network: &'static DhttpNetwork, key: ConnectionKey, h3
                 break;
             }
         };
+        tracing::debug!(
+            paths = ?h3.transport().connection.validated_paths(),
+            "HTTP/3 request validated QUIC paths"
+        );
         let service = name
             .as_ref()
             .and_then(|name| network.listeners.lock().unwrap().get(name).cloned());
@@ -388,6 +395,11 @@ async fn connect(key: ConnectionKey) -> Result<H3> {
             .await?
         }
     };
+    tracing::debug!(
+        local = ?local.as_ref().map(qtls::LocalAuthority::name),
+        remote = %remote.name(),
+        "outgoing QUIC handshake identities"
+    );
     let transport = QuicTransport::new(connection, local, Some(remote), h3x::Role::Client)?;
     let h3 = H3::new(transport, h3x::Settings::default())?;
     tokio::spawn(serve_connection(network, key, h3.clone()));

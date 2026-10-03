@@ -20,6 +20,7 @@ pub use qresolve as resolve;
 pub use qtls::{CertificateDer, HandshakeSummary, LocalAuthority, RemoteAuthority};
 
 pub use h3x::{Body, BoxError, WndBuf};
+pub type ListenFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 pub type EmptyBody = http_body_util::Empty<bytes::Bytes>;
 pub type RequestFuture<T = http::Response<Body>> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'static>>;

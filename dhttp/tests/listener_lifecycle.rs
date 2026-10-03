@@ -88,9 +88,30 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     DhttpNetwork::init().await.unwrap();
     let endpoints = network::loopback_endpoints();
     assert!(!endpoints.is_empty());
+    let unpolled = endpoint
+        .listen(Scope::Loopback.into(), EmptyApp)
+        .await
+        .unwrap();
+    assert!(
+        qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .is_some()
+    );
+    drop(unpolled);
+    assert!(
+        qconn::ServerRegistry::global()
+            .get(endpoint.name())
+            .is_none()
+    );
     let listening = tokio::spawn({
         let endpoint = endpoint.clone();
-        async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
+        async move {
+            endpoint
+                .listen(Scope::Loopback.into(), EmptyApp)
+                .await
+                .unwrap()
+                .await
+        }
     });
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -111,6 +132,8 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         async move {
             other
                 .listen(Scope::Internal | Scope::External, EmptyApp)
+                .await
+                .unwrap()
                 .await
         }
     });

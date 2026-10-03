@@ -136,6 +136,17 @@ impl Endpoint {
     pub fn name(&self) -> &str {
         self.quic.identity.name()
     }
+    /// Build a signing authority from the same immutable credentials used by QUIC.
+    pub fn local_authority(&self) -> Result<qtls::LocalAuthority> {
+        let identity = &self.quic.identity;
+        qtls::LocalAuthority::from_signing_key(
+            identity.name().into(),
+            identity.cert_chain().to_vec(),
+            identity.signing_key().clone(),
+            identity.ocsp().to_vec(),
+        )
+        .map_err(|error| std::io::Error::other(error).into())
+    }
     pub fn get(&self, uri: http::Uri) -> Request<Empty> {
         self.empty_request(http::Method::GET, uri)
     }
@@ -172,7 +183,8 @@ impl Endpoint {
         Request::bound(self.clone(), request)
     }
 
-    pub async fn listen<S, B>(&self, scopes: Scopes, service: S) -> Result<()>
+    /// Register the service, then return its lifetime. Dropping it unregisters the name.
+    pub async fn listen<S, B>(&self, scopes: Scopes, service: S) -> Result<crate::ListenFuture>
     where
         S: tower_service::Service<http::Request<Body>, Response = http::Response<B>>
             + Clone

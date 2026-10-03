@@ -80,7 +80,7 @@ let updates = addresses.subscribe_ddns(); // 名称发布服务直接订阅地�
 // 针对某个本地绑定，可使用 addresses.subscribe_mdns(bound)。
 ```
 
-`endpoint.listen(scopes, service)` 接受标准 Tower Service，`scopes` 原样交给 qconn，按名称限制来源范围。接入回调直接装配 H3 并启动请求驱动。`listen` future 结束时撤销名称和 Service，socket 和已有连接保留；重新监听同名服务后，旧连接上的新请求交付给新 Service。解析器与名称发布服务需配套：system DNS 默认解析到 443，而 Network 绑定动态端口，部署时需发布实际地址。
+`endpoint.listen(scopes, service).await` 接受标准 Tower Service，登记成功后返回 `ListenFuture`；调用方 spawn 或持有它以维持监听。`scopes` 原样交给 qconn，按名称限制来源范围。接入回调直接装配 H3 并启动请求驱动。丢弃 `ListenFuture`（包括未 poll 的 future）撤销名称和 Service，socket 和已有连接保留；重新监听同名服务后，旧连接上的新请求交付给新 Service。解析器与名称发布服务需配套：system DNS 默认解析到 443，而 Network 绑定动态端口，部署时需发布实际地址。
 
 h3x 内部保留有界收发缓冲，接收消息和 Service 响应使用标准 HTTP Body；dhttp 的空请求以 `http::Request<Empty>` 直接交给 h3x 的泛型 `WriteRequest<B>` 实现，流式请求走 `WriteRequest<WndBuf>`。泛型发送路径直接读取 body 帧，空请求无需装箱或转换为另一种 body。`WndBuf::with_initial` 让初始 Bytes 无拷贝进入窗口，可以大于窗口容量，后续写入会等待排队字节数降到容量以内。DATA、多值 trailers、EOF、错误、提前丢弃和 HEAD/204/304 语义由 h3x 处理。客户端直接返回 h3x 的响应 Body；流式上传任务由返回的 `RequestWriter` 独立持有。
 
@@ -103,6 +103,5 @@ cargo test -p dhttp --test dns_bootstrap -- --ignored
 ```sh
 DHTTP_TEST_OPENSSL=/opt/homebrew/bin/openssl cargo test -p dhttp --lib --tests -- --include-ignored
 ```
-
 
 旧 Node.js/Python 包装已移除；语言绑定和发布版本固定待 Rust 接口及真实联网验证完成后处理。

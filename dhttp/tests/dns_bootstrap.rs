@@ -181,6 +181,8 @@ async fn global_resolver_bootstraps_h3_lookup_and_keeps_origin_ports() {
                 }),
             )
             .await
+            .unwrap()
+            .await
     });
     let _origin = scopeguard::guard(origin_listener, |task| task.abort());
     let server_listener = tokio::spawn(async move {
@@ -193,6 +195,8 @@ async fn global_resolver_bootstraps_h3_lookup_and_keeps_origin_ports() {
                     ))))
                 }),
             )
+            .await
+            .unwrap()
             .await
     });
     let _server = scopeguard::guard(server_listener, |task| task.abort());
