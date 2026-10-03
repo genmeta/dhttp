@@ -1,9 +1,9 @@
 //! Transport-independent tests: all HTTP/3 traffic stays inside Tokio duplex streams.
-use super::request::send_request;
+use super::request::{send_empty_request, send_request as send_upload};
 use super::*;
 use h3x::{ReadResponse, WriteRequest};
 use http_body::Frame;
-use http_body_util::{Empty, Full};
+use http_body_util::{BodyExt, Empty, Full, StreamBody};
 use std::{sync::Mutex, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "../support/transport.rs"]
@@ -52,65 +52,59 @@ fn frames_body(data: &'static [u8]) -> Body {
     .boxed_unsync()
 }
 
-#[tokio::test]
-async fn inbound_body_transfers_bytes_without_copy_and_preserves_eof() {
-    let native = h3x::ArcWndBuf::new(BODY_READ_CHUNK_BYTES);
-    let data = Bytes::from_static(b"shared body bytes");
-    native.write_bytes(data.clone()).await.unwrap();
-    native.clone().shutdown().await.unwrap();
+fn window(initial: Bytes) -> WndBuf {
+    WndBuf::with_initial(super::request::REQUEST_WINDOW_BYTES, initial)
+}
 
-    let mut body = StreamBody::new(forward_inbound_body(
-        native.clone(),
-        h3x::Trailers::default(),
-    ))
-    .boxed_unsync();
-    let received = body.frame().await.unwrap().unwrap().into_data().unwrap();
-    assert_eq!(received, data);
-    assert_eq!(received.as_ptr(), data.as_ptr());
-    assert!(body.frame().await.is_none());
-    drop(body);
-    assert!(
-        native
-            .read_chunk(BODY_READ_CHUNK_BYTES)
-            .await
-            .unwrap()
-            .is_empty()
+#[tokio::test]
+async fn anonymous_endpoint_requests_require_an_explicit_remote_name() {
+    let endpoint = Endpoint::new(None);
+    assert_eq!(endpoint.name(), None);
+    assert!(endpoint.quic.is_none());
+    let standard = Request::new(
+        http::Request::builder()
+            .uri("https://~/profile")
+            .body(Empty::<Bytes>::new())
+            .unwrap(),
     );
-}
-
-#[tokio::test]
-async fn dropping_unpolled_inbound_body_stops_native_reader() {
-    let native = h3x::ArcWndBuf::new(BODY_READ_CHUNK_BYTES);
-    drop(forward_inbound_body(
-        native.clone(),
-        h3x::Trailers::default(),
+    assert!(
+        matches!(standard.await, Err(Error::InvalidRequest { message })
+        if message == "cannot expand bare dhttp shorthand without a base name")
+    );
+    let error = endpoint
+        .get("https://~/profile".parse().unwrap())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidRequest { message }
+            if message == "cannot expand bare dhttp shorthand without a base name"
     ));
-    assert!(native.read_chunk(BODY_READ_CHUNK_BYTES).await.is_err());
 }
 
 #[tokio::test]
-async fn builder_works_without_network_and_body_replacement_drops_previous_producer() {
-    let endpoint = Endpoint::load("ALICE").await.unwrap();
-    assert_eq!(endpoint.name(), "alice.dhttp.net");
+async fn builder_works_without_network_and_preserves_headers_when_replacing_body() {
+    let endpoint = test_support::named("ALICE");
+    assert_eq!(endpoint.name(), Some("alice.dhttp.net"));
     let uri = "https://bob~/upload".parse().unwrap();
-    let (dropped, observed) = tokio::sync::oneshot::channel();
     let request = endpoint
         .get(uri)
         .header(http::header::ACCEPT, http::HeaderValue::from_static("one"))
         .append_header(http::header::ACCEPT, http::HeaderValue::from_static("two"))
-        .body(pending_body(dropped))
-        .body(Empty::<Bytes>::new());
-    bounded(observed).await.unwrap();
+        .body(window(Bytes::from_static(b"initial")))
+        .body(window(Bytes::from_static(b"replacement")));
+    let mut body = request.message.body().clone();
+    let mut bytes = [0; 11];
+    body.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"replacement");
+    let request = request.body(Empty::<Bytes>::new());
+    let (parts, body) = request.message.into_parts();
+    assert!(http_body::Body::is_end_stream(&body));
     assert_eq!(
-        request
-            .message
-            .headers()
-            .get_all(http::header::ACCEPT)
-            .iter()
-            .count(),
+        parts.headers.get_all(http::header::ACCEPT).iter().count(),
         2
     );
-    assert_eq!(request.message.method(), http::Method::GET);
+    assert_eq!(parts.method, http::Method::GET);
 }
 
 #[tokio::test]
@@ -162,7 +156,7 @@ async fn standard_request_and_response_preserve_data_and_duplicate_trailers() {
             .uri("https://bob~:70000/upload")
             .body(frames_body(b"upload"))
             .unwrap();
-        let response = send_request(message, writer, reader, client.qpack().clone())
+        let (_upload, response) = send_request(message, writer, reader, client.qpack().clone())
             .await
             .unwrap();
         observed.await.unwrap();
@@ -192,6 +186,7 @@ async fn inbound_authority_must_match_handshake_before_service() {
         });
         for (uri, handshake) in [
             ("https://alice.dhttp.net/", handshake("bob.dhttp.net")),
+            ("https://bob/", handshake("bob.dhttp.net")),
             ("https://user@bob.dhttp.net/", handshake("bob.dhttp.net")),
             ("/", handshake("bob.dhttp.net")),
             ("https://bob.dhttp.net/", missing_local),
@@ -214,9 +209,9 @@ async fn inbound_authority_must_match_handshake_before_service() {
             ));
             let request = http::Request::builder()
                 .uri(uri)
-                .body(Full::new(Bytes::from(vec![42; BODY_WINDOW_BYTES * 8])))
+                .body(Full::new(Bytes::from(vec![42; 512 * 1024])))
                 .unwrap();
-            let response = send_request(request, writer, reader, client.qpack().clone())
+            let (_upload, response) = send_request(request, writer, reader, client.qpack().clone())
                 .await
                 .unwrap();
             assert_eq!(response.status(), http::StatusCode::MISDIRECTED_REQUEST);
@@ -232,105 +227,69 @@ async fn response_headers_arrive_before_upload_eof() {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let upload = StreamBody::new(async_stream::stream! {
-            released.await.unwrap();
-            yield Ok::<_, BoxError>(Frame::data(Bytes::from_static(b"after response headers")));
-        });
         let qpack = server.qpack().clone();
         let server_task = tokio::spawn(async move {
-            let mut request = request_reader.read_request(qpack.clone()).await.unwrap();
-            let response = http::Response::new(Full::new(Bytes::from_static(b"early")));
-            let reading = async {
-                let mut bytes = Vec::new();
-                request.read_to_end(&mut bytes).await.unwrap();
-                assert_eq!(bytes, b"after response headers");
-            };
-            let (result, ()) = tokio::join!(
-                send_response(response, http::Method::POST, response_writer, qpack),
-                reading
-            );
-            result.unwrap();
-        });
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("https://bob~/upload")
-            .body(upload)
-            .unwrap();
-        let response = send_request(request, writer, reader, client.qpack().clone())
+            let request = request_reader.read_request(qpack.clone()).await.unwrap();
+            send_response(
+                http::Response::new(Full::new(Bytes::from_static(b"early"))),
+                http::Method::POST,
+                response_writer,
+                qpack,
+            )
             .await
             .unwrap();
-        release.send(()).unwrap();
+            request.into_body().collect().await.unwrap().to_bytes()
+        });
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        let response = response.await.unwrap();
         assert_eq!(
             response.into_body().collect().await.unwrap().to_bytes(),
             "early"
         );
-        server_task.await.unwrap();
+        upload.write_all(b"after response headers").await.unwrap();
+        upload.shutdown().await.unwrap();
+        assert_eq!(server_task.await.unwrap(), "after response headers");
     })
     .await;
 }
 
 #[tokio::test]
-async fn dropping_outbound_request_future_stops_upload() {
+async fn dropping_request_writer_resets_unfinished_upload() {
     bounded(async {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (_response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let (started, observed_start) = tokio::sync::oneshot::channel();
-        let (dropped, observed_drop) = tokio::sync::oneshot::channel();
-        let guard = scopeguard::guard(dropped, |sender| {
-            let _ = sender.send(());
-        });
-        let body = StreamBody::new(async_stream::stream! {
-            let _guard = guard;
-            started.send(()).unwrap();
-            std::future::pending::<()>().await;
-            yield Ok::<_, BoxError>(Frame::data(Bytes::new()));
-        });
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("https://bob~/upload")
-            .body(body)
-            .unwrap();
-        let sending = tokio::spawn(send_request(
-            request,
-            writer,
-            reader,
-            client.qpack().clone(),
-        ));
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .message;
+        let (upload, response) = send_upload(message, writer, reader, client.qpack().clone());
         let incoming = request_reader
             .read_request(server.qpack().clone())
             .await
             .unwrap();
-        observed_start.await.unwrap();
-        sending.abort();
-        let _ = sending.await;
-        observed_drop.await.unwrap();
-        drop(incoming);
+        drop(upload);
+        let error = incoming.into_body().collect().await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<h3x::Error>().unwrap().code,
+            h3x::ErrorCode::RequestCancelled
+        );
+        drop(response);
     })
     .await;
 }
 
 #[tokio::test]
-async fn dropping_outbound_response_body_stops_upload() {
+async fn response_drop_keeps_upload_alive_until_the_writer_is_cancelled() {
     bounded(async {
         let (client, server) = support::connection_pair();
         let (writer, reader) = client.open_bi().await.unwrap();
         let (response_writer, request_reader) = server.accept_bi().await.unwrap();
-        let (started, observed_start) = tokio::sync::oneshot::channel();
-        let (dropped, observed_drop) = tokio::sync::oneshot::channel();
-        let guard = scopeguard::guard(dropped, |sender| {
-            let _ = sender.send(());
-        });
-        let body = StreamBody::new(async_stream::stream! {
-            let _guard = guard;
-            started.send(()).unwrap();
-            std::future::pending::<()>().await;
-            yield Ok::<_, BoxError>(Frame::data(Bytes::new()));
-        });
-        let (release, released) = tokio::sync::oneshot::channel();
+        let (seen, observed) = tokio::sync::oneshot::channel();
         let server_task = tokio::spawn(async move {
-            let incoming = request_reader
+            let mut incoming = request_reader
                 .read_request(server.qpack().clone())
                 .await
                 .unwrap();
@@ -342,22 +301,70 @@ async fn dropping_outbound_response_body_stops_upload() {
             )
             .await
             .unwrap();
-            released.await.unwrap();
-            drop(incoming);
+            let frame = incoming.body_mut().frame().await.unwrap().unwrap();
+            assert_eq!(frame.into_data().unwrap(), "after response drop");
+            seen.send(()).unwrap();
+            incoming.into_body().collect().await.unwrap_err()
         });
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("https://bob~/upload")
-            .body(body)
-            .unwrap();
-        let response = send_request(request, writer, reader, client.qpack().clone())
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        drop(response.await.unwrap());
+        upload.write_all(b"after response drop").await.unwrap();
+        observed.await.unwrap();
+        upload.cancel(h3x::ErrorCode::RequestRejected.as_u64());
+        let error = server_task.await.unwrap();
+        assert_eq!(
+            error.downcast_ref::<h3x::Error>().unwrap().code,
+            h3x::ErrorCode::RequestRejected
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_before_the_upload_task_is_polled_preserves_the_code() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (_response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .body(window(Bytes::from_static(b"initial")))
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        upload.cancel(h3x::ErrorCode::RequestRejected.as_u64());
+        drop(upload);
+        let error = request_reader
+            .read_request(server.qpack().clone())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, h3x::ErrorCode::RequestRejected);
+        drop(response);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn response_failure_closes_the_writers_window() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (mut response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        let incoming = request_reader
+            .read_request(server.qpack().clone())
             .await
             .unwrap();
-        observed_start.await.unwrap();
-        drop(response);
-        observed_drop.await.unwrap();
-        release.send(()).unwrap();
-        server_task.await.unwrap();
+        response_writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
+        assert!(response.await.is_err());
+        assert!(upload.write_all(b"after failure").await.is_err());
+        assert!(upload.shutdown().await.is_err());
+        drop(incoming);
     })
     .await;
 }
@@ -387,9 +394,9 @@ async fn dropped_request_body_does_not_cancel_early_service_response() {
         let request = http::Request::builder()
             .method("POST")
             .uri("https://bob~/upload")
-            .body(Full::new(Bytes::from(vec![42; BODY_WINDOW_BYTES * 8])))
+            .body(Full::new(Bytes::from(vec![42; 512 * 1024])))
             .unwrap();
-        let response = send_request(request, writer, reader, client.qpack().clone())
+        let (_upload, response) = send_request(request, writer, reader, client.qpack().clone())
             .await
             .unwrap();
         assert_eq!(
@@ -403,7 +410,7 @@ async fn dropped_request_body_does_not_cancel_early_service_response() {
 
 #[tokio::test]
 async fn outbound_request_preserves_target_error_categories() {
-    let endpoint = Endpoint::load("alice").await.unwrap();
+    let endpoint = test_support::named("alice");
 
     let error = endpoint
         .get("ftp://bob~/x".parse().unwrap())
@@ -445,13 +452,21 @@ async fn suppressed_response_body_drops_unpolled_producer_and_preserves_headers(
                 .await
                 .unwrap();
             observed.await.unwrap();
-            let mut response = reader
+            let response = reader
                 .read_response(method, client.qpack().clone())
                 .await
                 .unwrap();
             assert_eq!(response.status(), status);
             assert_eq!(response.headers()["x-result"], "preserved");
-            assert_eq!(response.read_to_end(&mut Vec::new()).await.unwrap(), 0);
+            assert!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty()
+            );
         }
     })
     .await;
@@ -480,13 +495,19 @@ async fn body_failure_is_an_error_instead_of_clean_eof() {
                 .read_response(http::Method::GET, client.qpack().clone())
                 .await
                 .unwrap();
-            let mut partial = [0; 7];
-            response.read_exact(&mut partial).await.unwrap();
-            assert_eq!(&partial, b"partial");
+            let partial = response
+                .body_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap();
+            assert_eq!(partial, "partial");
             fail.send(()).unwrap();
-            let error = response.read_to_end(&mut Vec::new()).await.unwrap_err();
+            let error = response.into_body().collect().await.unwrap_err();
             assert_eq!(
-                h3x::Error::from(error).code,
+                error.downcast_ref::<h3x::Error>().unwrap().code,
                 h3x::ErrorCode::RequestCancelled
             );
         };
@@ -550,13 +571,11 @@ async fn service_call_and_readiness_failures_return_errors() {
             let (client, server) = support::connection_pair();
             let (writer, reader) = client.open_bi().await.unwrap();
             let (response_writer, request_reader) = server.accept_bi().await.unwrap();
-            let mut body = h3x::ArcWndBuf::new(32);
-            body.shutdown().await.unwrap();
+            let body = Body::default();
             let request = http::Request::builder()
                 .uri("https://bob.dhttp.net/")
                 .body(body)
-                .unwrap()
-                .into();
+                .unwrap();
             writer
                 .write_request(request, client.qpack().clone())
                 .await
@@ -605,4 +624,281 @@ async fn malformed_request_fails_peer_promptly() {
         ));
     })
     .await;
+}
+
+async fn send_response<B, W>(
+    response: http::Response<B>,
+    method: http::Method,
+    writer: W,
+    qpack: h3x::ArcQpack,
+) -> Result<()>
+where
+    B: http_body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<BoxError>,
+    W: WriteResponse,
+{
+    writer
+        .write_response(
+            response.map(|body| body.map_err(Into::into).boxed_unsync()),
+            method,
+            qpack,
+        )
+        .await
+        .map_err(Error::from)
+}
+
+#[test]
+fn request_entry_points_have_the_expected_output_types() {
+    fn response_only(_: impl std::future::IntoFuture<Output = Result<http::Response<Body>>>) {}
+    fn with_writer(
+        _: impl std::future::IntoFuture<Output = Result<(RequestWriter, crate::RequestFuture)>>,
+    ) {
+    }
+    let endpoint = Endpoint::new(None);
+    let uri: http::Uri = "https://example.com/".parse().unwrap();
+    response_only(endpoint.get(uri.clone()));
+    response_only(endpoint.head(uri.clone()));
+    response_only(endpoint.delete(uri.clone()));
+    response_only(endpoint.options(uri.clone()));
+    response_only(endpoint.post(uri.clone()).body(Empty::<Bytes>::new()));
+    with_writer(endpoint.post(uri.clone()));
+    with_writer(endpoint.put(uri.clone()));
+    with_writer(endpoint.patch(uri.clone()));
+    with_writer(endpoint.request(http::Method::GET, uri.clone()));
+    with_writer(endpoint.post(uri.clone()).write(b"initial"));
+    with_writer(
+        endpoint
+            .post(uri)
+            .body(window(Bytes::from_static(b"initial"))),
+    );
+}
+
+#[tokio::test]
+async fn empty_requests_send_eof_before_waiting_for_response() {
+    bounded(async {
+        let endpoint = Endpoint::new(None);
+        let uri: http::Uri = "https://example.com/".parse().unwrap();
+        for request in [
+            endpoint.get(uri.clone()),
+            endpoint.head(uri.clone()),
+            endpoint.delete(uri.clone()),
+            endpoint.options(uri.clone()),
+            endpoint.post(uri.clone()).body(Empty::<Bytes>::new()),
+        ] {
+            let (client, server) = support::connection_pair();
+            let (writer, reader) = client.open_bi().await.unwrap();
+            let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+            let method = request.message.method().clone();
+            let serving = tokio::spawn(async move {
+                let incoming = request_reader
+                    .read_request(server.qpack().clone())
+                    .await
+                    .unwrap();
+                assert_eq!(incoming.method(), method);
+                assert!(
+                    incoming
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .is_empty()
+                );
+                send_response(
+                    http::Response::builder()
+                        .status(204)
+                        .body(Empty::<Bytes>::new())
+                        .unwrap(),
+                    method,
+                    response_writer,
+                    server.qpack().clone(),
+                )
+                .await
+                .unwrap();
+            });
+            let response =
+                send_empty_request(request.message, writer, reader, client.qpack().clone())
+                    .await
+                    .unwrap();
+            assert_eq!(response.status(), 204);
+            serving.await.unwrap();
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn empty_requests_accept_no_error_stop_but_propagate_upload_failures() {
+    struct StoppedUpload(h3x::ErrorCode);
+    impl WriteRequest<Empty<Bytes>> for StoppedUpload {
+        async fn write_request(
+            self,
+            _: http::Request<Empty<Bytes>>,
+            _: h3x::ArcQpack,
+        ) -> h3x::Result<()> {
+            Err(self.0.stream("peer stopped uploading"))
+        }
+    }
+    struct Response;
+    impl ReadResponse for Response {
+        async fn read_response(
+            self,
+            _: http::Method,
+            _: h3x::ArcQpack,
+        ) -> h3x::Result<http::Response<Body>> {
+            Ok(http::Response::new(Body::default()))
+        }
+    }
+    let (client, _server) = support::connection_pair();
+    for code in [h3x::ErrorCode::NoError, h3x::ErrorCode::RequestRejected] {
+        let request = http::Request::builder()
+            .uri("https://example.com/")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let result = send_empty_request(
+            request,
+            StoppedUpload(code),
+            Response,
+            client.qpack().clone(),
+        )
+        .await;
+        if code == h3x::ErrorCode::NoError {
+            assert_eq!(result.unwrap().status(), http::StatusCode::OK);
+        } else {
+            assert!(matches!(result, Err(Error::Http3 { source }) if source.code == code));
+        }
+    }
+}
+
+#[tokio::test]
+async fn window_requests_can_shutdown_before_the_server_returns_headers() {
+    bounded(async {
+        for mode in ["post", "write", "body", "from_request"] {
+            let (client, server) = support::connection_pair();
+            let (writer, reader) = client.open_bi().await.unwrap();
+            let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+            let qpack = server.qpack().clone();
+            let serving = tokio::spawn(async move {
+                let request = request_reader.read_request(qpack.clone()).await.unwrap();
+                // The server requires EOF before it can send response headers.
+                let body = request.into_body().collect().await.unwrap().to_bytes();
+                send_response(
+                    http::Response::builder()
+                        .status(201)
+                        .body(Empty::<Bytes>::new())
+                        .unwrap(),
+                    http::Method::POST,
+                    response_writer,
+                    qpack,
+                )
+                .await
+                .unwrap();
+                body
+            });
+            let endpoint = Endpoint::new(None);
+            let request = endpoint.post("https://example.com/".parse().unwrap());
+            let initial = Bytes::from(vec![0x5a; 96 * 1024]);
+            let request = match mode {
+                "post" => request,
+                "write" => request.write(&initial),
+                "body" => request.body(window(initial.clone())),
+                "from_request" => Request::new(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri("https://example.com/")
+                        .body(window(initial.clone()))
+                        .unwrap(),
+                ),
+                _ => unreachable!(),
+            };
+            let message = request.message;
+            let (mut upload, response) =
+                send_upload(message, writer, reader, client.qpack().clone());
+            upload.write_all(&vec![42; 128 * 1024]).await.unwrap();
+            upload.shutdown().await.unwrap();
+            upload.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
+            let response = response.await.unwrap();
+            assert_eq!(response.status(), 201);
+            let mut expected = if mode == "post" {
+                vec![]
+            } else {
+                initial.to_vec()
+            };
+            expected.extend_from_slice(&vec![42; 128 * 1024]);
+            assert_eq!(serving.await.unwrap(), expected);
+            assert_eq!(
+                upload.write_all(b"after EOF").await.unwrap_err().kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_shutdown_does_not_detach_the_owned_upload() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let message = Endpoint::new(None)
+            .post("https://example.com/".parse().unwrap())
+            .body(window(Bytes::from(vec![42; 2 * 1024 * 1024])))
+            .message;
+        let (mut upload, response) = send_upload(message, writer, reader, client.qpack().clone());
+        let incoming = request_reader
+            .read_request(server.qpack().clone())
+            .await
+            .unwrap();
+        send_response(
+            http::Response::new(Empty::<Bytes>::new()),
+            http::Method::POST,
+            response_writer,
+            server.qpack().clone(),
+        )
+        .await
+        .unwrap();
+        let response = response.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), upload.shutdown())
+                .await
+                .is_err()
+        );
+        drop(upload);
+        let error = incoming.into_body().collect().await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<h3x::Error>().unwrap().code,
+            h3x::ErrorCode::RequestCancelled
+        );
+        drop(response);
+    })
+    .await;
+}
+
+// Standard Body fixtures exercise the h3x service boundary; fluent requests use send_upload.
+type BodyUpload = scopeguard::ScopeGuard<
+    tokio::task::JoinHandle<h3x::Result<()>>,
+    fn(tokio::task::JoinHandle<h3x::Result<()>>),
+>;
+
+async fn send_request<B, W, R>(
+    message: http::Request<B>,
+    writer: W,
+    reader: R,
+    qpack: h3x::ArcQpack,
+) -> Result<(BodyUpload, http::Response<Body>)>
+where
+    B: http_body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<BoxError>,
+    W: WriteRequest + 'static,
+    R: ReadResponse + 'static,
+{
+    let method = message.method().clone();
+    let message = message.map(|body| body.map_err(Into::into).boxed_unsync());
+    let upload: BodyUpload = scopeguard::guard(
+        tokio::spawn(writer.write_request(message, qpack.clone())),
+        |upload| upload.abort(),
+    );
+    let response = reader.read_response(method, qpack).await?;
+    Ok((upload, response))
 }

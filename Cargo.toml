@@ -17,6 +17,7 @@ dirs = "6"
 snafu = "0.9"
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
+netwatcher = { version = "0.8", features = ["tokio"] }
 matchit = "0.9"
 rustls = { version = "0.23", default-features = false }
 tokio = { version = "1" }
@@ -40,11 +41,13 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
-# Definition-stage integration with the adjacent dquic dev workspace.
+# Integrate with the adjacent dquic workspace.
 qbase = { path = "../dquic/qbase" }
-qconn = { path = "../dquic/qconn" }
+qconn = { package = "qconnection", path = "../dquic/qconnection" }
 qtransport = { path = "../dquic/qtransport" }
 qprotocol = { path = "../dquic/qprotocol" }
+qresolve = { path = "../dquic/qresolve" }
+qudp = { path = "../dquic/qudp" }
 qrecovery = { path = "../dquic/qrecovery" }
 qtls = { path = "../dquic/qtls" }
 h3x = { path = "../h3x" }

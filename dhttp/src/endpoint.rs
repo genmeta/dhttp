@@ -1,80 +1,118 @@
-//! Identity-bound request and response handling.
-use crate::{Body, BoxError, EmptyBody, Error, Result, network::DhttpNetwork};
+//! Request and response handling with optional outbound identity.
+use crate::{Body, BoxError, Error, Result, network::DhttpNetwork};
 use bytes::Bytes;
-use h3x::{ReadRequest, WriteResponse};
-use http_body_util::{BodyExt, StreamBody};
+use h3x::{ReadRequest, WndBuf, WriteResponse};
+use http_body_util::BodyExt;
 use qconn::Scopes;
-use qrecovery::{recv::StopSending, send::CancelStream};
+use qrecovery::send::CancelStream;
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_service::Service;
 
-const BODY_WINDOW_BYTES: usize = 64 * 1024;
-// Match h3x's receive chunk so each Body frame can transfer its Bytes directly.
-const BODY_READ_CHUNK_BYTES: usize = 8 * 1024;
-mod body;
+pub(crate) mod anonymous;
 mod request;
-mod response;
-use body::forward_inbound_body;
-use response::send_response;
+pub use request::{Empty, Request, RequestWriter};
 
-// TODO: 这个替换成 dquic endpoint
+/// An HTTP/3 endpoint with optional local QUIC credentials.
 #[derive(Clone)]
 pub struct Endpoint {
-    name: Arc<str>,
-}
-
-#[must_use = "configure and await the request to send it"]
-pub struct Request<B> {
-    endpoint: Endpoint,
-    message: http::Request<B>,
+    pub(crate) quic: Option<Arc<qconn::QuicEndpoint>>,
 }
 
 impl Endpoint {
+    /// Create an endpoint with optional local QUIC credentials.
+    /// `None` permits anonymous requests while still verifying the server's identity.
+    /// Listening requires `Some(identity)`.
+    pub fn new(identity: Option<Arc<qbase::endpoint::Endpoint>>) -> Self {
+        Self {
+            quic: identity.map(|identity| {
+                let mut quic = qconn::QuicEndpoint::new(identity);
+                quic.client_parameters = qbase::param::handy::client_parameters();
+                quic.server_parameters = qbase::param::handy::server_parameters();
+                Arc::new(quic)
+            }),
+        }
+    }
+
+    /// Load the named identity's certificate chain, private key and OCSP staple.
+    /// Clones share the loaded QUIC endpoint; no network access is performed.
     pub async fn load(name: impl AsRef<str>) -> Result<Self> {
-        Ok(Self {
-            name: Arc::from(dhttp_home::normalize_name(name.as_ref()).ok_or_else(|| {
-                Error::InvalidName {
-                    name: name.as_ref().to_owned(),
-                }
-            })?),
-        })
+        let name = dhttp_home::normalize_name(name.as_ref()).ok_or_else(|| Error::InvalidName {
+            name: name.as_ref().to_owned(),
+        })?;
+        let home = dhttp_home::DhttpHome::load(dhttp_home::HomeScope::User).map_err(|error| {
+            Error::HomeUnavailable {
+                message: error.to_string(),
+            }
+        })?;
+        let profile = home
+            .identity_profile(&name)
+            .map_err(|_| Error::InvalidName { name })?;
+        let certificates = profile.load_certs().await.map_err(|source| Error::Home {
+            path: profile.cert_path(),
+            source: Arc::new(source),
+        })?;
+        let key = profile.load_key().await.map_err(|source| Error::Home {
+            path: profile.key_path(),
+            source: Arc::new(source),
+        })?;
+        let ocsp = profile.load_ocsp().await.map_err(|source| Error::Home {
+            path: profile.ocsp_path(),
+            source: Arc::new(source),
+        })?;
+        let identity = qbase::endpoint::Endpoint::new(
+            &qtls::default_provider(),
+            profile.name(),
+            certificates,
+            key,
+            ocsp,
+        )
+        .map_err(|source| Error::Credentials {
+            source: Arc::new(source),
+        })?;
+        Ok(Self::new(Some(identity)))
     }
-    pub fn name(&self) -> &str {
-        &self.name
+    /// The local identity's name, or `None` for an anonymous endpoint.
+    pub fn name(&self) -> Option<&str> {
+        self.quic.as_ref().map(|quic| quic.identity.name())
     }
-    pub fn get(&self, uri: http::Uri) -> Request<EmptyBody> {
-        self.request(http::Method::GET, uri)
+    pub fn get(&self, uri: http::Uri) -> Request<Empty> {
+        self.empty_request(http::Method::GET, uri)
     }
-    pub fn head(&self, uri: http::Uri) -> Request<EmptyBody> {
-        self.request(http::Method::HEAD, uri)
+    pub fn head(&self, uri: http::Uri) -> Request<Empty> {
+        self.empty_request(http::Method::HEAD, uri)
     }
-    pub fn post(&self, uri: http::Uri) -> Request<EmptyBody> {
+    pub fn post(&self, uri: http::Uri) -> Request<WndBuf> {
         self.request(http::Method::POST, uri)
     }
-    pub fn put(&self, uri: http::Uri) -> Request<EmptyBody> {
+    pub fn put(&self, uri: http::Uri) -> Request<WndBuf> {
         self.request(http::Method::PUT, uri)
     }
-    pub fn patch(&self, uri: http::Uri) -> Request<EmptyBody> {
+    pub fn patch(&self, uri: http::Uri) -> Request<WndBuf> {
         self.request(http::Method::PATCH, uri)
     }
-    pub fn delete(&self, uri: http::Uri) -> Request<EmptyBody> {
-        self.request(http::Method::DELETE, uri)
+    pub fn delete(&self, uri: http::Uri) -> Request<Empty> {
+        self.empty_request(http::Method::DELETE, uri)
     }
-    pub fn options(&self, uri: http::Uri) -> Request<EmptyBody> {
-        self.request(http::Method::OPTIONS, uri)
+    pub fn options(&self, uri: http::Uri) -> Request<Empty> {
+        self.empty_request(http::Method::OPTIONS, uri)
     }
-    pub fn request(&self, method: http::Method, uri: http::Uri) -> Request<EmptyBody> {
-        let mut message = http::Request::new(EmptyBody::new());
+    /// Open a streaming request. Await it for a RequestWriter and a response future.
+    /// Call AsyncWriteExt::shutdown() on the returned writer to end the request body.
+    pub fn request(&self, method: http::Method, uri: http::Uri) -> Request<WndBuf> {
+        self.empty_request(method, uri)
+            .body(WndBuf::new(request::REQUEST_WINDOW_BYTES))
+    }
+
+    fn empty_request(&self, method: http::Method, uri: http::Uri) -> Request<Empty> {
+        let mut message = http::Request::new(Empty::new());
         *message.method_mut() = method;
         *message.uri_mut() = uri;
         self.from_request(message)
     }
+    /// Bind a standard request with `Empty` or `WndBuf` to this endpoint.
     pub fn from_request<B>(&self, request: http::Request<B>) -> Request<B> {
-        Request {
-            endpoint: self.clone(),
-            message: request,
-        }
+        Request::bound(self.clone(), request)
     }
 
     pub async fn listen<S, B>(&self, scopes: Scopes, service: S) -> Result<()>
@@ -93,7 +131,7 @@ impl Endpoint {
             .map_err(Into::into)
             .map_response(|response| response.map(|body| body.map_err(Into::into).boxed_unsync()))
             .boxed_clone();
-        network.listen(self.name.clone(), scopes, service).await
+        network.listen(self, scopes, service).await
     }
 }
 
@@ -112,60 +150,48 @@ where
     let writer = scopeguard::guard(writer, |mut writer| {
         writer.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
     });
-    let incoming = reader.read_request(qpack.clone()).await?;
-    let (mut parts, mut inbound) = incoming.into_parts();
-    let method = parts.method.clone();
+    let mut request = reader.read_request(qpack.clone()).await?;
+    let method = request.method().clone();
     let uri = handshake.local.as_ref().and_then(|local| {
-        let uri = crate::uri::expand_uri_with_base(Some(local.name()), parts.uri.clone()).ok()?;
+        let uri =
+            crate::uri::expand_uri_with_base(Some(local.name()), request.uri().clone()).ok()?;
         let authority = uri.authority()?;
         (!authority.as_str().contains('@')
-            && dhttp_home::normalize_name(authority.host()).as_deref() == Some(local.name()))
+            && authority
+                .host()
+                .strip_suffix('.')
+                .unwrap_or(authority.host())
+                .eq_ignore_ascii_case(local.name()))
         .then_some(uri)
     });
     let Some(uri) = uri else {
-        inbound.stop(h3x::ErrorCode::NoError.as_u64());
-        let mut response = http::Response::new(
-            EmptyBody::new()
-                .map_err(|never| match never {})
-                .boxed_unsync(),
-        );
+        drop(request);
+        let mut response = http::Response::new(Body::default());
         *response.status_mut() = http::StatusCode::MISDIRECTED_REQUEST;
-        return send_response(
-            response,
-            method,
-            scopeguard::ScopeGuard::into_inner(writer),
-            qpack,
-        )
-        .await;
+        return scopeguard::ScopeGuard::into_inner(writer)
+            .write_response(response, method, qpack)
+            .await
+            .map_err(Error::from);
     };
-    parts.uri = uri;
-    let trailers = parts
-        .extensions
-        .remove::<h3x::Trailers>()
-        .unwrap_or_default();
-    parts.extensions.insert((*handshake).clone());
-    let body = StreamBody::new(forward_inbound_body(inbound, trailers))
-        .map_err(|error: Error| Box::new(error) as BoxError)
-        .boxed_unsync();
-    let request: http::Request<Body> = http::Request::from_parts(parts, body);
+    *request.uri_mut() = uri;
+    request.extensions_mut().insert((*handshake).clone());
     let mut app = app;
     futures::future::poll_fn(|cx| app.poll_ready(cx)).await?;
-    let response: std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = std::result::Result<http::Response<Body>, BoxError>>
-                + Send,
-        >,
-    > = app.call(request);
-    let response = response.await?;
-    send_response(
-        response,
-        method,
-        scopeguard::ScopeGuard::into_inner(writer),
-        qpack,
-    )
-    .await
+    let response = app.call(request).await?;
+    match scopeguard::ScopeGuard::into_inner(writer)
+        .write_response(response, method, qpack)
+        .await
+    {
+        // A peer declining the remaining response does not fail the service call.
+        Err(h3x::Error::Stream(detail)) if detail.code == h3x::ErrorCode::NoError => Ok(()),
+        result => result.map_err(Error::from),
+    }
 }
 
 #[cfg(test)]
 #[path = "../tests/unit/endpoint.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/support/endpoint.rs"]
+pub(crate) mod test_support;

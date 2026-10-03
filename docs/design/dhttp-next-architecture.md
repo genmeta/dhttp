@@ -125,7 +125,7 @@ Pishoo 只能依赖 dhttp，不能用自己的 `[patch]` 修复这条底层依�
 这些 workspace crate 有独立价值，但当前核心 `dhttp` 对它们是硬依赖。下一版中：
 
 - 不保留独立的 `dhttp-identity` crate；当前使用的 DHTTP 名称和证书规则归 dhttp-home，QUIC/TLS 身份材料由 dquic 提供；
-- home 的本地凭据加载并入 `dhttp::home`，作为可选 feature，不再单独发布 crate；
+- home 的目录管理和本地凭据读取保留在独立 `dhttp-home` crate；核心 `network::quic` 调用它装配 QUIC 端点；
 - access/log 作为可选 middleware 和工具 crate；
 - 核心 DhttpNetwork 不读取 access 数据库，也不决定 Pishoo 策略。
 
@@ -248,7 +248,6 @@ dhttp
   server        入站请求与响应适配、监听生命周期
   router        方法/路径路由与 handler 组合
   identity      DHTTP 名称、证书校验、身份准备与更新
-  home          可选本地凭据加载
   discovery     名称解析、DNS 发布与 bootstrap
   network       可共享的 DhttpNetwork 和网络配置
   connection    私有连接池与连接生命周期

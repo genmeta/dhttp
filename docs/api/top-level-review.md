@@ -38,8 +38,7 @@ pub use qconn::ArcConnection;
 pub use qtls::{LocalAuthority, RemoteAuthority, HandshakeSummary};
 pub use http::{Method, Uri, StatusCode, HeaderMap, HeaderName, HeaderValue};
 
-// 只保留必要的本地加载与 DHTTP 规则，不重导出旧 identity 模型。
-pub mod home;
+// 本地目录与凭据读取由独立的 dhttp-home 提供。
 #[cfg(feature = "access")]
 pub use dhttp_access as access;
 #[cfg(feature = "log")]
@@ -89,7 +88,7 @@ impl Endpoint {
 
 Endpoint 只提供 `load(servername)` 作为命名入口，实例只保存自己的名称，不经过旧 Identity、DhttpName 或 authority traits 的转换链，也不保留 gmutils 兼容构造接口。池命中时复用已有 h3x 连接；未命中时 Network 用名称调用轻量 home 凭据读取，构造 qconn::QuicEndpoint 并建连。监听登记时同样由 Network 准备底层身份及服务器参数。仅凭远端 URL 不足以建连，池工厂还必须取得本端名称。
 
-独立 `dhttp-home` 负责名称规范化、`DHTTP_HOME/<身份名>` 身份目录扫描和定位，并统一定义 `ssl/`、`db/`、`apps/`、`public/`、`logs/` 与 `config.db` 的路径。它读取身份凭据；核心 `dhttp::home` 使用这些接口装配底层端点。Pishoo 从统一路径读取自己的配置和应用，daccess 从统一路径管理权限库；各组件负责自己文件的内容和生命周期。`load` 保持简单形状；get/post 等同步返回可配置、可 await 的请求。
+独立 `dhttp-home` 负责名称规范化、`DHTTP_HOME/<身份名>` 身份目录扫描和定位，并统一定义 `ssl/`、`db/`、`apps/`、`public/`、`logs/` 与 `config.db` 的路径。它读取身份凭据；核心 `network::quic` 使用这些接口装配底层端点。Pishoo 从统一路径读取自己的配置和应用，daccess 从统一路径管理权限库；各组件负责自己文件的内容和生命周期。`load` 保持简单形状；get/post 等同步返回可配置、可 await 的请求。
 
 listen 登记该 Endpoint 的应用和 scopes。Network 汇总活动服务的 scopes，按实际接收 socket 的范围检查入口，qconn 再按该 Endpoint 的 scopes 检查来源；两层检查均通过才交付连接和请求。不因读取凭据自动监听，Endpoint 对象本身不保存 scopes。
 
@@ -342,15 +341,13 @@ Pishoo 文档中的组件执行、OpenAPI 和身份沙盒方案属于应用层�
 | QUIC endpoint 使用的本地材料 | qbase::endpoint::Endpoint（当前 qconn 的既有输入） |
 | 握手中的本端/对端身份 | qtls::LocalAuthority / RemoteAuthority |
 | DHTTP 证书字段解析与校验 | 当前由 dhttp-home::certificate 提供，dhttp 不再包装这些规则 |
-| 定位身份目录、读取默认凭据文件和身份级通信日志路径 | dhttp-home；dhttp::home 使用它装配端点 |
+| 定位身份目录、读取默认凭据文件和身份级通信日志路径 | dhttp-home；network::quic 使用它装配端点 |
 
-home 与 Endpoint 之间只需要一个内部读取边界：
+`network::quic` 直接调用 `dhttp-home` 的目录和凭据读取接口，在内部完成端点装配：
 
 ```rust
 // 内部示意，不增加调用方需要理解的身份包装或构造步骤。
-pub(crate) async fn load_endpoint(
-    servername: &str,
-) -> Result<Arc<qbase::endpoint::Endpoint>>;
+async fn quic_endpoint(name: &str) -> Result<qconn::QuicEndpoint>;
 ```
 
 本轮不定义 HomeConfig、HomeSettings、身份注册表、全局初始化、重扫快照、热替换、默认身份管理或保存事务等新 API，也不要求保留它们的旧签名。已有可用的文件读写代码可以按实现需要复用；具体如何组织不是这份顶层接口稿的前置条件。

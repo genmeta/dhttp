@@ -1,30 +1,28 @@
-//! Identity-bound HTTP/3 endpoints and a process-wide transport network.
-#[cfg(not(feature = "tcp-mock"))]
+//! HTTP/3 endpoints with optional client identity and a process-wide network.
 mod bootstrap;
 mod transport;
-#[cfg(not(feature = "tcp-mock"))]
 mod trust;
 mod uri;
 
 pub mod client;
 pub mod endpoint;
 pub mod error;
-pub mod home;
 pub mod network;
 
-pub use endpoint::{Endpoint, Request};
+pub use endpoint::{Empty, Endpoint, Request, RequestWriter};
 pub use error::{Error, Result};
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 pub use network::DhttpNetwork;
 pub use qconn::{Scope, Scopes};
+pub use qprotocol::AddressBook;
+pub use qrecovery::send::CancelStream;
+pub use qresolve as resolve;
 pub use qtls::{CertificateDer, HandshakeSummary, LocalAuthority, RemoteAuthority};
 
-pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub use h3x::{Body, BoxError, WndBuf};
 pub type EmptyBody = http_body_util::Empty<bytes::Bytes>;
-pub type Body = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, BoxError>;
-pub type RequestFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<http::Response<Body>>> + Send + 'static>,
->;
+pub type RequestFuture<T = http::Response<Body>> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'static>>;
 
 #[cfg(feature = "access")]
 pub use dhttp_access as access;

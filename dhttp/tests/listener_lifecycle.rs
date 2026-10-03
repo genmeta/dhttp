@@ -1,3 +1,6 @@
+#[path = "support/network.rs"]
+mod network;
+
 use std::{
     convert::Infallible,
     future::{Ready, ready},
@@ -72,9 +75,23 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     // This test binary has one test and sets the home before starting network tasks.
     unsafe { std::env::set_var("DHTTP_HOME", &root) };
 
+    let endpoint = Endpoint::load("TEST").await.unwrap();
+    assert_eq!(endpoint.name(), Some("test.dhttp.net"));
+    assert!(matches!(
+        Endpoint::load("").await,
+        Err(Error::InvalidName { .. })
+    ));
+    assert!(matches!(
+        Endpoint::load("missing").await,
+        Err(Error::Home { .. })
+    ));
     DhttpNetwork::init().await.unwrap();
-    assert!(qprotocol::Dock::global().is_empty());
-    let endpoint = Endpoint::load("test").await.unwrap();
+    assert!(matches!(
+        Endpoint::new(None).listen(Scope::Loopback.into(), EmptyApp).await,
+        Err(Error::InvalidRequest { message }) if message == "listening requires a local identity"
+    ));
+    let endpoints = network::loopback_endpoints();
+    assert!(!endpoints.is_empty());
     let listening = tokio::spawn({
         let endpoint = endpoint.clone();
         async move { endpoint.listen(Scope::Loopback.into(), EmptyApp).await }
@@ -82,7 +99,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if qconn::ServerRegistry::global()
-                .get(endpoint.name())
+                .get(endpoint.name().unwrap())
                 .is_some()
             {
                 break;
@@ -92,16 +109,6 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     })
     .await
     .unwrap();
-    // Device binding needs host socket permission, which some test sandboxes deny.
-    if std::env::var_os("DHTTP_TEST_SOCKET_BIND").is_some() {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while qprotocol::Dock::global().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("server scope should create a network binding");
-    }
     let other = Endpoint::load("other").await.unwrap();
     let other_listening = tokio::spawn({
         let other = other.clone();
@@ -113,7 +120,10 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     });
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if qconn::ServerRegistry::global().get(other.name()).is_some() {
+            if qconn::ServerRegistry::global()
+                .get(other.name().unwrap())
+                .is_some()
+            {
                 break;
             }
             tokio::task::yield_now().await;
@@ -122,9 +132,11 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     .await
     .unwrap();
     let first = qconn::ServerRegistry::global()
-        .get(endpoint.name())
+        .get(endpoint.name().unwrap())
         .unwrap();
-    let second = qconn::ServerRegistry::global().get(other.name()).unwrap();
+    let second = qconn::ServerRegistry::global()
+        .get(other.name().unwrap())
+        .unwrap();
     (first.accept_cb)(Err(qbase::error::QuicError::with_default_fty(
         qbase::error::ErrorKind::Internal,
         "test rejected handshake",
@@ -138,7 +150,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     assert!(std::sync::Arc::ptr_eq(
         &first,
         &qconn::ServerRegistry::global()
-            .get(endpoint.name())
+            .get(endpoint.name().unwrap())
             .unwrap()
     ));
     assert!(first.scopes.contains(Scope::Loopback));
@@ -162,7 +174,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if qconn::ServerRegistry::global()
-                .get(endpoint.name())
+                .get(endpoint.name().unwrap())
                 .is_none()
             {
                 break;
@@ -175,12 +187,20 @@ async fn listener_registers_service_and_releases_it_on_exit() {
     other_listening.abort();
     let _ = other_listening.await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while qconn::ServerRegistry::global().get(other.name()).is_some() {
+        while qconn::ServerRegistry::global()
+            .get(other.name().unwrap())
+            .is_some()
+        {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    assert!(qprotocol::Dock::global().is_empty());
+    assert_eq!(
+        network::loopback_endpoints(),
+        endpoints,
+        "listener cleanup must preserve sockets used by outgoing connections"
+    );
+    assert!(!qprotocol::Dock::global().is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }

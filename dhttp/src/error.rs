@@ -20,7 +20,6 @@ pub enum Error {
         name: String,
     },
     NetworkNotInitialized,
-    AlreadyInitialized,
     HomeUnavailable {
         message: String,
     },
@@ -53,7 +52,6 @@ impl fmt::Display for Error {
             Self::AlreadyListening => f.write_str("endpoint is already listening"),
             Self::NameInUse { name } => write!(f, "name is already registered: {name}"),
             Self::NetworkNotInitialized => f.write_str("network is not initialized"),
-            Self::AlreadyInitialized => f.write_str("network is already initialized"),
             Self::HomeUnavailable { message } => write!(f, "DHTTP home unavailable: {message}"),
             Self::Home { path, source } => write!(f, "{}: {source}", path.display()),
             Self::InvalidUri { source } => write!(f, "invalid URI: {source}"),

@@ -1,108 +1,253 @@
-use super::{
-    BODY_WINDOW_BYTES, Request,
-    body::{forward_inbound_body, forward_outbound_body},
-};
-use crate::{Body, BoxError, Error, RequestFuture, Result, network::DhttpNetwork};
+use super::Endpoint;
+use crate::{Body, RequestFuture, Result, network::DhttpNetwork};
 use bytes::Bytes;
-use futures::StreamExt;
-use h3x::{ReadResponse, WriteRequest};
-use http_body_util::{BodyExt, StreamBody};
-use std::{future::IntoFuture, sync::Arc};
+use h3x::{ReadResponse, WndBuf, WriteRequest};
+use qrecovery::send::CancelStream;
+use std::{
+    fmt,
+    future::{Future, IntoFuture},
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
+use tokio::{io::AsyncWrite, task::JoinHandle};
+
+/// An empty request body.
+pub type Empty = http_body_util::Empty<Bytes>;
+
+pub(super) const REQUEST_WINDOW_BYTES: usize = 64 * 1024;
+
+/// A request accepted by h3x, bound to its outbound endpoint.
+/// Awaiting `Request<Empty>` returns the response. Awaiting `Request<WndBuf>`
+/// consumes the request and returns a [`RequestWriter`] and a response future.
+#[must_use = "configure and await the request to send it"]
+pub struct Request<B = Empty> {
+    pub(super) endpoint: Endpoint,
+    pub(super) message: http::Request<B>,
+}
+
+impl<B: fmt::Debug> fmt::Debug for Request<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Request")
+            .field("endpoint", &self.endpoint.name())
+            .field("message", &self.message)
+            .finish()
+    }
+}
 
 impl<B> Request<B> {
+    pub(super) fn bound(endpoint: Endpoint, message: http::Request<B>) -> Self {
+        Self { endpoint, message }
+    }
+
+    /// Construct an anonymous outbound request with `Empty` or `WndBuf` as its body.
+    /// The server's identity is still verified.
+    pub fn new(message: http::Request<B>) -> Self {
+        Endpoint::new(None).from_request(message)
+    }
+
+    /// Set a header before sending the request.
     pub fn header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.message.headers_mut().insert(name, value);
         self
     }
 
+    /// Append a header before sending the request.
     pub fn append_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.message.headers_mut().append(name, value);
         self
     }
 
+    /// Replace the body before sending. Use `Empty` or a `WndBuf`.
+    /// A window body stays open until the returned writer is shut down.
     pub fn body<T>(self, body: T) -> Request<T> {
-        let (parts, _) = self.message.into_parts();
         Request {
             endpoint: self.endpoint,
-            message: http::Request::from_parts(parts, body),
+            message: self.message.map(|_| body),
         }
+    }
+
+    /// Set initial bytes before sending, leaving input open for further writes.
+    pub fn write(self, data: impl AsRef<[u8]>) -> Request<WndBuf> {
+        self.body(WndBuf::with_initial(
+            REQUEST_WINDOW_BYTES,
+            Bytes::copy_from_slice(data.as_ref()),
+        ))
+    }
+
+    async fn connect(&mut self) -> Result<h3x::H3Connection<crate::transport::QuicTransport>> {
+        let (uri, remote) =
+            crate::uri::resolve_request_uri(self.endpoint.name(), self.message.uri().clone())?;
+        *self.message.uri_mut() = uri;
+        let network = DhttpNetwork::global()?;
+        network
+            .get_connection(self.endpoint.clone(), Arc::from(remote))
+            .await
     }
 }
 
-impl<B> IntoFuture for Request<B>
-where
-    B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: Into<BoxError>,
-{
+impl IntoFuture for Request<Empty> {
     type Output = Result<http::Response<Body>>;
     type IntoFuture = RequestFuture;
-    fn into_future(self) -> Self::IntoFuture {
+
+    fn into_future(mut self) -> Self::IntoFuture {
         Box::pin(async move {
-            let mut message = self.message;
-            let (uri, remote) =
-                crate::uri::resolve_request_uri(self.endpoint.name(), message.uri().clone())?;
-            *message.uri_mut() = uri;
-            let network = DhttpNetwork::global()?;
-            let h3 = network
-                .get_connection(self.endpoint.name.clone(), Arc::from(remote))
-                .await?;
+            let h3 = self.connect().await?;
             let (writer, reader) = h3.open_bi().await?;
-            send_request(message, writer, reader, h3.qpack().clone()).await
+            let mut response =
+                send_empty_request(self.message, writer, reader, h3.qpack().clone()).await?;
+            if let Some(peer) = h3.transport().handshake.remote.clone() {
+                response.extensions_mut().insert(peer);
+            }
+            Ok(response)
         })
     }
 }
 
-pub(super) async fn send_request<B, W, R>(
-    message: http::Request<B>,
+impl IntoFuture for Request<WndBuf> {
+    type Output = Result<(RequestWriter, RequestFuture)>;
+    type IntoFuture = RequestFuture<(RequestWriter, RequestFuture)>;
+
+    fn into_future(mut self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let h3 = self.connect().await?;
+            let peer = h3.transport().handshake.remote.clone();
+            let (writer, reader) = h3.open_bi().await?;
+            let (request, response) =
+                send_request(self.message, writer, reader, h3.qpack().clone());
+            let response: RequestFuture = Box::pin(async move {
+                let mut response = response.await?;
+                if let Some(peer) = peer {
+                    response.extensions_mut().insert(peer);
+                }
+                Ok(response)
+            });
+            Ok((request, response))
+        })
+    }
+}
+
+pub(super) fn send_empty_request<W, R>(
+    message: http::Request<Empty>,
     writer: W,
     reader: R,
     qpack: h3x::ArcQpack,
-) -> Result<http::Response<Body>>
+) -> impl Future<Output = Result<http::Response<Body>>> + Send
 where
-    B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: Into<BoxError>,
-    W: WriteRequest + 'static,
-    R: ReadResponse,
+    W: WriteRequest<Empty> + 'static,
+    R: ReadResponse + 'static,
 {
     let method = message.method().clone();
-    let (parts, body) = message.into_parts();
-    let buffer = h3x::ArcWndBuf::new(BODY_WINDOW_BYTES);
-    let outgoing = h3x::Request::<h3x::W>::from_parts(parts, buffer.clone());
-    let trailers = outgoing.clone();
-    let send_qpack = qpack.clone();
-    let write_request = tokio::spawn(async move {
-        let writing = async move {
-            writer
-                .write_request(outgoing, send_qpack)
-                .await
-                .map_err(Error::from)
-        };
-        let forwarding = forward_outbound_body(body, buffer, move |name, value| {
-            trailers.append_trailer(name, value);
-        });
-        tokio::try_join!(biased; writing, forwarding).map(|_| ())
-    });
-    let upload = scopeguard::guard(write_request, |task| task.abort());
-
-    // Response headers can arrive before the request body finishes uploading.
-    let response = reader.read_response(method, qpack).await?;
-
-    let (mut parts, inbound) = response.into_parts();
-    let trailers = parts
-        .extensions
-        .remove::<h3x::Trailers>()
-        .unwrap_or_default();
-    let inbound_frames = forward_inbound_body(inbound, trailers);
-    let stream = async_stream::try_stream! {
-        tokio::pin!(inbound_frames);
-        while let Some(frame) = inbound_frames.next().await {
-            yield frame?;
+    let writing = writer.write_request(message, qpack.clone());
+    let sending = async move {
+        match writing.await {
+            // A peer can decline an empty request and still send a valid response.
+            Err(h3x::Error::Stream(detail)) if detail.code == h3x::ErrorCode::NoError => Ok(()),
+            result => result,
         }
-        // A complete response releases ownership without interrupting an active upload.
-        scopeguard::ScopeGuard::into_inner(upload);
     };
-    let body = StreamBody::new(stream)
-        .map_err(|error: Error| Box::new(error) as BoxError)
-        .boxed_unsync();
-    Ok(http::Response::from_parts(parts, body))
+    let reading = reader.read_response(method, qpack);
+    async move {
+        let ((), response) = tokio::try_join!(sending, reading)?;
+        Ok(response)
+    }
+}
+
+/// The write direction of a request that has started sending.
+/// Use `AsyncWriteExt::shutdown` to send EOF or [`CancelStream::cancel`] to reset it.
+/// Dropping this handle cancels unfinished uploading.
+/// Request configuration is only available before sending:
+///
+/// ```compile_fail,E0599
+/// async fn send(endpoint: &dhttp::Endpoint, uri: dhttp::Uri) -> dhttp::Result<()> {
+///     let (writer, _) = endpoint.post(uri).await?;
+///     writer.header(
+///         dhttp::HeaderName::from_static("x-example"),
+///         dhttp::HeaderValue::from_static("changed"),
+///     );
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug)]
+#[must_use = "keep the writer until uploading finishes; dropping it cancels unfinished uploading"]
+pub struct RequestWriter {
+    body: WndBuf,
+    upload: Option<JoinHandle<h3x::Result<()>>>,
+}
+
+impl CancelStream for RequestWriter {
+    fn cancel(&mut self, error_code: u64) {
+        if let Some(upload) = &self.upload
+            && !upload.is_finished()
+        {
+            // Reset the shared window before aborting so h3x sees the requested code.
+            self.body.cancel(error_code);
+            upload.abort();
+        }
+    }
+}
+
+impl Drop for RequestWriter {
+    fn drop(&mut self) {
+        self.cancel(h3x::ErrorCode::RequestCancelled.as_u64());
+    }
+}
+
+impl AsyncWrite for RequestWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().body).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().body).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        ready!(Pin::new(&mut this.body).poll_shutdown(cx))?;
+        let Some(upload) = &mut this.upload else {
+            return Poll::Ready(Ok(()));
+        };
+        // Keep ownership while Pending so cancelling shutdown() cannot detach the task.
+        let result = ready!(Pin::new(upload).poll(cx));
+        this.upload.take();
+        Poll::Ready(match result {
+            Ok(result) => result.map_err(io::Error::from),
+            Err(error) => Err(io::Error::other(error)),
+        })
+    }
+}
+
+pub(super) fn send_request<W, R>(
+    message: http::Request<WndBuf>,
+    writer: W,
+    reader: R,
+    qpack: h3x::ArcQpack,
+) -> (RequestWriter, RequestFuture)
+where
+    W: WriteRequest<WndBuf> + 'static,
+    R: ReadResponse + 'static,
+{
+    let method = message.method().clone();
+    let mut body = message.body().clone();
+    let upload = tokio::spawn(writer.write_request(message, qpack.clone()));
+    let abort = upload.abort_handle();
+    let request = RequestWriter {
+        body: body.clone(),
+        upload: Some(upload),
+    };
+    let reading = reader.read_response(method, qpack);
+    let response: RequestFuture = Box::pin(async move {
+        reading.await.map_err(|error| {
+            body.cancel(error.code.as_u64());
+            abort.abort();
+            error.into()
+        })
+    });
+    (request, response)
 }
