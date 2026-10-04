@@ -32,6 +32,7 @@ pub(super) const REQUEST_WINDOW_BYTES: usize = 64 * 1024;
 pub struct Request<B = Empty> {
     pub(super) endpoint: Option<Endpoint>,
     pub(super) message: http::Request<B>,
+    pub(super) expected_remote_owner_hash: Option<dhttp_home::certificate::OwnerHash>,
 }
 
 impl<B: fmt::Debug> fmt::Debug for Request<B> {
@@ -48,6 +49,7 @@ impl<B> Request<B> {
         Self {
             endpoint: Some(endpoint),
             message,
+            expected_remote_owner_hash: None,
         }
     }
 
@@ -69,7 +71,18 @@ impl<B> Request<B> {
         Self {
             endpoint: None,
             message,
+            expected_remote_owner_hash: None,
         }
+    }
+
+    /// Require the actual connection peer to have this owner hash before opening a request stream.
+    /// The check also applies to pooled and reverse-direction connections.
+    pub fn expect_remote_owner_hash(
+        mut self,
+        owner_hash: dhttp_home::certificate::OwnerHash,
+    ) -> Self {
+        self.expected_remote_owner_hash = Some(owner_hash);
+        self
     }
 
     /// Set a header before sending the request.
@@ -109,6 +122,7 @@ impl<B> Request<B> {
         Request {
             endpoint: self.endpoint,
             message: self.message.map(|_| body),
+            expected_remote_owner_hash: self.expected_remote_owner_hash,
         }
     }
 
@@ -127,9 +141,24 @@ impl<B> Request<B> {
         )?;
         *self.message.uri_mut() = uri;
         let network = DhttpNetwork::global()?;
-        network
+        let h3 = network
             .get_connection(self.endpoint.clone(), Arc::from(remote))
-            .await
+            .await?;
+        if let Some(expected) = &self.expected_remote_owner_hash {
+            let peer = h3
+                .transport()
+                .handshake
+                .remote
+                .as_ref()
+                .ok_or(crate::Error::RemoteIdentityChanged)?;
+            let identifier =
+                dhttp_home::certificate::extract_dhttp_subject_key_identifier(peer.certificates())
+                    .map_err(|_| crate::Error::RemoteIdentityChanged)?;
+            if identifier.owner_hash() != expected {
+                return Err(crate::Error::RemoteIdentityChanged);
+            }
+        }
+        Ok(h3)
     }
 }
 

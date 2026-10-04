@@ -69,7 +69,11 @@ fn empty_request(
     let mut message = http::Request::new(Empty::new());
     *message.method_mut() = method;
     *message.uri_mut() = uri;
-    Request { endpoint, message }
+    Request {
+        endpoint,
+        message,
+        expected_remote_owner_hash: None,
+    }
 }
 
 /// A named HTTP/3 endpoint with local QUIC credentials for requests and listening.

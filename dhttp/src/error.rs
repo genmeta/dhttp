@@ -15,6 +15,7 @@ pub enum Error {
     InvalidUri {
         source: Arc<http::uri::InvalidUri>,
     },
+    RemoteIdentityChanged,
     AlreadyListening,
     NameInUse {
         name: String,
@@ -49,6 +50,7 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidName { name } => write!(f, "invalid DHTTP name: {name}"),
             Self::InvalidRequest { message } => write!(f, "invalid request: {message}"),
+            Self::RemoteIdentityChanged => f.write_str("remote identity changed"),
             Self::AlreadyListening => f.write_str("endpoint is already listening"),
             Self::NameInUse { name } => write!(f, "name is already registered: {name}"),
             Self::NetworkNotInitialized => f.write_str("network is not initialized"),

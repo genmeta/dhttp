@@ -119,3 +119,32 @@ impl DhttpNetwork {
         }))
     }
 }
+
+impl Endpoint {
+    /// Rebuild immutable credentials and replace an existing TLS registration.
+    /// The application callback, listener lifetime, scopes and connection pool remain owned by Network.
+    /// Certificate/key rotation requires application restart; this operation renews only the staple.
+    pub async fn reload(&self) -> Result<Self> {
+        let mut replacement = Self::load(self.name()).await?;
+        if replacement.quic.identity.cert_chain() != self.quic.identity.cert_chain() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "certificate chain changed; restart required").into());
+        }
+        qtls::validate_ocsp(replacement.quic.identity.ocsp(),
+            replacement.quic.identity.cert_chain(), qtls::UnixTime::now())
+            .map_err(std::io::Error::other)?;
+        let network = DhttpNetwork::global()?;
+        let listeners = network.listeners.lock().map_err(|_| std::io::Error::other("listener registry poisoned"))?;
+        if listeners.contains_key(self.name()) {
+            let registered = qconn::ServerRegistry::global().get(self.name())
+                .ok_or_else(|| std::io::Error::other("listener TLS registration disappeared"))?;
+            let quic = Arc::get_mut(&mut replacement.quic)
+                .ok_or_else(|| std::io::Error::other("replacement endpoint unexpectedly shared"))?;
+            quic.server_parameters = registered.server_parameters.clone();
+            quic.listen(registered.scopes, move |result| (registered.accept_cb)(result))
+                .map_err(std::io::Error::other)?;
+        }
+        Ok(replacement)
+    }
+
+}
