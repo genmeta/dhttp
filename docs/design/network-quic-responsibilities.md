@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 网卡与绑定 | qudp 按具体 IP、scope 和 BoundDevice 绑定 | 监听网卡变化，保存自己创建的实际 bound，决定增删和重建 |
 | socket 收包 | Dock 保存登记、接收任务和协议 topology | 使用实际 bound 查询，检查任务存活，不接管临时或其他所有者的绑定 |
-| 协议地址 | Dock 自动登记 direct QUIC 地址，移除时清理全部协议别名 | 仅在需要时登记额外别名 |
+| 协议地址 | Dock 自动登记 direct QUIC 地址，移除时清理全部协议端点地址 | 仅在需要时登记额外端点地址 |
 | 地址簿 | AddressBook 提供 inner/outer、NAT、网卡元数据和订阅 | 选择发布范围，显式发布、撤回并回滚局部失败 |
 | 接收失败 | Dock 清除本次 socket、STUN 和 QUIC 登记 | 即使没有网卡事件，也检查失效绑定并撤回地址；必要时重建 |
 | STUN/NAT | 提供协议探测、映射和打洞能力 | 决定何时启用；负责停止本绑定的探测及发布任务后再撤回 |
@@ -20,6 +20,8 @@
 | 匿名请求 | connect_anonymously 独立发起连接，与具名 connect 共用内部流程，仍验证服务器身份 | 调用匿名入口、配置 h3 和传输参数、隔离连接池条目 |
 | TLS 与来源 | qtls 验证身份；qconn 处理逐名称 scopes、QUIC 路径与流 | 传入 scopes、核对实际 h3 ALPN、检查 HTTP authority |
 | HTTP/3 | h3x 负责协议、QPACK、Body、流和通用 Pool | 名称到 Service 映射、池键、双向请求驱动及可信 extensions |
+
+NAT 映射对应的 QUIC 端点地址登记、更新及失败回滚由 dhttp 维护，通过现有 QuicProtocol 接口完成。
 
 全部适用网卡在 init 时准备，纯客户端也有发送和接收资源。listener 的 scopes 只约束该名称的来源，不决定进程 socket 集合。停止 listener 撤销名称和 Service，保留共享网络资源。
 
@@ -44,7 +46,7 @@ AddressBook::remove_bound(bound: SocketAddr)
 
 Dock 管理接收与协议登记；AddressBook 由发布它的上层管理。两者没有隐式生命周期关联，Network 必须组合调用。
 
-`Some(handle)` 才表示本次新登记成功。`None` 表示已有登记，不授予 Network 发布或撤销该登记的所有权。Dock 已完成 direct QUIC 登记，上层只登记额外映射或中继别名。
+`Some(handle)` 才表示本次新登记成功。`None` 表示已有登记，不授予 Network 发布或撤销该登记的所有权。Dock 已完成 direct QUIC 登记，上层只登记额外映射或中继端点地址。
 
 ## 3. Network 的绑定所有权
 
@@ -87,7 +89,7 @@ AddressBook 单次插入失败没有部分写入。失败后仅回滚本次新�
 
 当前发布操作都在维护任务内同步完成，没有额外探测或发布任务需要等待。未来引入这些任务时，必须先结束它们，避免撤回后重新发布旧地址。
 
-AddressBook 清理地址、NAT、网卡记录和订阅状态。Dock 调用 `QuicProtocol::unregister(bound)` 清理全部别名，并停止接收及移除 STUN 登记。dhttp 不根据 AddressBook 返回的 direct 列表逐个撤销协议别名。
+AddressBook 清理地址、NAT、网卡记录和订阅状态。Dock 调用 `QuicProtocol::unregister(bound)` 清理全部端点地址，并停止接收及移除 STUN 登记。dhttp 不根据 AddressBook 返回的 direct 列表逐个撤销协议端点地址。
 
 ### 接收任务退出
 
@@ -123,7 +125,9 @@ watch 在系统事件之外，每秒检查一次自己的绑定，复用最近�
 
 | 文件 | 主要验证 |
 | --- | --- |
-| `dhttp/src/network.rs` 单元测试 | 端口复用、IPv6 scope、网卡身份变化、空快照恢复、其他所有者 socket 保留、发布失败回滚、协议全别名撤回、接收任务实际失败和取消 |
+| `dhttp/tests/unit/network/connection.rs` | 具名双向连接池键复用、匿名连接隔离、服务端口隔离 |
+| `dhttp/tests/unit/network/interfaces.rs` | 端口复用、IPv6 scope、网卡身份变化、空快照恢复、其他所有者 socket 保留、发布失败回滚、全部协议端点地址撤回、接收任务实际失败和取消 |
+| `dhttp/tests/unit/network/nat.rs` | 一次性分类、映射替换与失败撤回、端点地址冲突、分类失败后的持续心跳及中转地址发布 |
 | `dhttp/tests/network_lifecycle.rs` | 初始化幂等、地址显式发布、全局 resolver 保留、无网卡事件的失效撤回和重建、真实 EphemeralSocket 保留 |
 | `dhttp/tests/quic_roundtrip.rs` | 单参数 Dock.add、具名和匿名实际 UDP/TLS/H3 请求、两个匿名构造入口、连接复用、双向请求和监听生命周期 |
 | `dhttp/tests/dns_bootstrap.rs` | 单参数 Dock.add、H3 引导解析、authority 端口保留 |
@@ -133,7 +137,10 @@ watch 在系统事件之外，每秒检查一次自己的绑定，复用最近�
 
 ## 8. 代码入口
 
-- [Network](../../dhttp/src/network.rs)：初始化、绑定维护、地址生命周期、Pool 与请求驱动。
+- [Network](../../dhttp/src/network.rs)：单例初始化、Pool 访问和服务登记。
+- [Connection](../../dhttp/src/network/connection.rs)：连接池键、建连与请求驱动。
+- [Interfaces](../../dhttp/src/network/interfaces.rs)：绑定维护、地址生命周期与串行探测轮询。
+- [NAT](../../dhttp/src/network/interfaces/nat.rs)：NAT 分类、STUN 心跳与映射同步。
 - [Endpoint](../../dhttp/src/endpoint.rs)：HTTP/3 配置与具名端点构造；匿名启动由 qconnection 的 connect_anonymously 提供。
 - [QuicTransport](../../dhttp/src/transport.rs)：h3 校验、握手摘要和流适配。
 - [qconnection endpoint](../../../dquic/qconnection/src/endpoint.rs)：具名 listen/connect。

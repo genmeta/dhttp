@@ -33,6 +33,17 @@ Dock 不持有 AddressBook。维护任务中的绑定表只记录 Network 的资
 
 ## 2. 结构和入口
 
+实现按职责拆分，子模块均为私有，公开入口仍是 `network::DhttpNetwork`：
+
+| 文件 | 职责 |
+| --- | --- |
+| `dhttp/src/network.rs` | 进程单例、初始化装配、连接池访问及名称到 Service 的登记 |
+| `dhttp/src/network/connection.rs` | 连接池键、具名和匿名建连、双向 HTTP/3 请求驱动 |
+| `dhttp/src/network/interfaces.rs` | 首次网卡扫描、绑定所有权、事件与存活检查、串行 NAT future 轮询及撤回 |
+| `dhttp/src/network/interfaces/nat.rs` | 一次性 NAT 分类、STUN 心跳、QUIC 端点地址和外部映射同步 |
+
+各模块的回归测试统一放在 `dhttp/tests/unit/network/`，共享绑定测试夹具放在 `dhttp/tests/support/interface_bindings.rs`；源模块通过 `#[cfg(test)]` 和 `#[path]` 接入，以保留对私有实现的单元测试。NAT 模块属于网卡绑定维护，其 future 由绑定持有并由唯一维护任务轮询；拆分不增加后台任务，也不改变发布与撤回顺序。
+
 ### 2.1 Network 与连接池
 
 ```rust
@@ -66,6 +77,7 @@ struct Binding {
     bound: SocketAddr, // local_addr 返回的实际端口
     socket: Arc<UdpSocket>,
     receiver: tokio::task::AbortHandle,
+    nat_probe: futures::future::BoxFuture<'static, ()>,
 }
 
 struct InterfaceBindings {
@@ -75,19 +87,21 @@ struct InterfaceBindings {
 }
 ```
 
-名称、索引和硬件地址共同描述快照中的网卡身份；硬件地址变化也会触发替换。不同 IP 或 IPv6 scope 是不同绑定。socket 引用供按实例撤销，并让旧绑定在地址撤回完成前继续占用自己的端口。AbortHandle 用于识别接收任务已经结束的情况。
+名称、索引和硬件地址共同描述快照中的网卡身份；硬件地址变化也会触发替换。不同 IP 或 IPv6 scope 是不同绑定。socket 引用供按实例撤销，并让旧绑定在地址撤回完成前继续占用自己的端口。AbortHandle 用于识别接收任务已经结束的情况。nat_probe 直接持有该绑定的一次性 NAT 分类及后续 STUN 绑定心跳 future，由唯一维护任务轮询，不 spawn 独立发布任务。NAT 分类只在新 socket 创建时执行一次；之后每20秒向同地址族的 STUN 节点发送绑定心跳并读取各节点的映射，失败的映射撤回，下次心跳重试。NAT 分类失败不重新分类，也不阻止心跳继续保活；映射仍可更新 DDNS，但不伪造 NAT 类型，外部打洞广告等待有效分类。Loopback 和 IPv6 link-local 不探测。
 
 ### 2.3 函数职责
 
 | 入口 | 职责 |
 | --- | --- |
 | `DhttpNetwork::init/global` | 初始化信任、路由、首次扫描和维护任务；读取单例 |
+| `interfaces::init` | 装配网卡监听器和路由，完成首次扫描后启动唯一维护任务 |
 | `interfaces(snapshot)` | 生成以网卡身份和 IP/scope 为键的目标绑定集合 |
 | `InterfaceBindings::register(socket)` | Dock 登记成功后显式发布地址；发布失败时回滚本次登记 |
 | `InterfaceBindings::scan(snapshot)` | 保留存活绑定，撤回失效或过期绑定，补齐缺少的绑定 |
 | `InterfaceBindings::withdraw(binding)` | 先撤回 AddressBook，再按 socket 移除 Dock 登记 |
 | `InterfaceBindings::drop` | 维护任务退出时撤回它仍拥有的绑定 |
-| `watch(watcher, snapshot, bindings)` | 等待网卡事件和每秒一次的存活检查，串行调用 scan |
+| `watch(watcher, snapshot, bindings)` | 优先处理网卡事件和每秒一次的存活检查，串行扫描并轮询各绑定的 NAT/心跳 future |
+| `nat::probe_nat/sync_nat_mappings` | 一次性分类和持续心跳，无返回结果，内部记录日志，先更新 QUIC 端点地址再同步地址簿，局部失败回滚 |
 | `DhttpNetwork::listen` | 登记具名 QUIC 服务及 Tower Service，取消时撤销名称 |
 | `get_connection/connect` | 查 H3 Pool；分别启动具名或匿名连接，装配 H3 并启动请求驱动 |
 | `serve_connection` | 接收双向请求流，读取当前 Service，退出时按连接实例移出池 |
@@ -152,7 +166,7 @@ QuicProtocol::unregister(SocketAddr)
 | `Ok(None)` | 已有登记；不发布、不加入自己的绑定表、不撤销已有登记 |
 | `Err(error)` | 下层登记失败，记录错误并等待下一轮重试 |
 
-Dock 已登记 `EndpointAddr::direct(bound)`，Network 不重复登记它。需要额外映射或中继别名时，由相应所有者向 QuicProtocol 登记额外别名。
+Dock 已登记 `EndpointAddr::direct(bound)`，Network 不重复登记它。需要额外映射或中继端点地址时，由相应所有者向 QuicProtocol 登记额外端点地址。
 
 当前 Network 对直接地址采用以下发布策略：
 
@@ -169,19 +183,19 @@ AddressBook 的单次插入是原子的。插入失败时，Network 调用 `Dock
 ### 4.2 主动撤回
 
 ```text
-停止并等待该绑定的地址探测、刷新及发布任务
+停止轮询并丢弃该绑定的 nat_probe future
   → AddressBook::remove_bound(bound)
   → Dock::remove(&socket)
   → 释放 Network 的 socket 引用
 ```
 
-当前 Network 只在维护任务中同步写入地址簿，没有逐绑定的探测或发布任务，因此扫描本身保证发布与撤回串行执行。若后续加入异步探测，必须先停止并等待它们结束，防止撤回后重新写入旧地址。
+NAT future 只由维护任务轮询，分类、心跳及同步地址更新均不另起任务。扫描与 future 轮询串行，绑定移除时丢弃 nat_probe，立即取消尚未完成的 STUN transaction；不存在后台写入或需要等待的独立探测任务。映射变化时先更新 QUIC 直接/中介端点地址，再更新 AddressBook；端点地址冲突保留原发布，失效映射的端点地址及发布一起撤回。
 
-`AddressBook::remove_bound` 清除 inner/outer 地址、NAT 和网卡记录，并发出撤回通知。Dock 移除接收任务和 STUN 登记，内部调用 `QuicProtocol::unregister(bound)` 清理全部协议别名；Network 不遍历或逐个撤销别名。
+`AddressBook::remove_bound` 清除 inner/outer 地址、NAT 和网卡记录，并发出撤回通知。Dock 移除接收任务和 STUN 登记，内部调用 `QuicProtocol::unregister(bound)` 清理全部协议端点地址；Network 不遍历或逐个撤销端点地址。
 
 ### 4.3 接收任务自行结束
 
-Dock 的接收任务结束时会清除自己的登记和 QUIC 别名，AddressBook 保持原状。因此 watch 同时等待两种触发：
+Dock 的接收任务结束时会清除自己的登记和 QUIC 端点地址，AddressBook 保持原状。因此 watch 同时等待两种触发：
 
 - netwatcher 交付新的完整快照；
 - 每秒一次的绑定检查，使用最近快照。
@@ -243,7 +257,7 @@ qconn 的具名 connect 提供本端 LocalAuthority，匿名函数传入 None；
 | --- | --- |
 | Network 单元测试 | IPv6 scope、无效地址过滤、端口复用、网卡身份变化、空快照恢复、其他所有者 socket 保留 |
 | Network 登记测试 | 已有 Dock 登记不被认领或发布；发布失败回滚且保留既有地址 |
-| Network 撤回测试 | inner/outer、NAT、全部 QUIC 别名撤销；任务退出清理 |
+| Network 撤回测试 | inner/outer、NAT、全部 QUIC 端点地址撤销；任务退出清理 |
 | Network 接收任务测试 | 实际接收循环错误及任务取消后的撤回和重建 |
 | `network_lifecycle` | 并发/重复初始化、显式发布、接口元数据、全局 resolver 保留、无网卡事件时的周期撤回与重建、临时 socket 保留 |
 | `listener_lifecycle` | 具名服务登记、重复监听、匿名 listen 拒绝、取消后 socket 保留 |
@@ -252,4 +266,6 @@ qconn 的具名 connect 提供本端 LocalAuthority，匿名函数传入 None；
 
 本机验证（2026-10-02）：`cargo test -p dhttp --lib --tests --offline -- --include-ignored` 全部 43 项通过，其中 33 项单元测试、6 项 bootstrap 配置测试、4 项集成测试，包含真实 UDP/TLS/HTTP/3。测试在允许本机 UDP socket 的环境执行。
 
-网卡测试使用受控快照，不修改宿主系统网卡；Linux/Windows 的真实 down/up、地址增删仍需实机验证。当前 Network 不启动 NAT 映射探测或独立 DDNS/mDNS 名称发布任务。
+网卡测试使用受控快照，不修改宿主系统网卡；Linux/Windows 的真实 down/up、地址增删仍需实机验证。普通 Network 初始化自动装配一次性 NAT 分类及持续 STUN 心跳；不启动独立 DDNS/mDNS 名称发布任务。NAT/心跳回归使用本地脚本化 STUN 响应，不访问线上节点。
+
+2026-10-04 中转上报修正：NAT 心跳得到的 agent/outer 对在外部地址簿中保留为 Mediate，不能仅公布 Direct(outer)。FullCone 映射可以直达；受限/未知分类使用中转。QUIC 仍登记 Direct 与 Mediate 端点地址，DNS 的 E-record 使用现有编码器输出 outer-agent；内部 EndpointAddr Display 保持 agent-outer。AddressBook 内部范围仍仅接受 Direct，外部范围接受有效 Mediate，已有成员/签名/错误变体均不变。
