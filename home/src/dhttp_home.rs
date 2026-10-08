@@ -33,10 +33,26 @@ pub fn normalize_name(input: &str) -> Option<String> {
     is_valid_dns_name(&name).then_some(name)
 }
 
+/// Normalize a lookup name, expanding only an explicit trailing `~`.
+/// Ordinary DNS names retain their namespace; single-label hosts are allowed.
+pub fn normalize_dns_name(input: &str) -> Option<String> {
+    let name = input.trim().to_ascii_lowercase();
+    let name = name.strip_suffix('.').unwrap_or(&name);
+    let name = if let Some(partial) = name.strip_suffix('~') {
+        format!("{partial}{DHTTP_SUFFIX}")
+    } else {
+        name.to_owned()
+    };
+    is_valid_dns_labels(&name).then_some(name)
+}
+
 /// Check certserver's canonical lowercase ASCII DNS label rules.
 pub fn is_valid_dns_name(name: &str) -> bool {
+    name.split('.').count() >= 2 && is_valid_dns_labels(name)
+}
+
+fn is_valid_dns_labels(name: &str) -> bool {
     name.len() <= 253
-        && name.split('.').count() >= 2
         && name.split('.').all(|label| {
             (1..=63).contains(&label.len())
                 && !label.starts_with('-')

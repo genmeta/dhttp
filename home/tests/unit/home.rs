@@ -30,6 +30,41 @@ fn normalizes_identity_names() {
 }
 
 #[test]
+fn lookup_names_expand_only_explicit_shorthand() {
+    for (input, expected) in [
+        (" NAT.Example.CN. ", "nat.example.cn"),
+        ("Alice~", "alice.dhttp.net"),
+        ("Alice.DHTTP.NET", "alice.dhttp.net"),
+        ("Alice", "alice"),
+        ("localhost", "localhost"),
+    ] {
+        assert_eq!(super::normalize_dns_name(input).as_deref(), Some(expected));
+    }
+    for invalid in [
+        "",
+        "~",
+        "alice~.example.cn",
+        "alice_bob",
+        "*.example.cn",
+        "-alice",
+        "alice..smith",
+        "alice..",
+        "../alice",
+    ] {
+        assert!(super::normalize_dns_name(invalid).is_none(), "{invalid}");
+    }
+    let max_length = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "a".repeat(63),
+        "a".repeat(63),
+        "a".repeat(61)
+    );
+    assert!(super::normalize_dns_name(&max_length).is_some());
+    assert!(super::normalize_dns_name(&format!("{max_length}a")).is_none());
+}
+
+#[test]
 fn canonical_dns_name_uses_certserver_lengths_and_numeric_labels() {
     assert!(super::is_valid_dns_name("123.dhttp.net"));
     assert!(!super::is_valid_dns_name("alice_bob.dhttp.net"));

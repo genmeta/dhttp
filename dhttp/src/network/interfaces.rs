@@ -1,4 +1,4 @@
-//! Own device bindings and serialize interface scans, NAT polling and withdrawal.
+//! Own network interfaces and bindings; serialize scans, recovery, NAT polling and withdrawal.
 mod nat;
 #[cfg(test)]
 #[path = "../../tests/support/interface_bindings.rs"]
@@ -7,8 +7,7 @@ mod test_support;
 #[path = "../../tests/unit/network/interfaces.rs"]
 mod tests;
 
-use futures::{FutureExt, future::BoxFuture};
-use nat::probe_nat;
+use futures::FutureExt;
 use qbase::net::addr::EndpointAddr;
 use qconn::Scope;
 use qprotocol::{AddressBook, Dock, UdpSocket};
@@ -17,23 +16,110 @@ use std::{
     collections::HashMap,
     io,
     net::{IpAddr, SocketAddr, SocketAddrV6},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
 const BINDING_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Prepare the initial bindings before handing ownership to one maintenance task.
-pub(super) async fn init() -> io::Result<()> {
-    let mut watcher = netwatcher::watch_interfaces_async::<netwatcher::async_adapter::Tokio>()
-        .map_err(io::Error::other)?;
-    qtransport::router::QuicRouter::global();
-    let snapshot = watcher.changed().await.interfaces;
-    let mut bindings =
-        InterfaceBindings::new(Dock::global().clone(), AddressBook::global().clone());
-    bindings.scan(&snapshot);
-    tokio::spawn(watch(watcher, snapshot, bindings));
-    Ok(())
+/// Shared network interfaces and bindings, accessed by recovery and background polling.
+/// The mutex is held only for synchronous state changes, never across an await.
+pub(super) struct Interfaces {
+    state: Arc<Mutex<Option<InterfacesCtx>>>,
+}
+
+struct InterfacesCtx {
+    watcher: netwatcher::AsyncWatch,
+    snapshot: HashMap<u32, netwatcher::Interface>,
+    dock: Arc<Dock>,
+    addresses: Arc<AddressBook>,
+    /// Only bindings created by Interfaces belong to this table.
+    bindings: HashMap<InterfaceAddress, Binding>,
+    check: tokio::time::Interval,
+    waker: Option<Waker>,
+}
+
+impl Interfaces {
+    /// Prepare the initial bindings before starting background polling.
+    pub(super) async fn init() -> io::Result<Self> {
+        let mut watcher = netwatcher::watch_interfaces_async::<netwatcher::async_adapter::Tokio>()
+            .map_err(io::Error::other)?;
+        qtransport::router::QuicRouter::global();
+        let snapshot = watcher.changed().await.interfaces;
+        let mut state = InterfacesCtx::new(
+            watcher,
+            snapshot,
+            Dock::global().clone(),
+            AddressBook::global().clone(),
+        );
+        state.scan();
+        let (interfaces, _task) = Self::start(state);
+        Ok(interfaces)
+    }
+
+    fn start(state: InterfacesCtx) -> (Self, tokio::task::JoinHandle<()>) {
+        let state = Arc::new(Mutex::new(Some(state)));
+        // Construct cleanup before spawning so cancellation before the first poll
+        // also withdraws bindings and marks interface polling as stopped.
+        let cleanup = scopeguard::guard(state.clone(), |state| {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        });
+        let task = tokio::spawn(async move {
+            std::future::poll_fn(|cx| {
+                let mut state = cleanup.lock().unwrap();
+                match state.as_mut() {
+                    Some(state) => state.poll(cx),
+                    None => Poll::Ready(()),
+                }
+            })
+            .await;
+        });
+        (Self { state }, task)
+    }
+
+    /// Refresh the watcher, repair bindings and restart NAT measurements directly.
+    pub(super) async fn resume(&self) -> crate::Result<()> {
+        if self.state.lock().map_err(|_| Self::stopped())?.is_none() {
+            return Err(Self::stopped().into());
+        }
+        let mut watcher = netwatcher::watch_interfaces_async::<netwatcher::async_adapter::Tokio>()
+            .map_err(io::Error::other)?;
+        // Android's initial replay can be cached. Subscribe before enumerating,
+        // and keep the previous state intact if either preparation step fails.
+        let _ = watcher.changed().await;
+        let waker = {
+            let mut state = self.state.lock().map_err(|_| Self::stopped())?;
+            let state = state.as_mut().ok_or_else(Self::stopped)?;
+            // Enumerate under the same lock as background updates so concurrent
+            // calls and old OS notifications cannot apply an earlier snapshot.
+            let snapshot = netwatcher::list_interfaces().map_err(io::Error::other)?;
+            state.watcher = watcher;
+            state.snapshot = snapshot;
+            state.scan();
+            for binding in state.bindings.values_mut() {
+                if let Some(nat) = &mut binding.nat {
+                    nat.resume(qprotocol::StunProtocol::stun_servers());
+                }
+            }
+            state.waker.clone()
+        };
+        // Poll the new watcher and NAT futures immediately to register their wakes.
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+
+    fn stopped() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "network maintenance task stopped",
+        )
+    }
 }
 
 /// A desired binding without a port. Hardware identity detects interface replacement
@@ -50,23 +136,58 @@ struct Binding {
     bound: SocketAddr,
     socket: Arc<UdpSocket>,
     receiver: tokio::task::AbortHandle,
-    nat_probe: BoxFuture<'static, ()>,
+    nat: Option<nat::Nat>,
 }
 
-/// Only bindings created by this maintenance task belong to this table.
-struct InterfaceBindings {
-    dock: Arc<Dock>,
-    addresses: Arc<AddressBook>,
-    bindings: HashMap<InterfaceAddress, Binding>,
-}
-
-impl InterfaceBindings {
-    fn new(dock: Arc<Dock>, addresses: Arc<AddressBook>) -> Self {
+impl InterfacesCtx {
+    fn new(
+        watcher: netwatcher::AsyncWatch,
+        snapshot: HashMap<u32, netwatcher::Interface>,
+        dock: Arc<Dock>,
+        addresses: Arc<AddressBook>,
+    ) -> Self {
+        let mut check = tokio::time::interval_at(
+            tokio::time::Instant::now() + BINDING_CHECK_INTERVAL,
+            BINDING_CHECK_INTERVAL,
+        );
+        check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         Self {
+            watcher,
+            snapshot,
             dock,
             addresses,
             bindings: HashMap::new(),
+            check,
+            waker: None,
         }
+    }
+
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.waker = Some(cx.waker().clone());
+        if std::pin::pin!(self.watcher.changed())
+            .poll_unpin(cx)
+            .is_ready()
+        {
+            // Old mobile notifications are only triggers to read current interfaces.
+            match netwatcher::list_interfaces() {
+                Ok(current) => self.snapshot = current,
+                Err(error) => tracing::warn!(%error, "interface enumeration failed"),
+            }
+            // Register for the next notification on the next poll.
+            cx.waker().wake_by_ref();
+        }
+        if self.check.poll_tick(cx).is_ready() {
+            // Register the timer's next deadline after consuming this tick.
+            cx.waker().wake_by_ref();
+        }
+        // Scan before polling: a ready old measurement cannot revive a dead binding.
+        self.scan();
+        for binding in self.bindings.values_mut() {
+            if let Some(nat) = &mut binding.nat {
+                let _ = nat.poll_unpin(cx);
+            }
+        }
+        Poll::Pending
     }
 
     fn register(&self, socket: Arc<UdpSocket>) -> io::Result<Option<Binding>> {
@@ -88,36 +209,36 @@ impl InterfaceBindings {
             self.dock.remove(&socket);
             return Err(io::Error::other(error));
         }
-        let nat_probe = if bound.ip().is_loopback()
+        let nat = if bound.ip().is_loopback()
             || matches!(bound.ip(), IpAddr::V6(ip) if ip.is_unicast_link_local())
         {
-            std::future::pending().boxed()
+            None
         } else {
-            probe_nat(
+            Some(nat::Nat::new(
                 self.dock.clone(),
                 self.addresses.clone(),
                 socket.clone(),
+                bound,
                 qprotocol::StunProtocol::stun_servers(),
-            )
-            .boxed()
+            ))
         };
         Ok(Some(Binding {
-            nat_probe,
+            nat,
             bound,
             socket,
             receiver,
         }))
     }
 
-    fn withdraw(&self, binding: &Binding) {
-        // Probe futures are polled only by watch, so no publication can race withdrawal.
+    fn remove(&self, binding: &Binding) {
+        // The interface state lock serializes polling and withdrawal; publication cannot race.
         // Removing this Binding drops its future and outstanding STUN transactions.
         self.addresses.remove_bound(binding.bound);
         self.dock.remove(&binding.socket);
     }
 
-    fn scan(&mut self, snapshot: &HashMap<u32, netwatcher::Interface>) {
-        let current = interfaces(snapshot);
+    fn scan(&mut self) {
+        let current = interfaces(&self.snapshot);
         let obsolete = self
             .bindings
             .iter()
@@ -132,8 +253,8 @@ impl InterfaceBindings {
             .collect::<Vec<_>>();
         for key in obsolete {
             let mut binding = self.bindings.remove(&key).unwrap();
-            binding.nat_probe = std::future::pending().boxed();
-            self.withdraw(&binding);
+            binding.nat = None;
+            self.remove(&binding);
         }
         for (key, device) in current {
             if self.bindings.contains_key(&key) {
@@ -154,13 +275,13 @@ impl InterfaceBindings {
     }
 }
 
-impl Drop for InterfaceBindings {
+impl Drop for InterfacesCtx {
     fn drop(&mut self) {
         for binding in self.bindings.values_mut() {
-            binding.nat_probe = std::future::pending().boxed();
+            binding.nat = None;
         }
         for binding in self.bindings.values() {
-            self.withdraw(binding);
+            self.remove(binding);
         }
     }
 }
@@ -207,35 +328,4 @@ fn interfaces(
         }
     }
     current
-}
-
-async fn watch(
-    mut watcher: netwatcher::AsyncWatch,
-    mut snapshot: HashMap<u32, netwatcher::Interface>,
-    mut bindings: InterfaceBindings,
-) {
-    let mut check = tokio::time::interval_at(
-        tokio::time::Instant::now() + BINDING_CHECK_INTERVAL,
-        BINDING_CHECK_INTERVAL,
-    );
-    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        bindings.scan(&snapshot);
-        tokio::select! {
-            biased;
-            update = watcher.changed() => snapshot = update.interfaces,
-            _ = check.tick() => {}
-            _ = std::future::poll_fn(|cx| {
-                // Scan before polling: a ready old measurement cannot revive a dead binding.
-                // No future owns a separate publishing task.
-                for binding in bindings.bindings.values_mut() {
-                    if binding.nat_probe.poll_unpin(cx).is_ready() {
-                        // Completed probes must not be polled again.
-                        binding.nat_probe = std::future::pending().boxed();
-                    }
-                }
-                std::task::Poll::<()>::Pending
-            }) => {}
-        }
-    }
 }

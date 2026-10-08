@@ -165,13 +165,13 @@ impl CancelStream for SendStream {
 mod tests {
     use super::*;
     use qbase::{
-        ArcReceiving,
         param::{
             ArcParameters,
             handy::{client_parameters, server_parameters},
         },
         sid::handy::DemandConcurrency,
     };
+    use qtransport::terminate::ArcTerminator;
 
     #[test]
     fn quic_stream_resets_preserve_the_http3_error_code() {
@@ -205,7 +205,7 @@ mod tests {
         );
     }
 
-    fn connection(alpn: &'static [u8]) -> (qconn::ArcConnection, ArcReceiving<qconn::CloseReason>) {
+    fn connection(alpn: &'static [u8]) -> (qconn::ArcConnection, ArcTerminator) {
         let parameters = ArcParameters::new(
             qbase::role::Role::Client,
             Arc::new(client_parameters()),
@@ -217,14 +217,15 @@ mod tests {
             qconn::ArcReliableFrames::with_capacity(0),
             None,
         );
-        let close = ArcReceiving::default();
+        let close = ArcTerminator::no_error();
+        close.register(Arc::new(streams.clone()));
         (
             qconn::ArcConnection::new(Bytes::from_static(alpn), streams, close.clone()),
             close,
         )
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn invalid_alpn_releases_the_connection_and_notifies_its_driver() {
         for alpn in [b"".as_slice(), b"h2", b"h3-29"] {
             let (connection, close) = connection(alpn);
@@ -232,16 +233,14 @@ mod tests {
             assert!(
                 matches!(result, Err(crate::Error::Io { source }) if source.kind() == io::ErrorKind::InvalidData)
             );
-            let reason = tokio::time::timeout(std::time::Duration::from_secs(1), close)
+            let reason = tokio::time::timeout(std::time::Duration::from_secs(4), close)
                 .await
-                .unwrap()
-                .unwrap()
                 .unwrap();
-            assert!(matches!(reason, qconn::CloseReason::App(_)));
+            assert!(matches!(reason, qconn::Error::App(_)));
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn h3_transport_keeps_the_negotiated_protocol_and_role() {
         for role in [Role::Client, Role::Server] {
             let (connection, mut close) = connection(b"h3");
@@ -250,10 +249,7 @@ mod tests {
             assert_eq!(transport.handshake.alpn.as_deref(), Some(b"h3".as_slice()));
             assert!(futures::poll!(&mut close).is_pending());
             drop(transport);
-            assert!(matches!(
-                close.await.unwrap().unwrap(),
-                qconn::CloseReason::App(_)
-            ));
+            assert!(matches!(close.await, qconn::Error::App(_)));
         }
     }
 }
