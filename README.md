@@ -52,13 +52,14 @@ writer.append_trailer(tag, dhttp::HeaderValue::from_static("computed"))?;
 writer.shutdown().await?; // 自动发送剩余 DATA、trailers，再结束上传
 let response = response.await?;
 
-let body = dhttp::WndBuf::with_initial(64 * 1024, Bytes::from_static(b"content"));
+let body = dhttp::WndBuf::new(64 * 1024);
+body.write_bytes(Bytes::from_static(b"content")).await?;
 let (mut writer, response) = endpoint.post(uri).body(body).await?;
 writer.shutdown().await?;
 let response = response.await?;
 ```
 
-`.body(window)` 设置请求使用的 WndBuf；`.write(data)` 用初始字节构造一个 WndBuf。后续可用 `write_all` 继续写入，调用 `AsyncWriteExt::shutdown()` 发送 EOF 并等待上传完成。空的 WndBuf 也需要 shutdown；显式 `.body(dhttp::Empty::new())` 则按空请求处理。`from_request` 和 `Request::new` 同样接受以 `Empty` 或 `WndBuf` 为 body 的标准请求。流式请求首次 await 不等待响应头，因此服务端可以等待完整请求后再响应。请求头和初始 body 在发送前配置；发送后的 RequestWriter 实现 AsyncWrite 和 dquic 的 CancelStream（由 dhttp 重导出）。在它上面调用 header、append_header、body 或再次 await 会在编译期报错。`cancel(error_code)` 按指定 HTTP/3 错误码 reset 请求方向；丢弃句柄会取消未完成的上传。响应 Body 的读取或丢弃不控制上传任务。
+`.body(window)` 设置请求使用的 WndBuf；`.write(data)` 创建容量至少为数据长度的 WndBuf，再写入初始字节（默认容量为 64 KiB）。后续可用 `write_all` 继续写入，调用 `AsyncWriteExt::shutdown()` 发送 EOF 并等待上传完成。空的 WndBuf 也需要 shutdown；显式 `.body(dhttp::Empty::new())` 则按空请求处理。`from_request` 和 `Request::new` 同样接受以 `Empty` 或 `WndBuf` 为 body 的标准请求。流式请求首次 await 不等待响应头，因此服务端可以等待完整请求后再响应。请求头和初始 body 在发送前配置；发送后的 RequestWriter 实现 AsyncWrite 和 dquic 的 CancelStream（由 dhttp 重导出）。在它上面调用 header、append_header、body 或再次 await 会在编译期报错。`cancel(error_code)` 按指定 HTTP/3 错误码 reset 请求方向；丢弃句柄会取消未完成的上传。响应 Body 的读取或丢弃不控制上传任务。
 
 Request 构造阶段支持 `.trailer(name, value)` 替换同名字段、`.append_trailer(name, value)` 追加同名值；替换 body 时保留这些字段。发送后，RequestWriter 提供同名方法并返回 `io::Result<()>`，可继续补充或修改 trailers；登记 trailers 后仍可写 DATA。首次轮询 `shutdown()` 时冻结字段，后台按剩余 DATA、trailers HEADERS、FIN 的顺序发送，并等待上传完成。开始 shutdown（包括等待期间）或取消后，再写 DATA 或修改 trailers 返回 `BrokenPipe`；重复成功的 shutdown 幂等。空请求预设的 trailers 在 await 时自动发送。
 
@@ -82,7 +83,7 @@ let updates = addresses.subscribe_ddns(); // 名称发布服务直接订阅地�
 
 `endpoint.listen(scopes, service).await` 接受标准 Tower Service，登记成功后返回 `ListenFuture`；调用方 spawn 或持有它以维持监听。`scopes` 原样交给 qconn，按名称限制来源范围。接入回调直接装配 H3 并启动请求驱动。丢弃 `ListenFuture`（包括未 poll 的 future）撤销名称和 Service，socket 和已有连接保留；重新监听同名服务后，旧连接上的新请求交付给新 Service。解析器与名称发布服务需配套：system DNS 默认解析到 443，而 Network 绑定动态端口，部署时需发布实际地址。
 
-h3x 内部保留有界收发缓冲，接收消息和 Service 响应使用标准 HTTP Body；dhttp 的空请求以 `http::Request<Empty>` 直接交给 h3x 的泛型 `WriteRequest<B>` 实现，流式请求走 `WriteRequest<WndBuf>`。泛型发送路径直接读取 body 帧，空请求无需装箱或转换为另一种 body。`WndBuf::with_initial` 让初始 Bytes 无拷贝进入窗口，可以大于窗口容量，后续写入会等待排队字节数降到容量以内。DATA、多值 trailers、EOF、错误、提前丢弃和 HEAD/204/304 语义由 h3x 处理。客户端直接返回 h3x 的响应 Body；流式上传任务由返回的 `RequestWriter` 独立持有。
+h3x 内部保留有界收发缓冲，接收消息和 Service 响应使用标准 HTTP Body；dhttp 的空请求以 `http::Request<Empty>` 直接交给 h3x 的泛型 `WriteRequest<B>` 实现，流式请求走 `WriteRequest<WndBuf>`。泛型发送路径直接读取 body 帧，空请求无需装箱或转换为另一种 body。`WndBuf::new` 创建空窗口，`write_bytes` 让 Bytes 无拷贝进入窗口；所有写入都遵守容量限制。发送前预填数据时应保证容量足够；超过容量的数据应在开始发送后通过 RequestWriter 写入，让消费和写入并发进行。DATA、多值 trailers、EOF、错误、提前丢弃和 HEAD/204/304 语义由 h3x 处理。客户端直接返回 h3x 的响应 Body；流式上传任务由返回的 `RequestWriter` 独立持有。
 
 等待取得连接的期限为 30 秒；业务请求和终端会话期限由调用方决定。远端停止在后续流 I/O 中观察，不提供独立终态订阅。
 

@@ -1,6 +1,7 @@
 //! Transport-independent tests: all HTTP/3 traffic stays inside Tokio duplex streams.
 use super::request::{send_empty_request, send_request as send_upload};
 use super::*;
+use futures::FutureExt;
 use h3x::{ReadResponse, WriteRequest};
 use http_body::Frame;
 use http_body_util::{BodyExt, Empty, Full, StreamBody};
@@ -53,7 +54,9 @@ fn frames_body(data: &'static [u8]) -> Body {
 }
 
 fn window(initial: Bytes) -> WndBuf {
-    WndBuf::with_initial(super::request::REQUEST_WINDOW_BYTES, initial)
+    let body = WndBuf::new(super::request::REQUEST_WINDOW_BYTES.max(initial.len()));
+    body.write_bytes(initial).now_or_never().unwrap().unwrap();
+    body
 }
 
 #[tokio::test]

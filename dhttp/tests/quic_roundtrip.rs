@@ -151,8 +151,9 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
         let response = tokio::time::timeout(Duration::from_secs(10), async {
             let (mut request, response) = same_name
                 .post("https://server~/echo".parse().unwrap())
-                .body(dhttp::WndBuf::with_initial(64 * 1024, payload.clone()))
+                .body(dhttp::WndBuf::new(64 * 1024))
                 .await?;
+            request.write_all(&payload).await?;
             request.shutdown().await?;
             response.await
         })
@@ -206,6 +207,11 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
     });
     wait_listener("client.dhttp.net").await;
     // Anonymous requests work without either local identity directory.
+    let anonymous_body = dhttp::WndBuf::new(64 * 1024);
+    anonymous_body
+        .write_bytes(Bytes::from_static(b"anonymous"))
+        .await
+        .unwrap();
     for request in [
         dhttp::Anonymous
             .post("https://server~/anonymous".parse().unwrap())
@@ -214,10 +220,7 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
             http::Request::builder()
                 .method("POST")
                 .uri("https://server~/anonymous")
-                .body(dhttp::WndBuf::with_initial(
-                    64 * 1024,
-                    Bytes::from_static(b"anonymous"),
-                ))
+                .body(anonymous_body)
                 .unwrap(),
         ),
     ] {

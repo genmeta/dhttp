@@ -101,7 +101,7 @@ struct InterfaceBindings {
 | `InterfaceBindings::withdraw(binding)` | 先撤回 AddressBook，再按 socket 移除 Dock 登记 |
 | `InterfaceBindings::drop` | 维护任务退出时撤回它仍拥有的绑定 |
 | `watch(watcher, snapshot, bindings)` | 优先处理网卡事件和每秒一次的存活检查，串行扫描并轮询各绑定的 NAT/心跳 future |
-| `nat::probe_nat/sync_nat_mappings` | 一次性分类和持续心跳，无返回结果，内部记录日志，先更新 QUIC 端点地址再同步地址簿，局部失败回滚 |
+| `nat::probe_nat/apply_nat_mappings` | 一次性分类和持续心跳，无返回结果，内部记录日志，先更新 QUIC 端点地址再同步地址簿，局部失败回滚 |
 | `DhttpNetwork::listen` | 登记具名 QUIC 服务及 Tower Service，取消时撤销名称 |
 | `get_connection/connect` | 查 H3 Pool；分别启动具名或匿名连接，装配 H3 并启动请求驱动 |
 | `serve_connection` | 接收双向请求流，读取当前 Service，退出时按连接实例移出池 |

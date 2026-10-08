@@ -1,6 +1,7 @@
 use super::Endpoint;
 use crate::{Body, RequestFuture, Result, network::DhttpNetwork};
 use bytes::Bytes;
+use futures::FutureExt;
 use h3x::{ReadResponse, Trailers, WndBuf, WriteRequest};
 use qrecovery::send::CancelStream;
 use std::{
@@ -11,7 +12,10 @@ use std::{
     sync::Arc,
     task::{Context, Poll, ready},
 };
-use tokio::{io::AsyncWrite, task::JoinHandle};
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    task::JoinHandle,
+};
 
 /// An empty request body.
 pub type Empty = http_body_util::Empty<Bytes>;
@@ -127,11 +131,15 @@ impl<B> Request<B> {
     }
 
     /// Set initial bytes before sending, leaving input open for further writes.
+    /// The window capacity is at least the initial data length.
     pub fn write(self, data: impl AsRef<[u8]>) -> Request<WndBuf> {
-        self.body(WndBuf::with_initial(
-            REQUEST_WINDOW_BYTES,
-            Bytes::copy_from_slice(data.as_ref()),
-        ))
+        let data = data.as_ref();
+        let mut body = WndBuf::new(REQUEST_WINDOW_BYTES.max(data.len()));
+        body.write_all(data)
+            .now_or_never()
+            .expect("initial data fits in the new window")
+            .expect("a new window is writable");
+        self.body(body)
     }
 
     async fn connect(&mut self) -> Result<h3x::H3Connection<crate::transport::QuicTransport>> {

@@ -127,7 +127,7 @@ impl AsyncRead for RecvStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+        AsyncRead::poll_read(Pin::new(&mut self.get_mut().0), cx, buf)
     }
 }
 

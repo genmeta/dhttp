@@ -113,7 +113,7 @@ async fn nat_classifies_once_then_heartbeats_replace_and_withdraw_mappings() {
     let first = "8.8.8.8:41000".parse().unwrap();
     let initial = EndpointAddr::direct(first);
     poll_probe_until(&mut binding, || {
-        bindings.addresses.ddns_endpoints().as_ref() == &[initial]
+        bindings.addresses.ddns_endpoints().as_ref() == [initial]
     })
     .await;
     assert_eq!(bindings.addresses.nat(bound), Some(NatType::FullCone));
@@ -134,7 +134,7 @@ async fn nat_classifies_once_then_heartbeats_replace_and_withdraw_mappings() {
     tokio::time::resume();
     let second = "8.8.8.8:42000".parse().unwrap();
     poll_probe_until(&mut binding, || {
-        bindings.addresses.ddns_endpoints().as_ref() == &[EndpointAddr::direct(second)]
+        bindings.addresses.ddns_endpoints().as_ref() == [EndpointAddr::direct(second)]
     })
     .await;
     assert_eq!(bindings.addresses.nat(bound), Some(NatType::FullCone));
@@ -206,7 +206,7 @@ async fn nat_endpoint_conflict_preserves_previous_mapping_and_foreign_socket() {
     let first = "8.8.8.8:41000".parse().unwrap();
     let second = "8.8.8.8:42000".parse().unwrap();
     let mappings = HashMap::from([(relay, first)]);
-    sync_nat_mappings(
+    apply_nat_mappings(
         &bindings.dock,
         &bindings.addresses,
         &socket,
@@ -223,7 +223,7 @@ async fn nat_endpoint_conflict_preserves_previous_mapping_and_foreign_socket() {
         .register(EndpointAddr::direct(second), &foreign)
         .unwrap();
     assert!(
-        sync_nat_mappings(
+        apply_nat_mappings(
             &bindings.dock,
             &bindings.addresses,
             &socket,
@@ -256,6 +256,72 @@ async fn nat_endpoint_conflict_preserves_previous_mapping_and_foreign_socket() {
     ));
     bindings.withdraw(&binding);
 }
+
+#[tokio::test]
+async fn nat_publication_conflict_restores_registrations_and_preserves_existing_records() {
+    let bindings = isolated_bindings();
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap());
+    let binding = bindings.register(socket.clone()).unwrap().unwrap();
+    let agent = "8.8.4.4:20002".parse().unwrap();
+    let first = "8.8.8.8:41000".parse().unwrap();
+    let second = "8.8.8.8:42000".parse().unwrap();
+    let previous = HashMap::from([(agent, first)]);
+    let refreshed = HashMap::from([(agent, second)]);
+    apply_nat_mappings(
+        &bindings.dock,
+        &bindings.addresses,
+        &socket,
+        &HashMap::new(),
+        &previous,
+    )
+    .unwrap();
+
+    // A publication can conflict even after every QUIC registration succeeds.
+    let foreign = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap());
+    let conflict = EndpointAddr::mediate(agent, second);
+    bindings.addresses.insert_outer(&foreign, conflict).unwrap();
+    let published = bindings.addresses.ddns_endpoints();
+    assert!(
+        apply_nat_mappings(
+            &bindings.dock,
+            &bindings.addresses,
+            &socket,
+            &previous,
+            &refreshed,
+        )
+        .is_err()
+    );
+    assert_eq!(bindings.addresses.ddns_endpoints(), published);
+    let quic = bindings.dock.topology().quic();
+    for endpoint in [
+        EndpointAddr::direct(binding.bound),
+        EndpointAddr::direct(first),
+        EndpointAddr::mediate(agent, first),
+    ] {
+        assert!(Arc::ptr_eq(&socket, &quic.find_socket(endpoint).unwrap()));
+    }
+    assert!(quic.find_socket(EndpointAddr::direct(second)).is_none());
+    assert!(quic.find_socket(conflict).is_none());
+
+    // The caller retains the previous mappings and can retry after the conflict clears.
+    bindings.addresses.remove(conflict);
+    apply_nat_mappings(
+        &bindings.dock,
+        &bindings.addresses,
+        &socket,
+        &previous,
+        &refreshed,
+    )
+    .unwrap();
+    assert_eq!(bindings.addresses.ddns_endpoints().as_ref(), &[conflict]);
+    assert!(quic.find_socket(EndpointAddr::direct(first)).is_none());
+    assert!(Arc::ptr_eq(&socket, &quic.find_socket(conflict).unwrap()));
+    bindings.withdraw(&binding);
+    bindings
+        .addresses
+        .remove_bound(foreign.local_addr().unwrap());
+}
+
 #[tokio::test]
 async fn classification_failure_does_not_stop_binding_heartbeats_or_invent_nat_type() {
     use qbase::datagram::{Datagram, WriteDatagram, be_datagram};
@@ -354,7 +420,7 @@ async fn filtering_nat_publishes_relay_records_and_keeps_direct_punch_endpoints(
         "1.1.1.1:20002".parse().unwrap(),
     ];
     let previous = HashMap::from([(agents[0], first), (agents[1], first)]);
-    sync_nat_mappings(
+    apply_nat_mappings(
         &bindings.dock,
         &bindings.addresses,
         &socket,
@@ -379,7 +445,7 @@ async fn filtering_nat_publishes_relay_records_and_keeps_direct_punch_endpoints(
             .is_some()
     );
     let refreshed = HashMap::from([(agents[0], changed)]);
-    sync_nat_mappings(
+    apply_nat_mappings(
         &bindings.dock,
         &bindings.addresses,
         &socket,
