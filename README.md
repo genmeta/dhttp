@@ -105,4 +105,4 @@ cargo test -p dhttp --test dns_bootstrap -- --ignored
 DHTTP_TEST_OPENSSL=/opt/homebrew/bin/openssl cargo test -p dhttp --lib --tests -- --include-ignored
 ```
 
-旧 Node.js/Python 包装已移除；语言绑定和发布版本固定待 Rust 接口及真实联网验证完成后处理。
+Node.js/Python SDK 已恢复首版高层客户端和 handler，支持流式收发、身份、取消与关闭，并通过本机 npm/wheel 安装和跨进程验收。使用说明见 [SDK](api/README.md)。当前发现支持 System DNS 和显式 peers；默认 H3 DNS/mDNS、名称发布及多平台发行仍待完成。

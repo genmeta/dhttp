@@ -154,7 +154,21 @@ impl Endpoint {
     /// The application callback, listener lifetime, scopes and connection pool remain owned by Network.
     /// Certificate/key rotation requires application restart; this operation renews only the staple.
     pub async fn reload(&self) -> Result<Self> {
-        let mut replacement = Self::load(self.name()).await?;
+        self.replace_staple(Self::load(self.name()).await?)
+    }
+
+    /// Reload the staple from an explicit profile without changing DHTTP_HOME.
+    /// The profile must retain this endpoint's name and certificate chain.
+    pub async fn reload_from(&self, path: impl AsRef<std::path::Path>) -> Result<Self> {
+        self.replace_staple(Self::load_from(path).await?)
+    }
+
+    fn replace_staple(&self, mut replacement: Self) -> Result<Self> {
+        if replacement.name() != self.name() {
+            return Err(Error::InvalidName {
+                name: replacement.name().to_owned(),
+            });
+        }
         if replacement.quic.identity.cert_chain() != self.quic.identity.cert_chain() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

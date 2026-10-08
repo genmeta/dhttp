@@ -73,7 +73,8 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
             ],
         );
         fs::write(root.join("leaf.ext"), format!(
-            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:{hostname}\n"
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:{hostname}\nsubjectKeyIdentifier={}\n",
+            format!("0:0:{:064x}", index + 1).bytes().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(":")
         )).unwrap();
         openssl(
             root,

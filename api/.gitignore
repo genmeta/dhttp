@@ -1,0 +1,8 @@
+*.node
+*.so
+*.dylib
+*.dll
+__pycache__/
+*.pyc
+.venv/
+dist/
