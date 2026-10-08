@@ -112,6 +112,30 @@ impl Endpoint {
         let profile = home
             .identity_profile(&name)
             .map_err(|_| Error::InvalidName { name })?;
+        Self::load_profile(profile).await
+    }
+
+    /// Load credentials from an explicit identity profile directory.
+    /// The directory name identifies the endpoint, using the same home layout
+    /// and key permission checks as [`Self::load`]. Does not change DHTTP_HOME.
+    pub async fn load_from(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let profile =
+            dhttp_home::identity::IdentityProfile::try_from(path.as_ref()).map_err(|source| {
+                Error::Home {
+                    path: path.as_ref().to_owned(),
+                    source: Arc::new(source),
+                }
+            })?;
+        // Wildcard profiles describe a credential range, not an endpoint name.
+        if dhttp_home::normalize_name(profile.name()).as_deref() != Some(profile.name()) {
+            return Err(Error::InvalidName {
+                name: profile.name().to_owned(),
+            });
+        }
+        Self::load_profile(profile).await
+    }
+
+    async fn load_profile(profile: dhttp_home::identity::IdentityProfile) -> Result<Self> {
         let certificates = profile.load_certs().await.map_err(|source| Error::Home {
             path: profile.cert_path(),
             source: Arc::new(source),
