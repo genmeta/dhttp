@@ -18,6 +18,7 @@ static NETWORK: tokio::sync::OnceCell<DhttpNetwork> = tokio::sync::OnceCell::con
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct DhttpNetwork {
+    interfaces: interfaces::Interfaces,
     listeners: Mutex<HashMap<Arc<str>, BoxService>>,
     pool: h3x::Pool<ConnectionKey, QuicTransport, Error>,
 }
@@ -33,8 +34,9 @@ impl DhttpNetwork {
         NETWORK
             .get_or_try_init(|| async {
                 crate::trust::initialize()?;
-                interfaces::init().await?;
+                let interfaces = interfaces::Interfaces::init().await?;
                 Ok::<_, Error>(Self {
+                    interfaces,
                     listeners: Mutex::new(HashMap::new()),
                     pool: h3x::Pool::new(connect),
                 })
@@ -46,15 +48,36 @@ impl DhttpNetwork {
         NETWORK.get().ok_or(Error::NetworkNotInitialized)
     }
 
+    /// Refresh network resources after device wake or application foregrounding.
+    /// No preceding suspend call is required. State changes are serialized with interface polling.
+    /// Returns after refreshing the interface watcher and scanning current bindings,
+    /// preserving live sockets and their ports, and scheduling immediate STUN refreshes.
+    /// Individual binding failures are logged and retried by periodic maintenance.
+    /// Does not wait for STUN or guarantee Internet reachability, reconnect terminated
+    /// connections, or replay HTTP requests. The original Tokio runtime must remain alive.
+    pub async fn resume(&self) -> Result<()> {
+        self.interfaces.resume().await
+    }
+
     pub(crate) async fn get_connection(
         &'static self,
         local: Option<Endpoint>,
         remote: Arc<str>,
     ) -> Result<H3> {
         let key = ConnectionKey::Outgoing { local, remote };
-        tokio::time::timeout(CONNECT_TIMEOUT, self.pool.get(&key))
+        let result = tokio::time::timeout(CONNECT_TIMEOUT, self.pool.get(&key))
             .await
-            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)?;
+        match &result {
+            Ok(h3) => tracing::trace!(
+                local = ?h3.transport().handshake.local.as_ref().map(qtls::LocalAuthority::name),
+                remote = ?h3.transport().handshake.remote.as_ref().map(qtls::RemoteAuthority::name),
+                paths = ?h3.transport().connection.validated_paths(),
+                "HTTP/3 connection ready for outgoing request"
+            ),
+            Err(error) => tracing::trace!(%error, "HTTP/3 connection acquisition failed"),
+        }
+        result
     }
 
     pub(crate) async fn listen(
@@ -85,6 +108,12 @@ impl DhttpNetwork {
                             return;
                         }
                     };
+                    tracing::trace!(
+                        local = %local.name(),
+                        remote = ?remote.as_ref().map(qtls::RemoteAuthority::name),
+                        paths = ?connection.validated_paths(),
+                        "incoming QUIC handshake completed"
+                    );
                     let connection = QuicTransport::new(
                         connection, Some(local), remote, h3x::Role::Server,
                     ).and_then(|transport| {
@@ -127,24 +156,35 @@ impl Endpoint {
     pub async fn reload(&self) -> Result<Self> {
         let mut replacement = Self::load(self.name()).await?;
         if replacement.quic.identity.cert_chain() != self.quic.identity.cert_chain() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-                "certificate chain changed; restart required").into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "certificate chain changed; restart required",
+            )
+            .into());
         }
-        qtls::validate_ocsp(replacement.quic.identity.ocsp(),
-            replacement.quic.identity.cert_chain(), qtls::UnixTime::now())
-            .map_err(std::io::Error::other)?;
+        qtls::validate_ocsp(
+            replacement.quic.identity.ocsp(),
+            replacement.quic.identity.cert_chain(),
+            qtls::UnixTime::now(),
+        )
+        .map_err(std::io::Error::other)?;
         let network = DhttpNetwork::global()?;
-        let listeners = network.listeners.lock().map_err(|_| std::io::Error::other("listener registry poisoned"))?;
+        let listeners = network
+            .listeners
+            .lock()
+            .map_err(|_| std::io::Error::other("listener registry poisoned"))?;
         if listeners.contains_key(self.name()) {
-            let registered = qconn::ServerRegistry::global().get(self.name())
+            let registered = qconn::ServerRegistry::global()
+                .get(self.name())
                 .ok_or_else(|| std::io::Error::other("listener TLS registration disappeared"))?;
             let quic = Arc::get_mut(&mut replacement.quic)
                 .ok_or_else(|| std::io::Error::other("replacement endpoint unexpectedly shared"))?;
             quic.server_parameters = registered.server_parameters.clone();
-            quic.listen(registered.scopes, move |result| (registered.accept_cb)(result))
-                .map_err(std::io::Error::other)?;
+            quic.listen(registered.scopes, move |result| {
+                (registered.accept_cb)(result)
+            })
+            .map_err(std::io::Error::other)?;
         }
         Ok(replacement)
     }
-
 }

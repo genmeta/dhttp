@@ -55,7 +55,10 @@ pub(super) async fn serve_connection(network: &'static DhttpNetwork, key: Connec
                 break;
             }
         };
-        tracing::debug!(
+        tracing::trace!(
+            local = ?key.names().0,
+            remote = ?key.names().1,
+            stream_id = writer.stream_id(),
             paths = ?h3.transport().connection.validated_paths(),
             "HTTP/3 request validated QUIC paths"
         );
@@ -88,6 +91,7 @@ pub(super) async fn connect(key: ConnectionKey) -> Result<H3> {
         });
     };
     let network = DhttpNetwork::global()?;
+    tracing::trace!(local = ?key.names().0, remote = ?key.names().1, "outgoing QUIC handshake started");
     let (local, remote, connection) = match local {
         Some(endpoint) => endpoint.quic.connect(remote.to_string()).await?,
         None => {
@@ -99,10 +103,11 @@ pub(super) async fn connect(key: ConnectionKey) -> Result<H3> {
             .await?
         }
     };
-    tracing::debug!(
+    tracing::trace!(
         local = ?local.as_ref().map(qtls::LocalAuthority::name),
         remote = %remote.name(),
-        "outgoing QUIC handshake identities"
+        paths = ?connection.validated_paths(),
+        "outgoing QUIC handshake completed"
     );
     let transport = QuicTransport::new(connection, local, Some(remote), h3x::Role::Client)?;
     let h3 = H3::new(transport, h3x::Settings::default())?;

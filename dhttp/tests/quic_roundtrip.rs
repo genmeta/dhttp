@@ -153,7 +153,11 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                 .post("https://server~/echo".parse().unwrap())
                 .body(dhttp::WndBuf::new(64 * 1024))
                 .await?;
-            request.write_all(&payload).await?;
+            let middle = payload.len() / 2;
+            request.write_all(&payload[..middle]).await?;
+            // Wake recovery must retain both the live upload and its pooled connection.
+            DhttpNetwork::global()?.resume().await?;
+            request.write_all(&payload[middle..]).await?;
             request.shutdown().await?;
             response.await
         })

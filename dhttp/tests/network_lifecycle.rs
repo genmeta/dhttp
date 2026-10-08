@@ -139,6 +139,35 @@ async fn network_initializes_once() {
     for retained in before.iter().filter(|endpoint| *endpoint != old) {
         assert!(after.contains(retained), "live bindings keep their ports");
     }
+
+    // Explicit wake recovery repairs a dead receiver before acknowledging callers,
+    // preserving unaffected ports and the singleton across repeated/concurrent calls.
+    let old = after
+        .iter()
+        .find(|endpoint| endpoint.addr().is_ipv4())
+        .unwrap();
+    let old_bound = old.addr();
+    let socket = qprotocol::Dock::global().find_socket(old_bound).unwrap();
+    assert!(qprotocol::Dock::global().remove(&socket));
+    let (first_resume, second_resume) = tokio::join!(network.resume(), network.resume());
+    first_resume.unwrap();
+    second_resume.unwrap();
+    assert!(AddressBook::global().mdns_endpoints(old_bound).is_empty());
+    let resumed = network::loopback_endpoints();
+    assert!(
+        resumed
+            .iter()
+            .any(|endpoint| endpoint.addr().ip() == old_bound.ip())
+    );
+    for retained in after.iter().filter(|endpoint| *endpoint != old) {
+        assert!(
+            resumed.contains(retained),
+            "resume must retain live sockets and ports"
+        );
+    }
+    network.resume().await.unwrap();
+    assert_eq!(network::loopback_endpoints(), resumed);
+    assert!(std::ptr::eq(network, DhttpNetwork::global().unwrap()));
     assert!(
         qprotocol::Dock::global()
             .find_socket(temporary_bound)

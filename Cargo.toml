@@ -41,22 +41,22 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
-# Pin transport sources so a standalone Git checkout needs no adjacent repositories.
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qconn = { package = "qconnection", git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qtransport = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qprotocol = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qresolve = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qudp = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qtls = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-h3x = { git = "https://github.com/genmeta/h3x.git", rev = "90ab46c8df5332139d6ffd9eab30daa61b05bbca" }
+# Integrate with the adjacent transport workspaces.
+qbase = { path = "../dquic/qbase" }
+qconn = { package = "qconnection", path = "../dquic/qconnection" }
+qtransport = { path = "../dquic/qtransport" }
+qprotocol = { path = "../dquic/qprotocol" }
+qresolve = { path = "../dquic/qresolve" }
+qudp = { path = "../dquic/qudp" }
+qrecovery = { path = "../dquic/qrecovery" }
+qtls = { path = "../dquic/qtls" }
+h3x = { path = "../h3x" }
 dhttp-home = { path = "home", version = "0.5.0", default-features = false }
 dhttp = { path = "dhttp", version = "0.6.2" }
 dhttp-access = { path = "access", version = "0.4.2" }
 dhttp-log = { path = "log", version = "0.1.0" }
 
-# h3x uses these crate names from the registry; share the pinned QUIC types.
+# h3x uses these crate names from the registry; share the local QUIC types.
 [patch.crates-io]
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "c64cf762cbaab9f0b848cf744d4f7352b2514864" }
+qbase = { path = "../dquic/qbase" }
+qrecovery = { path = "../dquic/qrecovery" }
