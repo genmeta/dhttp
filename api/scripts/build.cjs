@@ -1,0 +1,13 @@
+'use strict';
+const {spawnSync} = require('node:child_process');
+const {copyFileSync} = require('node:fs');
+const path = require('node:path');
+const api = path.resolve(__dirname, '..');
+const release = process.argv.includes('--release');
+const cargo = spawnSync('cargo', ['build', '-p', 'dhttp-api', '--features', 'napi', ...(release ? ['--release'] : [])], {cwd: api, stdio: 'inherit'});
+if (cargo.status !== 0) process.exit(cargo.status ?? 1);
+const metadata = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], {cwd: api, encoding: 'utf8'});
+if (metadata.status !== 0) throw new Error(metadata.stderr);
+const target = JSON.parse(metadata.stdout).target_directory;
+const name = process.platform === 'win32' ? 'dhttp_api.dll' : process.platform === 'darwin' ? 'libdhttp_api.dylib' : 'libdhttp_api.so';
+copyFileSync(path.join(target, release ? 'release' : 'debug', name), path.join(api, 'dhttp.node'));

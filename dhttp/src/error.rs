@@ -81,6 +81,26 @@ impl std::error::Error for Error {
     }
 }
 
+impl Error {
+    // Body and AsyncWrite erase concrete errors into BoxError/io::Error.
+    // Recover core categories here so callers need only one error mapping.
+    fn recover(source: &(dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(error) = source.downcast_ref::<Self>() {
+            return Some(error.clone());
+        }
+        if let Some(error) = source.downcast_ref::<h3x::Error>() {
+            return Some(error.clone().into());
+        }
+        if let Some(error) = source.downcast_ref::<qconn::Error>() {
+            return Some(error.clone().into());
+        }
+        source
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .and_then(|source| Self::recover(source))
+    }
+}
+
 impl From<http::uri::InvalidUri> for Error {
     fn from(source: http::uri::InvalidUri) -> Self {
         Self::InvalidUri {
@@ -107,16 +127,20 @@ impl From<qconn::Error> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(source: std::io::Error) -> Self {
-        Self::Io {
+        Self::recover(&source).unwrap_or_else(|| Self::Io {
             source: Arc::new(source),
-        }
+        })
     }
 }
 
 impl From<crate::BoxError> for Error {
     fn from(source: crate::BoxError) -> Self {
-        Self::Io {
+        Self::recover(source.as_ref()).unwrap_or_else(|| Self::Io {
             source: Arc::new(std::io::Error::other(source)),
-        }
+        })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/error.rs"]
+mod tests;
