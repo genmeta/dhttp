@@ -10,6 +10,96 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "../support/transport.rs"]
 mod support;
 
+#[tokio::test]
+async fn extended_connect_preserves_protocol_and_small_bidirectional_data() {
+    bounded(async {
+        let (client, server) = support::connection_pair();
+        let (writer, reader) = client.open_bi().await.unwrap();
+        let (response_writer, request_reader) = server.accept_bi().await.unwrap();
+        let app = tower::service_fn(|request: http::Request<Body>| async move {
+            assert_eq!(request.method(), http::Method::CONNECT);
+            assert_eq!(request.uri(), "https://bob.dhttp.net/api/websocket");
+            assert_eq!(
+                request.extensions().get::<Arc<str>>().unwrap().as_ref(),
+                "websocket"
+            );
+            assert!(
+                request
+                    .extensions()
+                    .get::<qtls::HandshakeSummary>()
+                    .is_some()
+            );
+            let mut incoming = request.into_body();
+            let stream = async_stream::stream! {
+                // HA speaks first, before the client ends or even starts its upload.
+                yield Ok::<_, BoxError>(Frame::data(Bytes::from_static(b"auth_required")));
+                while let Some(frame) = incoming.frame().await { yield frame; }
+                yield Ok(Frame::data(Bytes::from_static(b"after-upload-eof")));
+            };
+            Ok::<_, BoxError>(http::Response::new(StreamBody::new(stream).boxed_unsync()))
+        })
+        .boxed_clone();
+        let serving = tokio::spawn(handle_request(
+            app,
+            response_writer,
+            request_reader,
+            server.qpack().clone(),
+            handshake("bob.dhttp.net"),
+        ));
+        let request = http::Request::builder()
+            .method(http::Method::CONNECT)
+            .uri("https://bob~/api/websocket")
+            .extension(Arc::<str>::from("websocket"))
+            .header("sec-websocket-version", "13")
+            .body(WndBuf::new(64 * 1024))
+            .unwrap();
+        let (mut upload, response) = send_upload(request, writer, reader, client.qpack().clone());
+        let mut response = response.await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response
+                .body_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            "auth_required"
+        );
+        for bytes in [b"auth".as_slice(), b"ping", b"pong"] {
+            upload.write_all(bytes).await.unwrap();
+            upload.flush().await.unwrap();
+            assert_eq!(
+                response
+                    .body_mut()
+                    .frame()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .into_data()
+                    .unwrap(),
+                bytes
+            );
+        }
+        upload.shutdown().await.unwrap();
+        assert_eq!(
+            response
+                .body_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            "after-upload-eof"
+        );
+        assert!(response.body_mut().frame().await.is_none());
+        serving.await.unwrap().unwrap();
+    })
+    .await;
+}
+
 async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(3), future)
         .await
