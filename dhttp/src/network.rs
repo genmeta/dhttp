@@ -98,7 +98,7 @@ impl DhttpNetwork {
                     name: name.to_string(),
                 });
             }
-            quic.listen(scopes, {
+            quic.listen_with_optional_client_ocsp(scopes, {
                 let name = name.clone();
                 move |result| {
                     let (remote, local, connection) = match result {
