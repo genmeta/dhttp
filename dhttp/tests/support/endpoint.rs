@@ -3,7 +3,6 @@ pub fn named(name: &str) -> crate::Endpoint {
     let name = dhttp_home::normalize_name(name).unwrap();
     let generated = rcgen::generate_simple_self_signed(vec![name.clone()]).unwrap();
     let identity = qbase::endpoint::Endpoint::new(
-        &qtls::default_provider(),
         &name,
         vec![generated.cert.der().clone()],
         qtls::PrivateKeyDer::Pkcs8(generated.signing_key.serialize_der().into()),

@@ -93,14 +93,15 @@ pub(super) async fn connect(key: ConnectionKey) -> Result<H3> {
     let network = DhttpNetwork::global()?;
     tracing::trace!(local = ?key.names().0, remote = ?key.names().1, "outgoing QUIC handshake started");
     let (local, remote, connection) = match local {
-        Some(endpoint) => endpoint.quic.connect(remote.to_string()).await?,
+        Some(endpoint) => {
+            let mut quic = qconn::QuicEndpoint::from(endpoint.identity.clone());
+            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            quic.connect(remote.to_string()).await?
+        }
         None => {
-            qconn::connect_anonymously(
-                remote.to_string(),
-                qbase::param::handy::client_parameters(),
-                vec![h3x::ALPN.to_vec()],
-            )
-            .await?
+            let mut quic = qconn::QuicEndpoint::anonymous();
+            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            quic.connect(remote.to_string()).await?
         }
     };
     tracing::trace!(

@@ -99,7 +99,6 @@ fn endpoint(root: &Path, directory: &str, name: &str) -> Endpoint {
     let certs = fs::read(ssl.join("fullchain.crt")).unwrap();
     let key = fs::read(ssl.join("privkey.pem")).unwrap();
     let identity = qbase::endpoint::Endpoint::new(
-        &qtls::default_provider(),
         name,
         rustls_pemfile::certs(&mut certs.as_slice())
             .collect::<Result<Vec<_>, _>>()
