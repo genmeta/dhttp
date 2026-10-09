@@ -67,9 +67,17 @@ Request 构造阶段支持 `.trailer(name, value)` 替换同名字段、`.append
 
 `DhttpNetwork::init()` 为所有可用活动网卡准备 UDP 绑定；重复或并发调用返回同一个 Network。netwatcher 先交付当前快照，再持续监听系统网卡事件。每次扫描保留匹配 socket 的实际端口，添加新绑定并撤销失效绑定；IPv6 link-local 地址保留网卡 scope ID。没有可用网卡或部分绑定失败时仍可初始化，后续网卡变化会重新扫描。
 
-`DhttpNetwork` 只保存 HTTP/3 连接池和服务表。池键分为 Incoming 和 Outgoing，分别要求本端或远端身份；双方身份齐全时按同一名称对匹配，出站请求可以复用入站连接。socket、收包任务、直接 QUIC 地址登记及清理统一交给 dquic 的 `Dock`，地址发布到配套 `AddressBook`；纯客户端也可直接建连。收包失败由 Dock 清理，Network 等待下一次网卡事件补齐绑定。Tokio runtime 必须持续存活。
+手机唤醒或应用回到前台时，调用进程级恢复接口，无需先调用 suspend：
 
-初始化不等待 STUN/NAT 探测；NAT 分类、公网映射和 relay 别名由 dquic 的独立协议能力提供。当前 Network 只发布直接绑定地址，不自动测量或发布 NAT 映射地址。所有连接使用通过 `dhttp::resolve::Resolver::add` 注入的解析器。Pishoo 等上层负责按域名分流：DHTTP 名称交给 DDNS/mDNS，普通 DNS 域名交给 `SystemResolver`。全局 Resolver 并发合并已注册来源，本身不决定域名分流规则。
+```rust,ignore
+dhttp::DhttpNetwork::global()?.resume().await?;
+```
+
+`resume()` 直接调用网卡维护对象，刷新监听器、重新读取当前网卡快照并修复绑定；仍有效的 socket 和端口保留，并发调用与后台维护通过同一互斥锁串行修改状态。返回时本轮扫描已完成，STUN 刷新已安排，不等待公网探测完成，也不保证互联网已可达。单个绑定失败继续由后台检查重试；监听器创建、网卡读取或维护任务停止的错误返回给调用方。地址变化沿用底层 QUIC 路径发现和验证；已经终止的连接由后续请求重新建立，已发送请求不会自动重放。
+
+`DhttpNetwork` 保存 HTTP/3 连接池、服务表和网卡维护对象。池键分为 Incoming 和 Outgoing，分别要求本端或远端身份；双方身份齐全时按同一名称对匹配，出站请求可以复用入站连接。socket、收包任务、直接 QUIC 地址登记及清理统一交给 dquic 的 `Dock`，地址发布到配套 `AddressBook`；纯客户端也可直接建连。收包失败由 Dock 清理，Network 在网卡事件、resume 或每秒存活检查时补齐绑定。初始化时使用的 Tokio runtime 必须持续存活；resume 不重建已经销毁的 runtime。
+
+初始化不等待 STUN/NAT 探测。Network 使用 dquic 的协议能力为每个适用绑定执行一次 NAT 分类，之后每20秒刷新公网映射并同步地址簿；resume 取消旧的心跳测量并立即重测，已退出的 STUN 发现也可重试。已完成的 NAT 分类在同一绑定上保留，Loopback 和 IPv6 link-local 不探测。所有连接使用通过 `dhttp::resolve::Resolver::add` 注入的解析器。Pishoo 等上层负责按域名分流：DHTTP 名称交给 DDNS/mDNS，普通 DNS 域名交给 `SystemResolver`。全局 Resolver 并发合并已注册来源，本身不决定域名分流规则。
 
 请求 URI 中只有 `bob~`、`~` 等显式简写展开为 DHTTP 名称。普通 DNS 名称保持原域名，显式端口传到连接层，并参与连接池匹配；`https://ddns.genmeta.net:4433` 不会变成 `.dhttp.net` 名称或丢失端口。通过 HTTP/3 查询 DDNS 时，其服务 origin 也走全局 Resolver，必须由上层的域名分流交给系统解析，避免递归进入 DDNS 查询。DHTTP authority 的 `:序号` 仍只保留在请求 URI 中，传输地址和端口来自解析结果。TLS 仍使用配置的信任根并验证名称和 OCSP。
 
