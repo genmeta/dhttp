@@ -42,15 +42,15 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
 # Integrate with the adjacent transport workspaces.
-qbase = { path = "../dquic/qbase" }
-qconn = { package = "qconnection", path = "../dquic/qconnection" }
-qtransport = { path = "../dquic/qtransport" }
-qprotocol = { path = "../dquic/qprotocol" }
-qresolve = { path = "../dquic/qresolve" }
-qudp = { path = "../dquic/qudp" }
-qrecovery = { path = "../dquic/qrecovery" }
-qtls = { path = "../dquic/qtls" }
-h3x = { path = "../h3x" }
+qbase = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qconn = { package = "qconnection", git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qtransport = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qprotocol = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qresolve = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qudp = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qtls = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+h3x = { git = "https://github.com/genmeta/h3x.git", rev = "cd1ed3aea181d1f05f1627564f88a5e2d33aaee5" }
 dhttp-home = { path = "home", version = "0.5.0", default-features = false }
 dhttp = { path = "dhttp", version = "0.6.2" }
 dhttp-access = { path = "access", version = "0.4.2" }
@@ -58,5 +58,5 @@ dhttp-log = { path = "log", version = "0.1.0" }
 
 # h3x uses these crate names from the registry; share the local QUIC types.
 [patch.crates-io]
-qbase = { path = "../dquic/qbase" }
-qrecovery = { path = "../dquic/qrecovery" }
+qbase = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
+qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "4acdce041ee3b6d1bb1c0277462e3783028755da" }
