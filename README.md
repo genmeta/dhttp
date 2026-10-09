@@ -20,7 +20,7 @@ dhttp::DhttpNetwork::init().await?;
 let response = dhttp::Anonymous.get("https://bob~/profile".parse()?).await?;
 ```
 
-`Endpoint` 持有 `Arc<qconn::QuicEndpoint>`；`Endpoint::load` 读取名称对应的证书链、私钥和 OCSP，加载失败立即返回错误，clone 共享已加载的端点。监听和新建连接直接使用这些凭据，池仍按双方名称复用连接；匿名与具名请求使用不同池条目。凭据文件更新后需要重新 load，已有 Endpoint 保留加载时的材料。
+`Endpoint` 直接持有 `Arc<qbase::endpoint::Endpoint>`；`Endpoint::load` 读取名称对应的证书链、私钥和 OCSP，加载失败立即返回错误，clone 共享已加载的身份材料。监听和新建连接直接使用这些凭据，池仍按双方名称复用连接；匿名与具名请求使用不同池条目。凭据文件更新后需要重新 load，已有 Endpoint 保留加载时的材料。
 
 `Endpoint::new(identity)` 必须接收已准备好的 `Arc<qbase::endpoint::Endpoint>`，与底层 QUIC 的构造参数一致。`name()` 返回 `&str`；Endpoint 始终有身份，可以发起请求和监听。`Anonymous` 是无状态的出站入口，提供相同的 get/head/post/put/patch/delete/options/request/from_request 方法，不提供 listen。`Anonymous.from_request(http_request)` 和 `Request::new(http_request)` 都可接入已有的标准 HTTP 请求。
 
@@ -97,7 +97,9 @@ h3x 内部保留有界收发缓冲，接收消息和 Service 响应使用标准 
 
 `dhttp-home` 负责目录定位，`Endpoint::load` 从 `DHTTP_HOME/<name>/ssl` 或用户默认 home 读取身份材料并装配 QUIC 端点。TLS 身份和握手类型直接复用 qtls。`dhttp-home` 同时承载 DHTTP 名称、证书链标识、SKI 解析和规范签名验证；需要这些规则的应用直接调用其证书接口，签名使用 qtls 的本端身份能力。入站请求的握手信息作为 `qtls::HandshakeSummary` 放在 request extensions 中。
 
-当前依赖相邻 `../dquic` 和 `../h3x`，传输仅使用 QUIC。具名请求通过 QuicEndpoint 建连，匿名请求调用 qconnection 的 connect_anonymously，两者共用底层流程。QuicEndpoint 始终持有身份；匿名只表示不提交客户端凭据，仍验证服务器身份。出站路径发现由 qconnection 消费全局 Resolver 和 AddressBook；双方显式采用 dquic 的 client/server transport parameters，开放 HTTP/3 所需的流和流控额度。dhttp 显式配置两端的 `h3` ALPN，在装配 H3 前校验实际协商值，握手摘要保留实际结果。未交付建连的取消及 QUIC 清理由 dquic 管理。WASM、授权、应用路由和终端执行由 Pishoo 负责。
+2026-10-09 适配本地新 dquic：具名 Endpoint 直接拥有 qbase 身份，匿名出站使用匿名 QuicEndpoint；监听采用新 dquic 的严格客户端 OCSP 要求。具名客户端缺少或提交无效 staple 时握手失败，匿名客户端仍按现有身份/授权规则处理。不再提供旧的客户端 OCSP 宽松兼容入口。
+
+当前依赖相邻 `../dquic` 和 `../h3x`，传输仅使用 QUIC。具名请求从已加载的身份构造局部 QuicEndpoint::from，匿名请求使用 QuicEndpoint::anonymous，两者调用同一 connect 流程。匿名只表示不提交客户端凭据，仍验证服务器身份。出站路径发现由 qconnection 消费全局 Resolver 和 AddressBook；双方采用新 dquic 的默认 client/server transport parameters，开放 HTTP/3 所需的流和流控额度。dhttp 显式配置两端的 `h3` ALPN，在装配 H3 前校验实际协商值，握手摘要保留实际结果。未交付建连的取消及 QUIC 清理由 dquic 管理。WASM、授权、应用路由和终端执行由 Pishoo 负责。
 
 ```sh
 cargo test -p dhttp --lib --tests

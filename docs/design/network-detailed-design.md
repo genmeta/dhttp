@@ -232,13 +232,13 @@ Dock 的接收任务结束时会清除自己的登记和 QUIC 端点地址，Add
 
 ```rust
 pub struct Endpoint {
-    pub(crate) quic: Arc<qconn::QuicEndpoint>,
+    pub(crate) identity: Arc<qbase::endpoint::Endpoint>,
 }
 ```
 
-`Endpoint::new(identity)` 把必填身份传给 `QuicEndpoint::new`，显式配置 h3 ALPN 和现有 client/server transport parameters。Endpoint 始终持有 `Arc<QuicEndpoint>`，不能构造无身份端点；name() 返回 &str，读取 `quic.identity.name()`。
+`Endpoint::new(identity)` 直接持有必填的 `Arc<qbase::endpoint::Endpoint>`；name() 从该内存身份返回 &str。新建连接、监听或 OCSP 重载时使用局部 QuicEndpoint::from 和 set_alpn，采用新 dquic 的默认传输参数；不额外保存身份副本或 QuicEndpoint。
 
-`Endpoint::load` 规范化 DHTTP 名称，并一次性读取证书链、私钥和 OCSP。克隆共享内存中的 QUIC endpoint；新连接和 listen 不重新读取身份文件。凭据加载或验证失败返回错误。
+`Endpoint::load` 规范化 DHTTP 名称，并一次性读取证书链、私钥和 OCSP。克隆共享内存中的身份材料；新连接和 listen 不重新读取身份文件。凭据加载或验证失败返回错误。
 
 ### 5.2 匿名出站
 
@@ -249,15 +249,15 @@ pub struct Endpoint {
 连接池 factory 选择 dquic 的两种入口，两者共用内部建连实现：
 
 ```text
-Some(endpoint) → endpoint.quic.connect(server_name)
-None           → qconn::connect_anonymously(server_name, client_parameters, alpn)
+Some(endpoint) → QuicEndpoint::from(endpoint.identity.clone()).connect(server_name)
+None           → QuicEndpoint::anonymous().connect(server_name)
 ```
 
-qconn 的具名 connect 提供本端 LocalAuthority，匿名函数传入 None；共有的内部流程统一创建初始 CID、密钥、TLS context 和 Paths，并启动 `client_growing` 与 `recv::tick`。dhttp 只装配 HTTP/3 所需配置，不实现匿名 QUIC 启动。
+qconn 的具名 connect 提供本端 LocalAuthority，匿名 Endpoint 不提交本端身份；共有的内部流程统一创建初始 CID、密钥、TLS context 和 Paths，并启动 `client_growing` 与 `recv::tick`。dhttp 只装配 HTTP/3 所需配置，不实现匿名 QUIC 启动。
 
 解析源、地址流、路径发现和 QUIC/TLS 生命周期由下层客户端流程处理。TLS 验证目标服务器身份；匿名只表示不提交本端身份。握手名称去掉 authority 的端口，解析和连接池键保留端口。取消尚未交付的 connect future 会发出关闭信号，停止解析并按现有关闭流程清理路径及 CID；回调无法交付已经建立的连接时同样关闭该连接。
 
-匿名请求可复用同目标的匿名连接，并与具名请求隔离。dhttp Endpoint 和 qconn QuicEndpoint.identity 都保持必填；实际认证身份来自握手结果，错误不表示匿名。
+匿名请求可复用同目标的匿名连接，并与具名请求隔离。dhttp Endpoint.identity 保持必填，qconn QuicEndpoint 内的身份可选；实际认证身份来自握手结果，错误不表示匿名。
 
 ## 6. H3 接入与服务生命周期
 

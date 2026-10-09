@@ -151,15 +151,30 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         .get(endpoint.name())
         .unwrap();
     let second = qconn::ServerRegistry::global().get(other.name()).unwrap();
-    (first.accept_cb)(Err(qbase::error::QuicError::with_default_fty(
-        qbase::error::ErrorKind::Internal,
-        "test rejected handshake",
-    )
-    .into()));
+    // The new QUIC callback only delivers authenticated connections. Rejecting
+    // an unsupported negotiated ALPN at the H3 boundary must still be local to
+    // that connection and preserve the listener registration.
+    let parameters = qbase::param::ArcParameters::new(
+        qbase::role::Role::Server,
+        std::sync::Arc::new(qbase::param::ClientParameters::default()),
+        std::sync::Arc::new(qbase::param::ServerParameters::default()),
+    );
+    let streams = qconn::DataStreams::new(
+        parameters,
+        Box::new(qbase::sid::handy::DemandConcurrency),
+        qconn::ArcReliableFrames::with_capacity(0),
+        None,
+    );
+    let connection = qconn::ArcConnection::new(
+        Bytes::from_static(b"h2"),
+        streams,
+        qtransport::terminate::ArcTerminator::no_error(),
+    );
+    (first.accept_cb)((None, endpoint.local_authority().unwrap(), connection));
     tokio::task::yield_now().await;
     assert!(
         !listening.is_finished(),
-        "a bad handshake must not stop the listener"
+        "a rejected H3 setup must not stop the listener"
     );
     assert!(std::sync::Arc::ptr_eq(
         &first,

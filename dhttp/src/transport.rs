@@ -165,10 +165,7 @@ impl CancelStream for SendStream {
 mod tests {
     use super::*;
     use qbase::{
-        param::{
-            ArcParameters,
-            handy::{client_parameters, server_parameters},
-        },
+        param::{ArcParameters, ClientParameters, ServerParameters},
         sid::handy::DemandConcurrency,
     };
     use qtransport::terminate::ArcTerminator;
@@ -208,8 +205,8 @@ mod tests {
     fn connection(alpn: &'static [u8]) -> (qconn::ArcConnection, ArcTerminator) {
         let parameters = ArcParameters::new(
             qbase::role::Role::Client,
-            Arc::new(client_parameters()),
-            Arc::new(server_parameters()),
+            Arc::new(ClientParameters::default()),
+            Arc::new(ServerParameters::default()),
         );
         let streams = qconn::DataStreams::new(
             parameters,
