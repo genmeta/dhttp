@@ -86,8 +86,9 @@ impl DhttpNetwork {
         scopes: Scopes,
         service: BoxService,
     ) -> Result<crate::ListenFuture> {
-        let quic = &endpoint.quic;
-        let name: Arc<str> = Arc::from(quic.identity.name());
+        let mut quic = qconn::QuicEndpoint::from(endpoint.identity.clone());
+        quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+        let name: Arc<str> = Arc::from(endpoint.name());
         {
             let mut listeners = self.listeners.lock().unwrap();
             if listeners.contains_key(&name) {
@@ -98,27 +99,20 @@ impl DhttpNetwork {
                     name: name.to_string(),
                 });
             }
-            quic.listen_with_optional_client_ocsp(scopes, {
+            quic.listen(scopes, {
                 let name = name.clone();
-                move |result| {
-                    let (remote, local, connection) = match result {
-                        Ok(accepted) => accepted,
-                        Err(error) => {
-                            tracing::debug!(endpoint = %name, %error, "incoming connection rejected");
-                            return;
-                        }
-                    };
+                move |(remote, local, connection)| {
                     tracing::trace!(
                         local = %local.name(),
                         remote = ?remote.as_ref().map(qtls::RemoteAuthority::name),
                         paths = ?connection.validated_paths(),
                         "incoming QUIC handshake completed"
                     );
-                    let connection = QuicTransport::new(
-                        connection, Some(local), remote, h3x::Role::Server,
-                    ).and_then(|transport| {
-                        H3::new(transport, h3x::Settings::default()).map_err(Error::from)
-                    });
+                    let connection =
+                        QuicTransport::new(connection, Some(local), remote, h3x::Role::Server)
+                            .and_then(|transport| {
+                                H3::new(transport, h3x::Settings::default()).map_err(Error::from)
+                            });
                     let h3 = match connection {
                         Ok(h3) => h3,
                         Err(error) => {
@@ -128,7 +122,11 @@ impl DhttpNetwork {
                     };
                     let key = ConnectionKey::Incoming {
                         local: name.clone(),
-                        remote: h3.transport().handshake.remote.as_ref()
+                        remote: h3
+                            .transport()
+                            .handshake
+                            .remote
+                            .as_ref()
                             .map(|remote| Arc::from(remote.name())),
                     };
                     let _ = self.pool.insert(key.clone(), h3.clone());
@@ -163,13 +161,13 @@ impl Endpoint {
         self.replace_staple(Self::load_from(path).await?)
     }
 
-    fn replace_staple(&self, mut replacement: Self) -> Result<Self> {
+    fn replace_staple(&self, replacement: Self) -> Result<Self> {
         if replacement.name() != self.name() {
             return Err(Error::InvalidName {
                 name: replacement.name().to_owned(),
             });
         }
-        if replacement.quic.identity.cert_chain() != self.quic.identity.cert_chain() {
+        if replacement.identity.cert_chain() != self.identity.cert_chain() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "certificate chain changed; restart required",
@@ -177,8 +175,8 @@ impl Endpoint {
             .into());
         }
         qtls::validate_ocsp(
-            replacement.quic.identity.ocsp(),
-            replacement.quic.identity.cert_chain(),
+            replacement.identity.ocsp(),
+            replacement.identity.cert_chain(),
             qtls::UnixTime::now(),
         )
         .map_err(std::io::Error::other)?;
@@ -191,9 +189,12 @@ impl Endpoint {
             let registered = qconn::ServerRegistry::global()
                 .get(self.name())
                 .ok_or_else(|| std::io::Error::other("listener TLS registration disappeared"))?;
-            let quic = Arc::get_mut(&mut replacement.quic)
-                .ok_or_else(|| std::io::Error::other("replacement endpoint unexpectedly shared"))?;
-            quic.server_parameters = registered.server_parameters.clone();
+            let mut quic = qconn::QuicEndpoint::from(replacement.identity.clone());
+            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            for (id, value) in registered.server_parameters.iter() {
+                quic.set_parameters(qbase::role::Role::Server, *id, value.clone())
+                    .map_err(std::io::Error::other)?;
+            }
             quic.listen(registered.scopes, move |result| {
                 (registered.accept_cb)(result)
             })

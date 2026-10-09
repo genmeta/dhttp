@@ -83,19 +83,13 @@ fn empty_request(
 /// ```
 #[derive(Clone)]
 pub struct Endpoint {
-    pub(crate) quic: Arc<qconn::QuicEndpoint>,
+    pub(crate) identity: Arc<qbase::endpoint::Endpoint>,
 }
 
 impl Endpoint {
     /// Create a named endpoint from prepared local QUIC credentials.
     pub fn new(identity: Arc<qbase::endpoint::Endpoint>) -> Self {
-        let mut quic = qconn::QuicEndpoint::new(identity);
-        quic.alpn = vec![h3x::ALPN.to_vec()];
-        quic.client_parameters = qbase::param::handy::client_parameters();
-        quic.server_parameters = qbase::param::handy::server_parameters();
-        Self {
-            quic: Arc::new(quic),
-        }
+        Self { identity }
     }
 
     /// Load the named identity's certificate chain, private key and OCSP staple.
@@ -148,25 +142,19 @@ impl Endpoint {
             path: profile.ocsp_path(),
             source: Arc::new(source),
         })?;
-        let identity = qbase::endpoint::Endpoint::new(
-            &qtls::default_provider(),
-            profile.name(),
-            certificates,
-            key,
-            ocsp,
-        )
-        .map_err(|source| Error::Credentials {
-            source: Arc::new(source),
-        })?;
+        let identity = qbase::endpoint::Endpoint::new(profile.name(), certificates, key, ocsp)
+            .map_err(|source| Error::Credentials {
+                source: Arc::new(source),
+            })?;
         Ok(Self::new(identity))
     }
     /// The local identity's name.
     pub fn name(&self) -> &str {
-        self.quic.identity.name()
+        self.identity.name()
     }
     /// Build a signing authority from the same immutable credentials used by QUIC.
     pub fn local_authority(&self) -> Result<qtls::LocalAuthority> {
-        let identity = &self.quic.identity;
+        let identity = &self.identity;
         qtls::LocalAuthority::from_signing_key(
             identity.name().into(),
             identity.cert_chain().to_vec(),

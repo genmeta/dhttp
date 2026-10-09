@@ -10,6 +10,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "../support/transport.rs"]
 mod support;
 
+#[test]
+fn endpoint_clones_share_loaded_identity_and_authority_material() {
+    let endpoint = super::test_support::named("alice");
+    let cloned = endpoint.clone();
+    assert!(Arc::ptr_eq(&endpoint.identity, &cloned.identity));
+    assert_eq!(endpoint.name(), endpoint.identity.name());
+    let authority = endpoint.local_authority().unwrap();
+    assert_eq!(authority.name(), endpoint.name());
+    assert_eq!(authority.certificates(), endpoint.identity.cert_chain());
+}
+
 #[tokio::test]
 async fn extended_connect_preserves_protocol_and_small_bidirectional_data() {
     bounded(async {
