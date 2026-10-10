@@ -1,0 +1,91 @@
+name: Network platforms
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The Rust workflow runs the full suite on Ubuntu, macOS and Windows.
+  # Exercise another GNU userspace and the static musl build used on Alpine.
+  debian:
+    runs-on: ubuntu-latest
+    container: rust:bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test interface bindings and network lifecycle
+        run: cargo test --locked -p dhttp --lib --test network_lifecycle -- --test-threads=1
+
+  musl:
+    runs-on: ubuntu-latest
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-unknown-linux-musl
+      - name: Install musl compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes --no-install-recommends musl-tools
+      - name: Test interface bindings and network lifecycle with musl
+        run: cargo test --locked -p dhttp --target x86_64-unknown-linux-musl --lib --test network_lifecycle -- --test-threads=1
+
+  ios:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Check iOS device and simulator builds
+        run: cargo check --locked -p dhttp --lib --target ${{ matrix.target }}
+
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            clang: aarch64-linux-android21
+          - target: armv7-linux-androideabi
+            clang: armv7a-linux-androideabi21
+          - target: x86_64-linux-android
+            clang: x86_64-linux-android21
+          - target: i686-linux-android
+            clang: i686-linux-android21
+    env:
+      ANDROID_PLATFORM: android-34
+      ANDROID_BUILD_TOOLS_VERSION: 34.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android Java build dependencies
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27d
+      - name: Check Android builds
+        env:
+          TARGET_CC: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang }}-clang
+          TARGET_AR: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+        run: cargo check --locked -p dhttp --lib --target ${{ matrix.target }}

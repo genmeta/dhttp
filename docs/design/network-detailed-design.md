@@ -93,7 +93,7 @@ struct InterfacesCtx {
 }
 ```
 
-名称、索引和硬件地址共同描述快照中的网卡身份；硬件地址变化也会触发替换。不同 IP 或 IPv6 scope 是不同绑定。socket 引用供按实例撤销，并让旧绑定在地址撤回完成前继续占用自己的端口。AbortHandle 用于识别接收任务已经结束的情况。Nat 直接持有该绑定的服务器列表、映射表、心跳计时器和当前测量状态，由唯一维护任务轮询，不 spawn 独立发布任务。发现、分类和心跳 future 通过返回值推进状态；resume 直接替换当前测量并重置计时器。映射表保留在 future 外，取消旧测量不会丢失撤回旧地址所需的信息。NAT 分类只在新 socket 创建时执行一次；之后每20秒向同地址族的 STUN 节点发送绑定心跳并读取各节点的映射，失败的映射撤回，下次心跳重试。NAT 分类失败不重新分类，也不阻止心跳继续保活；映射仍可更新 DDNS，但不伪造 NAT 类型，外部打洞广告等待有效分类。Loopback 和 IPv6 link-local 不探测。
+名称、索引和硬件地址共同描述快照中的网卡身份；硬件地址变化也会触发替换。不同 IP 或 IPv6 scope 是不同绑定。socket 引用供按实例撤销，并让旧绑定在地址撤回完成前继续占用自己的端口。AbortHandle 用于识别接收任务已经结束的情况。Nat 直接持有该绑定的服务器列表、映射表、心跳计时器和当前测量状态，由唯一维护任务轮询，不 spawn 独立发布任务。发现、分类和心跳 future 通过返回值推进状态；resume 直接替换当前测量并重置计时器。映射表保留在 future 外，取消旧测量不会丢失撤回旧地址所需的信息。NAT 分类只在新 socket 创建时执行一次；之后每20秒向同地址族的 STUN 节点发送绑定心跳并读取各节点的映射，失败的映射撤回，下次心跳重试。NAT 分类失败不重新分类，也不阻止心跳继续保活；映射仍可更新 DDNS，但不伪造 NAT 类型，外部打洞广告等待有效分类。Loopback 和 IPv4/IPv6 link-local 不探测。
 
 ### 2.3 函数职责
 
@@ -129,9 +129,28 @@ struct InterfacesCtx {
 
 ### 3.2 目标地址
 
-使用 netwatcher 提供的启用接口及 IP 列表。忽略 unspecified 和 multicast 地址；IPv4 直接绑定具体 IP，IPv6 link-local 使用该接口索引作为 scope ID，其他 IPv6 地址使用 scope 0。端口请求值为 0，实际端口由操作系统分配。
+使用 netwatcher 提供的接口及 IP 列表。Unix 枚举仅保留 `IFF_UP` 接口，Windows 枚举排除 `IfOperStatusDown`；这些条件不保证链路或目标可达。快照不提供路由、链路运行状态和 IPv6 DAD 状态，不额外猜测这些信息。
 
-`BoundDevice::new` 和 `bind_to_device` 的实际返回值决定能否使用该接口。重复地址记录在目标表中合并，不产生重复绑定。
+创建 socket 之前按平台排除以下名称；匹配的接口不进入绑定、地址发布及 NAT 探测。`N` 表示非空 ASCII 十进制数字串，未注明的名称为精确匹配，Unix 区分大小写，Windows 按 ASCII 忽略大小写。
+
+| 平台 | 排除的名称 |
+| --- | --- |
+| macOS / iOS | `bridgeN`、`awdlN`、`llwN`、`vboxnetN`、`vmnet1`、`vmnet8` |
+| Linux / Android | `dockerN`、`podmanN`、`cniN`、`flannel.N`、`virbrN`、`virbrN-nic`、`vboxnetN`、`dummyN`、`ifbN`、`docker_gwbridge`、`kube-ipvs0`、`vmnet1`、`vmnet8`；`br-` 后恰好 12 位十六进制字符，`veth` 后非空十六进制字符 |
+| Windows | `vEthernet (Default Switch)`、`vEthernet (DockerNAT)`、`vEthernet (WSL)`、`vEthernet (WSL (Hyper-V firewall))`、`VMware Network Adapter VMnet1` / `VMnet8`；`VirtualBox Host-Only Ethernet Adapter` 和 `VirtualBox Host-Only Network`，含可选 ` #N` 后缀 |
+| 其他系统 | 不按名称排除 |
+
+这是减少已知辅助候选的策略，不是可达性判断：被过滤接口上的有效容器、虚拟机、共享网络和 Apple 对等通信也会失去自动绑定。规则无法识别全部重命名、本地化或自定义接口。保留空名称和未匹配名称，不按硬件地址、私网地址或默认路由过滤；VPN/隧道（如 `tun0`、`tap0`、`utun4`、`wg0`、`tailscale0`）、Linux 通用桥（如 `br0`、`bridge0`、`br-lan`）和自定义出口继续参与。
+
+树莓派遵循 Linux 规则，保留传统 `eth0` / `wlan0`、`end0`、可预测名称（如 `eno1`、`enp1s0u2`、`enx001122aabbcc`、`wlx001122aabbcc`）以及 USB gadget 的 `usb0`。不采用物理接口名称白名单，未知硬件名称默认保留。Raspberry Pi OS 支持切换可预测命名，官方桥接示例也使用 `bridge0`，因此 Apple 的 `bridgeN` 排除规则不应用于 Linux。参见 [Raspberry Pi 网络配置](https://www.raspberrypi.com/documentation/computers/configuration.html)。
+
+名称过滤不修复 QUIC 在候选仍发现时因最后一条路径失败而关闭连接的问题，也不保证获胜路径握手停滞时其他路径能接替。已知三次诊断失败记录了 `bridge101` 地址组合发送返回 `os error 49`；原始客户端另外三次缺少地址证据。一次超时记录了选中 `llw0` 后握手未完成，其具体原因仍未确认。不能因 IPv4 地址以 `.0` 结尾就排除它。
+
+零接口索引由 `BoundDevice::new` 拒绝，其余候选交由实际 socket 绑定检查。该构造函数只校验索引非零，不检查设备存在或链路可用；绑定成功也不保证能够访问任意对端。
+
+忽略 unspecified、multicast 和 IPv4 全局广播地址；IPv4 直接绑定具体 IP，IPv6 link-local 使用该接口索引作为 scope ID，其他 IPv6 地址使用 scope 0。重复地址记录在目标表中合并。端口请求值为 0，实际端口由操作系统分配。单个绑定失败只记录错误并在后续扫描重试。
+
+绑定与公网探测分别决定：回环及 IPv4/IPv6 link-local 地址保留本地通信绑定，但不启动 STUN；私网、CGNAT 和 IPv6 ULA 地址可能通过 NAT 或 VPN 出站，保留探测。探测失败不撤销本地绑定。初次初始化与 resume 均先订阅监听器，再显式枚举当前接口，避免 Android 初始通知重放缓存快照。
 
 ### 3.3 扫描算法
 
@@ -294,3 +313,20 @@ qconn 的具名 connect 提供本端 LocalAuthority，匿名 Endpoint 不提交�
 网卡测试使用受控快照，不修改宿主系统网卡；Linux/Windows 的真实 down/up、地址增删仍需实机验证。普通 Network 初始化自动装配一次性 NAT 分类及持续 STUN 心跳；不启动独立 DDNS/mDNS 名称发布任务。NAT/心跳回归使用本地脚本化 STUN 响应，不访问线上节点。
 
 NAT 映射发布策略（2026-10-08 更新）：NAT 心跳得到的每个 agent/outer 对都在外部地址簿中保留为 Mediate。FullCone 同时发布 Direct(outer)，相同公网映射的 Direct 地址去重；受限/未知分类仅发布 Mediate。QUIC 仍登记 Direct 与 Mediate 端点地址，DNS 的 E-record 使用现有编码器输出 outer-agent；内部 EndpointAddr Display 保持 agent-outer。AddressBook 内部范围仍仅接受 Direct，外部范围接受有效 Mediate。dquic 客户端按 DNS 解析结果流的返回顺序加入候选路径，不按 Direct/Mediate 类型重排或人为延迟；直连地址的优先次序由 DNS 响应表达。
+
+
+### 跨平台验证
+
+现有 Rust workflow 在 Ubuntu、macOS、Windows 上运行完整测试。`network-platforms.yml` 补充 Debian GNU 和 Linux musl 的单元及网络生命周期测试，并检查 iOS 设备/模拟器和 Android arm64、armv7、x86_64、x86 构建。名称回归覆盖各平台的排除规则及其边界，同时验证树莓派传统/可预测/USB 名称、Linux 通用桥、移动数据接口、VPN、空名称及本地化的 Windows 名称继续保留；各平台名称策略可在任意宿主测试，受控快照测试验证当前平台的候选选择，不模拟各平台的真实网卡驱动。
+
+Android embedding 必须提供 application Context（由框架初始化 `ndk-context`，或在 JNI 中调用 `dhttp::set_android_context`），并声明 `INTERNET` 和 `ACCESS_NETWORK_STATE` 权限。构建需要 Android SDK、Java 和 NDK。参见 [netwatcher Android Setup](https://github.com/thombles/netwatcher#android-setup) 和 [Android 网络权限](https://developer.android.com/develop/connectivity/network-ops/connecting)。Android 对特定 Network 的选择还受系统策略和 VPN 约束；接口索引和 packet-info 不能替代所有情况下的 `Network.bindSocket`。
+
+iOS/macOS 的本地通信需要验证本地网络隐私授权；使用 Bonjour 的应用按需配置 `NSLocalNetworkUsageDescription` 和 `NSBonjourServices`，直接发送或接收受限制的多播/广播还需相应 entitlement。参见 [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。权限拒绝不能被网卡名称过滤解决。
+
+发布前实机验证 IPv4-only、IPv6-only/NAT64、多网卡、VPN/容器/虚拟机通信、网卡 down/up、地址替换、Wi-Fi/移动数据切换、休眠唤醒及权限拒绝后的恢复。Windows 需要验证原生 IPv4/IPv6 接口索引、IPv6 link-local scope，以及本地化或重命名适配器；交叉编译不能验证这些运行行为。
+
+2026-10-10 的 Pishoo 五轮冷启动记录有 10 次首次请求中的 2 次 idle timeout，随后 20 次请求全部成功；成功轮次也有 `127.0.0.1 → 192.168.215.0` 的发送错误。此证据不能证明桥接口应被整体排除，也不能证明发送错误是超时的唯一原因。
+
+本地 dquic 工作树的后续排查发现：DNS 返回回环对端后，原来的单向筛选仍允许非回环本地端点（包括 bridge）作为初始候选。回环与非回环现在在两个方向都不配对，并在打洞候选选择中使用同一规则；其他 scope 仍可跨范围配对以支持 NAT。内网 ADD_ADDRESS 使用 `RestrictedPort` 作为保守探测策略，回环仍使用 `FullCone`；这不覆盖本地绑定的真实外网 NAT 分类。
+
+ADD_ADDRESS 及沿旧路径传递的可靠 PunchDone 都不直接创建通告地址对应的 Path。路径创建有三个入口：解析结果生成的初始候选、成功解密并解析的 Initial/Handshake 收包，以及经过认证的 1-RTT 收包。新 1-RTT 路径仍须验证，打洞探测本身不等于路径已验证；正常 QUIC 迁移收包也可能进入此入口，不局限于 PunchHello。DEBUG 日志记录初始候选的解析来源，以及收包路径的实际 UDP Link 和帧类型。上述 dquic 改动在本地工作树，需由使用方采用对应源码或升级固定 revision 后生效。
