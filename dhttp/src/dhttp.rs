@@ -19,6 +19,11 @@ pub use qrecovery::send::CancelStream;
 pub use qresolve as resolve;
 pub use qtls::{CertificateDer, HandshakeSummary, LocalAuthority, RemoteAuthority};
 
+/// Supply an application Context before network initialization on Android.
+/// This is needed when the embedding framework does not initialize `ndk-context`.
+#[cfg(target_os = "android")]
+pub use netwatcher::set_android_context;
+
 pub use h3x::{Body, BoxError, WndBuf};
 pub type ListenFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 pub type EmptyBody = http_body_util::Empty<bytes::Bytes>;

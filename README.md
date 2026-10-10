@@ -65,7 +65,11 @@ Request 构造阶段支持 `.trailer(name, value)` 替换同名字段、`.append
 
 服务请求携带实际 `qtls::HandshakeSummary`；对外不暴露 QUIC/H3 连接。
 
-`DhttpNetwork::init()` 为所有可用活动网卡准备 UDP 绑定；重复或并发调用返回同一个 Network。netwatcher 先交付当前快照，再持续监听系统网卡事件。每次扫描保留匹配 socket 的实际端口，添加新绑定并撤销失效绑定；IPv6 link-local 地址保留网卡 scope ID。没有可用网卡或部分绑定失败时仍可初始化，后续网卡变化会重新扫描。
+`DhttpNetwork::init()` 为所有适用活动网卡准备 UDP 绑定；重复或并发调用返回同一个 Network。netwatcher 先交付当前快照，再持续监听系统网卡事件。每次扫描保留匹配 socket 的实际端口，添加新绑定并撤销失效绑定；IPv6 link-local 地址保留网卡 scope ID。没有可用网卡或部分绑定失败时仍可初始化，后续网卡变化会重新扫描。
+
+扫描按平台排除部分已知辅助网卡名称：macOS/iOS 的编号 bridge、awdl、llw，Linux/Android 的常见容器网桥和虚拟接口，以及 Windows 的已知 WSL、DockerNAT、默认 Hyper-V 交换机和 Host-Only 名称；具体规则见[目标地址](docs/design/network-detailed-design.md#32-目标地址)。这是候选筛选策略，被排除的接口不绑定、不发布地址，也不探测 NAT。未知名称、VPN、Linux 通用网桥及树莓派有线、无线、USB 网卡保留；不依据硬件地址或私网地址判断。名称可被重命名或本地化，规则不保证识别全部虚拟接口，也不替代底层路径竞速与失败接替修复。忽略未指定、多播和 IPv4 全局广播地址，拒绝零接口索引；每个候选地址交由操作系统实际绑定，单个绑定失败不影响其他接口。回环及 IPv4/IPv6 link-local 地址只保留本地通信绑定，不启动 STUN；私网和 IPv6 ULA 地址保留 NAT 探测，探测失败不撤销本地绑定。
+
+Linux GNU/musl、macOS 和 Windows 的测试覆盖绑定维护；iOS 设备/模拟器及 Android 四种 ABI 增加交叉编译检查，配置见 [Network platforms](.github/workflows/network-platforms.yml)。交叉编译不替代移动端实机验证。Android 应用声明 `INTERNET` 与 `ACCESS_NETWORK_STATE` 权限；未由框架初始化 `ndk-context` 时，先从 JNI 调用 `dhttp::set_android_context` 并传入 application Context，再调用 `DhttpNetwork::init()`。iOS/macOS 的本地网络访问受系统隐私权限约束；具体接入要求和实机检查见[网络设计](docs/design/network-detailed-design.md#跨平台验证)。
 
 手机唤醒或应用回到前台时，调用进程级恢复接口，无需先调用 suspend：
 

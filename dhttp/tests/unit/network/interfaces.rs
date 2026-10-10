@@ -15,6 +15,7 @@ fn interface_snapshot_filters_unusable_ips_and_preserves_ipv6_scope() {
                     "0.0.0.0",
                     "::",
                     "224.0.0.1",
+                    "255.255.255.255",
                     "ff02::1",
                     "127.0.0.1",
                     "192.168.1.2",
@@ -65,6 +66,255 @@ fn interface_snapshot_filters_unusable_ips_and_preserves_ipv6_scope() {
     );
 }
 
+#[test]
+fn interface_snapshot_preserves_platform_names_and_virtual_networks() {
+    let names = [
+        "p2p0",
+        "",
+        "lo",
+        "lo0",
+        "en0",
+        // Raspberry Pi onboard, predictable, USB Ethernet/Wi-Fi and gadget names.
+        "eth0",
+        "eth1",
+        "end0",
+        "end1",
+        "eno1",
+        "enx001122aabbcc",
+        "enp1s0u2",
+        "usb0",
+        "usb1",
+        "wlx001122aabbcc",
+        "wlan1",
+        "bnep0",
+        "lan0",
+        "ens192",
+        "enp3s0",
+        "wlan0",
+        "wlp2s0",
+        "rmnet_data0",
+        "pdp_ip0",
+        "wwan0",
+        "Ethernet",
+        "Wi-Fi",
+        "tun0",
+        "tap0",
+        "utun4",
+        "wg0",
+        "tailscale0",
+        "ztabcdef",
+        "br0",
+        "vmnet0",
+        "vEthernet (External Switch)",
+        "br-office",
+        "docker-uplink",
+        "veth-uplink",
+        "veth",
+        "cni",
+        "以太网",
+        "无线网络连接",
+        "Ethernet 2",
+        "Docker0",
+        "bridge",
+        "bridge-office",
+        "bridge100-uplink",
+        "awdl",
+        "awdl-uplink",
+        "llw",
+        "llw0-uplink",
+        "Bridge100",
+    ];
+    for name in names {
+        for os in ["macos", "ios", "linux", "android", "windows", "freebsd"] {
+            assert!(!excluded_interface(name, os), "interface {name:?} on {os}");
+        }
+        // Preserve other networks and prefix lookalikes, regardless of MAC visibility.
+        let interface = netwatcher::Interface {
+            index: 7,
+            name: name.into(),
+            hw_addr: String::new(),
+            ips: ["192.168.1.2", "192.168.215.0", "fd00::1", "fe80::1"]
+                .map(|ip| netwatcher::IpRecord {
+                    ip: ip.parse().unwrap(),
+                    prefix_len: 64,
+                })
+                .into(),
+        };
+        let current = interfaces(&HashMap::from([(7, interface)]));
+        assert_eq!(current.len(), 4, "interface {name:?}");
+        assert!(current.iter().all(|(key, device)| {
+            key.name == name && device.name() == name && device.index().get() == 7
+        }));
+        assert!(
+            current
+                .keys()
+                .any(|key| key.addr == "[fe80::1%7]:0".parse().unwrap())
+        );
+    }
+}
+
+#[test]
+fn interface_snapshot_excludes_auxiliary_names_only_on_matching_platforms() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["macos", "ios"],
+            &[
+                "bridge0",
+                "bridge100",
+                "bridge101",
+                "awdl0",
+                "awdl12",
+                "llw0",
+                "llw12",
+            ],
+        ),
+        (
+            &["macos", "ios", "linux", "android"],
+            &["vboxnet0", "vboxnet12", "vmnet1", "vmnet8"],
+        ),
+        (
+            &["linux", "android"],
+            &[
+                "docker0",
+                "docker1",
+                "docker_gwbridge",
+                "podman0",
+                "br-012345abcdef",
+                "veth012abc",
+                "veth0",
+                "cni0",
+                "flannel.1",
+                "kube-ipvs0",
+                "virbr0",
+                "virbr0-nic",
+                "dummy0",
+                "ifb0",
+            ],
+        ),
+        (
+            &["windows"],
+            &[
+                "vEthernet (Default Switch)",
+                "vEthernet (DockerNAT)",
+                "vEthernet (WSL)",
+                "vEthernet (WSL (Hyper-V firewall))",
+                "VMware Network Adapter VMnet1",
+                "VMware Network Adapter VMnet8",
+                "VirtualBox Host-Only Ethernet Adapter",
+                "VirtualBox Host-Only Ethernet Adapter #2",
+                "VirtualBox Host-Only Network",
+                "VirtualBox Host-Only Network #3",
+                "VETHERNET (WSL)",
+            ],
+        ),
+    ];
+    for &(excluded_on, names) in cases {
+        for &name in names {
+            for os in ["macos", "ios", "linux", "android", "windows", "freebsd"] {
+                assert_eq!(
+                    excluded_interface(name, os),
+                    excluded_on.contains(&os),
+                    "{name:?} on {os}"
+                );
+            }
+            let interface = netwatcher::Interface {
+                index: 7,
+                name: name.into(),
+                hw_addr: String::new(),
+                ips: ["192.168.215.0", "fd00::1", "fe80::1"]
+                    .map(|ip| netwatcher::IpRecord {
+                        ip: ip.parse().unwrap(),
+                        prefix_len: 64,
+                    })
+                    .into(),
+            };
+            let current = interfaces(&HashMap::from([(7, interface)]));
+            assert_eq!(
+                current.len(),
+                if excluded_on.contains(&std::env::consts::OS) {
+                    0
+                } else {
+                    3
+                },
+                "interface {name:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn linux_preserves_generic_bridges_and_custom_interface_names() {
+    // Raspberry Pi bridge/hotspot setups may put the host address on bridge0.
+    for name in [
+        "br0",
+        "bridge0",
+        "bridge100",
+        "br-lan",
+        "br-office",
+        "br-deadbeef",
+        "br-012345abcdeg",
+        "docker-uplink",
+        "docker",
+        "veth-uplink",
+        "veth",
+        "cni",
+        "virbr-office",
+        "vmnet0",
+        "vEthernet (External Switch)",
+        "my-uplink",
+    ] {
+        assert!(!excluded_interface(name, "linux"), "{name}");
+    }
+}
+
+#[test]
+fn nat_probes_preserve_private_networks_but_skip_local_only_addresses() {
+    for ip in ["127.0.0.1", "127.1.2.3", "::1", "169.254.1.2", "fe80::1"] {
+        assert!(!supports_nat_probe(ip.parse().unwrap()), "{ip}");
+    }
+    for ip in [
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.1.2",
+        "100.64.0.1",
+        "fd00::1",
+        "8.8.8.8",
+        "2001:4860::1",
+    ] {
+        assert!(supports_nat_probe(ip.parse().unwrap()), "{ip}");
+    }
+}
+
+#[test]
+fn identical_ipv6_link_local_addresses_keep_distinct_interface_scopes() {
+    let snapshot = [7, 11].map(|index| {
+        (
+            index,
+            netwatcher::Interface {
+                index,
+                name: format!("device{index}"),
+                hw_addr: String::new(),
+                // Duplicate OS records collapse within a device, never across devices.
+                ips: vec![
+                    netwatcher::IpRecord {
+                        ip: "fe80::1".parse().unwrap(),
+                        prefix_len: 64,
+                    };
+                    2
+                ],
+            },
+        )
+    });
+    let current = interfaces(&snapshot.into());
+    assert_eq!(current.len(), 2);
+    for key in current.keys() {
+        let SocketAddr::V6(addr) = key.addr else {
+            panic!("expected an IPv6 binding");
+        };
+        assert_eq!(addr.scope_id(), key.index);
+    }
+}
+
 fn loopback_interface() -> netwatcher::Interface {
     let mut loopback = netwatcher::list_interfaces()
         .unwrap()
@@ -80,6 +330,59 @@ fn loopback_interface() -> netwatcher::Interface {
         .ips
         .retain(|record| record.ip == std::net::Ipv4Addr::LOCALHOST);
     loopback
+}
+
+#[tokio::test]
+async fn failed_address_binding_does_not_remove_usable_bindings_on_the_device() {
+    let mut state = isolated_interfaces().await;
+    let loopback = loopback_interface();
+    state.snapshot = HashMap::from([(loopback.index, loopback.clone())]);
+    state.scan();
+    let socket = state.bindings.values().next().unwrap().socket.clone();
+    let bound = socket.local_addr().unwrap();
+
+    let mut unavailable = loopback;
+    // IPV6_V6ONLY sockets reject mapped IPv4 addresses on all supported platforms.
+    unavailable.ips.push(netwatcher::IpRecord {
+        ip: "::ffff:127.0.0.1".parse().unwrap(),
+        prefix_len: 128,
+    });
+    state.snapshot = HashMap::from([(unavailable.index, unavailable)]);
+    state.scan();
+    assert_eq!(state.bindings.len(), 1);
+    assert!(Arc::ptr_eq(
+        &socket,
+        &state.dock.find_socket(bound).unwrap()
+    ));
+    assert!(!state.addresses.mdns_endpoints(bound).is_empty());
+}
+
+#[tokio::test]
+async fn scan_withdraws_bindings_when_device_loses_usable_addresses() {
+    let mut state = isolated_interfaces().await;
+    let loopback = loopback_interface();
+    state.snapshot = HashMap::from([(loopback.index, loopback.clone())]);
+    state.scan();
+    let bound = state.bindings.values().next().unwrap().bound;
+    let endpoint = EndpointAddr::direct(bound);
+
+    let mut unavailable = loopback.clone();
+    unavailable.ips = ["0.0.0.0", "::", "224.0.0.1", "255.255.255.255", "ff02::1"]
+        .map(|ip| netwatcher::IpRecord {
+            ip: ip.parse().unwrap(),
+            prefix_len: 0,
+        })
+        .into();
+    state.snapshot = HashMap::from([(unavailable.index, unavailable)]);
+    state.scan();
+    assert!(state.bindings.is_empty());
+    assert!(state.dock.find_socket(bound).is_none());
+    assert!(state.dock.topology().quic().find_socket(endpoint).is_none());
+    assert!(state.addresses.mdns_endpoints(bound).is_empty());
+
+    state.snapshot = HashMap::from([(loopback.index, loopback)]);
+    state.scan();
+    assert_eq!(state.bindings.len(), 1);
 }
 
 #[tokio::test]
@@ -178,7 +481,9 @@ async fn scan_rebinds_when_interface_identity_changes() {
     assert!(!Arc::ptr_eq(&original, &replacement));
 
     let mut changed = loopback;
-    changed.index = u32::MAX;
+    // A zero index is invalid on every platform. An arbitrary nonzero index
+    // may bind successfully on Linux before packet-info validation at send time.
+    changed.index = 0;
     state.snapshot = HashMap::from([(changed.index, changed)]);
     state.scan();
     assert!(state.bindings.is_empty(), "invalid interface cannot bind");
