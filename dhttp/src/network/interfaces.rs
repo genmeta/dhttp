@@ -46,7 +46,9 @@ impl Interfaces {
         let mut watcher = netwatcher::watch_interfaces_async::<netwatcher::async_adapter::Tokio>()
             .map_err(io::Error::other)?;
         qtransport::router::QuicRouter::global();
-        let snapshot = watcher.changed().await.interfaces;
+        // Subscribe first, then enumerate: mobile watchers can replay a cached snapshot.
+        let _ = watcher.changed().await;
+        let snapshot = netwatcher::list_interfaces().map_err(io::Error::other)?;
         let mut state = InterfacesCtx::new(
             watcher,
             snapshot,
@@ -209,11 +211,7 @@ impl InterfacesCtx {
             self.dock.remove(&socket);
             return Err(io::Error::other(error));
         }
-        let nat = if bound.ip().is_loopback()
-            || matches!(bound.ip(), IpAddr::V6(ip) if ip.is_unicast_link_local())
-        {
-            None
-        } else {
+        let nat = if supports_nat_probe(bound.ip()) {
             Some(nat::Nat::new(
                 self.dock.clone(),
                 self.addresses.clone(),
@@ -221,6 +219,8 @@ impl InterfacesCtx {
                 bound,
                 qprotocol::StunProtocol::stun_servers(),
             ))
+        } else {
+            None
         };
         Ok(Some(Binding {
             nat,
@@ -291,6 +291,11 @@ fn interfaces(
 ) -> HashMap<InterfaceAddress, BoundDevice> {
     let mut current = HashMap::new();
     for interface in snapshot.values() {
+        if excluded_interface(&interface.name, std::env::consts::OS) {
+            continue;
+        }
+        // Keep other candidates, including VPNs and empty Windows friendly names.
+        // Successful binding alone does not establish peer reachability.
         let device = match BoundDevice::new(interface.name.clone(), interface.index) {
             Ok(device) => device,
             Err(error) => {
@@ -300,7 +305,10 @@ fn interfaces(
         };
         for record in &interface.ips {
             let ip = record.ip;
-            if ip.is_unspecified() || ip.is_multicast() {
+            if ip.is_unspecified()
+                || ip.is_multicast()
+                || matches!(ip, IpAddr::V4(ip) if ip.is_broadcast())
+            {
                 continue;
             }
             let addr = match ip {
@@ -328,4 +336,74 @@ fn interfaces(
         }
     }
     current
+}
+
+/// Exclude known auxiliary interfaces before binding or publishing addresses.
+/// Names are a platform-specific policy, not a reachability check. Keep unknown
+/// names, VPNs and generic Linux bridges, which may be the host's main network.
+fn excluded_interface(name: &str, os: &str) -> bool {
+    match os {
+        "macos" | "ios" => {
+            ["bridge", "awdl", "llw", "vboxnet"]
+                .iter()
+                .any(|prefix| numbered_interface(name, prefix))
+                || matches!(name, "vmnet1" | "vmnet8")
+        }
+        "linux" | "android" => {
+            [
+                "docker", "podman", "cni", "flannel.", "virbr", "vboxnet", "dummy", "ifb",
+            ]
+            .iter()
+            .any(|prefix| numbered_interface(name, prefix))
+                || matches!(name, "docker_gwbridge" | "kube-ipvs0" | "vmnet1" | "vmnet8")
+                || name
+                    .strip_suffix("-nic")
+                    .is_some_and(|base| numbered_interface(base, "virbr"))
+                || name.strip_prefix("br-").is_some_and(|suffix| {
+                    suffix.len() == 12 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                || name.strip_prefix("veth").is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        }
+        "windows" => {
+            let name = name.to_ascii_lowercase();
+            matches!(
+                name.as_str(),
+                "vethernet (default switch)"
+                    | "vethernet (dockernat)"
+                    | "vethernet (wsl)"
+                    | "vethernet (wsl (hyper-v firewall))"
+                    | "vmware network adapter vmnet1"
+                    | "vmware network adapter vmnet8"
+            ) || [
+                "virtualbox host-only ethernet adapter",
+                "virtualbox host-only network",
+            ]
+            .iter()
+            .any(|base| {
+                name == *base
+                    || name
+                        .strip_prefix(base)
+                        .is_some_and(|suffix| numbered_interface(suffix, " #"))
+            })
+        }
+        _ => false,
+    }
+}
+
+fn numbered_interface(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// Local-only addresses remain bound for local communication, without STUN traffic.
+/// Private and unique-local addresses may have an external path through NAT or a VPN.
+fn supports_nat_probe(ip: IpAddr) -> bool {
+    !ip.is_loopback()
+        && !match ip {
+            IpAddr::V4(ip) => ip.is_link_local(),
+            IpAddr::V6(ip) => ip.is_unicast_link_local(),
+        }
 }
