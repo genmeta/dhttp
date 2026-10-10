@@ -41,16 +41,16 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
-# Pin the transport snapshot used by Pishoo colleague testing.
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qconn = { package = "qconnection", git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qtransport = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qprotocol = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qresolve = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qudp = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qtls = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-h3x = { git = "https://github.com/genmeta/h3x.git", rev = "c26abcd3d8596c10c0fadece240a713741c7873a" }
+# Pin the validated transport snapshot for reproducible integration.
+qbase = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qconn = { package = "qconnection", git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qtransport = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qprotocol = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qresolve = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qudp = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qtls = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+h3x = { git = "https://github.com/genmeta/h3x.git", rev = "274af16707698fac6c6ff8bc9f2c112d9cf1fdba", version = "0.6.2" }
 dhttp-home = { path = "home", version = "0.5.0", default-features = false }
 dhttp = { path = "dhttp", version = "0.6.2" }
 dhttp-access = { path = "access", version = "0.4.2" }
@@ -58,5 +58,5 @@ dhttp-log = { path = "log", version = "0.1.0" }
 
 # Share the pinned QUIC types with registry dependencies.
 [patch.crates-io]
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "34a713b48535892ad9843cf2bb0db285e0d09439" }
+qbase = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }
+qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "1cab7042ddbb4ae65b424cae81a91f88d4eaaaeb" }

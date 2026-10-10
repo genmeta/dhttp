@@ -84,7 +84,10 @@ pub(super) async fn serve_connection(network: &'static DhttpNetwork, key: Connec
     network.pool.remove_connection(&key, &h3);
 }
 
-pub(super) async fn connect(key: ConnectionKey) -> Result<H3> {
+pub(super) async fn connect(
+    key: ConnectionKey,
+    on_unreusable: h3x::UnreusableCallback<QuicTransport>,
+) -> Result<H3> {
     let ConnectionKey::Outgoing { local, remote } = &key else {
         return Err(Error::InvalidRequest {
             message: "cannot initiate a connection with an incoming key".into(),
@@ -111,7 +114,7 @@ pub(super) async fn connect(key: ConnectionKey) -> Result<H3> {
         "outgoing QUIC handshake completed"
     );
     let transport = QuicTransport::new(connection, local, Some(remote), h3x::Role::Client)?;
-    let h3 = H3::new(transport, h3x::Settings::default())?;
+    let h3 = H3::new(transport, h3x::Settings::default(), on_unreusable)?;
     tokio::spawn(serve_connection(network, key, h3.clone()));
     Ok(h3)
 }

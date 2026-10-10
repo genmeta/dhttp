@@ -215,8 +215,8 @@ pub fn connection_pair() -> (H3Connection<Connection>, H3Connection<Connection>)
     };
 
     (
-        H3Connection::new(client, Settings::default()).unwrap(),
-        H3Connection::new(server, Settings::default()).unwrap(),
+        H3Connection::new(client, Settings::default(), |_| {}).unwrap(),
+        H3Connection::new(server, Settings::default(), |_| {}).unwrap(),
     )
 }
 

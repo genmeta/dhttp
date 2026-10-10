@@ -62,6 +62,8 @@ enum ConnectionKey {
 
 `ConnectionKey` 的 Eq/Hash 比较本端、远端名称值。双方具名时，同名 Incoming 与 Outgoing 共享池条目；匿名本端和匿名对端分别保留 `None`，不会匹配具名连接。远端 authority 的端口参与出站键，避免不同服务端口共用连接。
 
+`Pool::new` 的连接工厂接收 `connect(key, on_unreusable)`，其中回调类型为 `h3x::UnreusableCallback<QuicTransport>`。入站先从已验证的握手 authority 派生 ConnectionKey，再调用 `pool.on_unreusable(key)`；两个方向均把回调作为第三个参数传入 `H3Connection::new`，在连接驱动启动前装配。回调在本端/对端 GOAWAY 或连接驱动结束时移出对应连接，避免继续复用已经失效的连接；已有请求仍持有各自资源。Network 不增加回调容器、失败标志或额外结束通知。
+
 `NETWORK` 使用 `tokio::sync::OnceCell::get_or_try_init`。重复和并发 init 返回同一实例。取得连接的等待期限保持 30 秒。Network 沿用进程生命周期，Tokio runtime 必须持续存活。
 
 ### 2.2 网卡维护的私有状态

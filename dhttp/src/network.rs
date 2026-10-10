@@ -108,10 +108,16 @@ impl DhttpNetwork {
                         paths = ?connection.validated_paths(),
                         "incoming QUIC handshake completed"
                     );
+                    let key = ConnectionKey::Incoming {
+                        local: name.clone(),
+                        remote: remote.as_ref().map(|authority| Arc::from(authority.name())),
+                    };
+                    let on_unreusable = self.pool.on_unreusable(key.clone());
                     let connection =
                         QuicTransport::new(connection, Some(local), remote, h3x::Role::Server)
                             .and_then(|transport| {
-                                H3::new(transport, h3x::Settings::default()).map_err(Error::from)
+                                H3::new(transport, h3x::Settings::default(), on_unreusable)
+                                    .map_err(Error::from)
                             });
                     let h3 = match connection {
                         Ok(h3) => h3,
@@ -119,15 +125,6 @@ impl DhttpNetwork {
                             tracing::debug!(endpoint = %name, %error, "HTTP/3 setup failed");
                             return;
                         }
-                    };
-                    let key = ConnectionKey::Incoming {
-                        local: name.clone(),
-                        remote: h3
-                            .transport()
-                            .handshake
-                            .remote
-                            .as_ref()
-                            .map(|remote| Arc::from(remote.name())),
                     };
                     let _ = self.pool.insert(key.clone(), h3.clone());
                     tokio::spawn(serve_connection(self, key, h3));
