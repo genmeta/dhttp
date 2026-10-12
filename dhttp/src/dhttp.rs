@@ -1,8 +1,9 @@
 //! Named HTTP/3 endpoints, anonymous outbound requests and a process-wide network.
 mod bootstrap;
 mod transport;
-mod trust;
+pub mod trust;
 mod uri;
+pub use uri::expand_uri_with_base;
 
 pub mod client;
 pub mod endpoint;

@@ -13,6 +13,8 @@ pub(crate) fn normalize_profile_name(input: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "manage")]
+pub mod settings;
 #[cfg(feature = "ssl")]
 pub mod ssl;
 
@@ -40,6 +42,10 @@ pub enum IdentityProfileFromPathError {
 }
 
 impl IdentityProfile {
+    pub const SERVER_CONF_FILE: &'static str = "server.conf";
+    pub fn server_conf_path(&self) -> PathBuf {
+        self.join(Self::SERVER_CONF_FILE)
+    }
     pub const CONFIG_DB_FILE: &'static str = "config.db";
     pub const DB_DIR: &'static str = "db";
     pub const ACCESS_DB_FILE: &'static str = "access.db";

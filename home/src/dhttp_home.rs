@@ -1,5 +1,7 @@
 pub mod certificate;
 pub mod identity;
+#[cfg(feature = "ocsp")]
+pub mod ocsp;
 
 mod bootstrap;
 
