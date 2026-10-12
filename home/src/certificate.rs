@@ -116,7 +116,7 @@ pub enum InvalidOwnerHash {
 }
 
 // Keep the established fallible conversion API.
-#[allow(clippy::try_from_instead_of_from_str)]
+#[allow(unknown_lints, clippy::try_from_instead_of_from_str)]
 impl TryFrom<&str> for OwnerHash {
     type Error = InvalidOwnerHash;
 
