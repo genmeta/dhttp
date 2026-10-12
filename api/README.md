@@ -73,7 +73,7 @@ peers 可增补或更新；addresses() 返回当前本地绑定，用于显式�
 默认 H3 DNS、mDNS 和名称发布维护仍待接入，因此当前不是完整的开箱即用发现版本。
 
 Native Node build 产物是本机构建的 dhttp.node；npm pack 可用于本机安装验证。
-多平台 npm 二进制包、其他 Python wheel 平台和发布 CI 尚未恢复。当前包版本 0.1.0 为本地开发版本。
+多平台 npm 二进制包、其他 Python wheel 平台和发布 CI 尚未恢复。当前绑定版本为 0.7.0；多平台 npm/PyPI 发布仍待完成。
 
 ## 流式请求
 
