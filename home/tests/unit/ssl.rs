@@ -44,6 +44,7 @@ async fn async_names_match_sync_discovery_for_direct_ssl_directories() {
     let temp = TempDir::new("discovery-consistency");
     create_profile(temp.path(), "alice.pilot");
     create_profile(temp.path(), "123");
+    #[cfg(not(windows))]
     create_profile(temp.path(), "*.pilot");
     create_profile(temp.path(), "Bad");
     create_profile(temp.path(), "bad_name");
@@ -88,6 +89,7 @@ async fn async_names_match_sync_discovery_for_direct_ssl_directories() {
     assert_eq!(
         sync_names,
         [
+            #[cfg(not(windows))]
             "*.pilot.dhttp.net",
             "123.dhttp.net",
             "alice.pilot.dhttp.net"
