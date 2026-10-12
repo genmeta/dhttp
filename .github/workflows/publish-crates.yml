@@ -28,32 +28,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
-      # The identity-only tag bootstraps the stable dependency graph. Other
-      # workspace members intentionally reference crates published later.
       - name: Run clippy
-        if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test workspace
-        if: ${{ !endsWith(github.head_ref, '-dhttp-identity') && !endsWith(github.ref_name, '-dhttp-identity') }}
-        run: cargo test --workspace --all-features --all-targets
-
-      - name: Check dhttp-identity
-        if: ${{ endsWith(github.head_ref, '-dhttp-identity') || endsWith(github.ref_name, '-dhttp-identity') }}
-        run: |
-          cargo clippy --package dhttp-identity --all-targets --all-features -- -D warnings
-          cargo test --package dhttp-identity --all-features --all-targets
+        run: cargo test --workspace --all-features --all-targets -- --test-threads=1
 
       - name: Authenticate to crates.io
         if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
         uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
-      - name: Release publishable Rust crates
+      - name: Release publishable workspace crates
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-          IDENTITY_ONLY: ${{ endsWith(github.head_ref, '-dhttp-identity') || endsWith(github.ref_name, '-dhttp-identity') }}
+          FIRST_PUBLISH_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -63,23 +53,20 @@ jobs:
             mode=dry-run
           fi
 
-          if [[ "${IDENTITY_ONLY}" == "true" ]]; then
-            packages=(dhttp-identity)
-          else
-            packages=(
-              dhttp-identity
-              dhttp-home
-              dhttp-access
-              dhttp-log
-              dhttp
-            )
-          fi
+          # Dependencies must precede dependents for per-crate publication.
+          packages=(
+            dhttp-home
+            dhttp-access
+            dhttp-log
+            dhttp
+          )
 
-          cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
+          cargo metadata --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
           package_versions="$(
             PACKAGES="$(printf '%s\n' "${packages[@]}")" RUNNER_TEMP="$RUNNER_TEMP" python3 - <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
           metadata = json.loads((Path(os.environ["RUNNER_TEMP"]) / "workspace-metadata.json").read_text())
@@ -89,11 +76,15 @@ jobs:
               package = by_name.get(name)
               if package is None:
                   raise SystemExit(f"failed to resolve workspace package metadata for {name}")
+              if package.get("publish") == []:
+                  print(f"skip {name} (publish = false)", file=sys.stderr)
+                  continue
               print(f"{name}\t{package['version']}")
           PY
           )"
 
           packages_to_publish=()
+          first_releases=()
           while IFS=$'\t' read -r crate_name crate_version; do
             [ -n "$crate_name" ] || continue
             crate_state="$(
@@ -138,27 +129,40 @@ jobs:
               echo "publish $crate_name $crate_version"
               packages_to_publish+=("$crate_name")
             else
-              echo "skip $crate_name $crate_version (crate not yet initialized on crates.io)"
+              if [[ "$mode" == "publish" && -z "$FIRST_PUBLISH_TOKEN" ]]; then
+                echo "::error::$crate_name needs its first publication. Configure the CARGO_REGISTRY_TOKEN repository secret for this CI release."
+                exit 1
+              fi
+              echo "publish $crate_name $crate_version (first release)"
+              packages_to_publish+=("$crate_name")
+              first_releases+=("$crate_name")
             fi
           done <<< "$package_versions"
 
           if [[ "${#packages_to_publish[@]}" -eq 0 ]]; then
-            echo "no already-initialized crates need a new crates.io release"
+            echo "no workspace crates need a new crates.io release"
             exit 0
           fi
 
           if [[ "$mode" == "dry-run" ]]; then
-            publish_args=(cargo publish --dry-run)
+            publish_args=(cargo publish --dry-run --locked)
             echo "dry-run publish packages: ${packages_to_publish[*]}"
+            for package in "${packages_to_publish[@]}"; do
+              publish_args+=(-p "$package")
+            done
+            "${publish_args[@]}"
           else
-            publish_args=(cargo publish)
             echo "publish packages: ${packages_to_publish[*]}"
+            for package in "${packages_to_publish[@]}"; do
+              if [[ " ${first_releases[*]} " == *" $package "* ]]; then
+                echo "publish $package using first-release API token"
+                CARGO_REGISTRY_TOKEN="$FIRST_PUBLISH_TOKEN" cargo publish --locked -p "$package"
+              else
+                echo "publish $package using OIDC"
+                cargo publish --locked -p "$package"
+              fi
+            done
           fi
-
-          for package in "${packages_to_publish[@]}"; do
-            publish_args+=(-p "$package")
-          done
-          "${publish_args[@]}"
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
@@ -168,12 +172,27 @@ jobs:
           set -euo pipefail
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           git fetch --force origin "$tag_ref:$tag_ref"
+          tag_object="$(git rev-parse "$tag_ref^{tag}" 2>/dev/null || true)"
           target_commit="$(git rev-parse "$tag_ref^{commit}")"
           notes_file="$RUNNER_TEMP/release-notes.md"
           git for-each-ref "$tag_ref" --format='%(contents)' > "$notes_file"
           if [ ! -s "$notes_file" ]; then
             git log -1 --format=%B "$target_commit" > "$notes_file"
           fi
+          {
+            printf '\n## Authentication and provenance\n\n'
+            printf -- '- Tag: `%s`\n' "$GITHUB_REF_NAME"
+            if [ -n "$tag_object" ]; then
+              printf -- '- Annotated tag object: `%s`\n' "$tag_object"
+            else
+              printf -- '- Tag object: lightweight tag\n'
+            fi
+            printf -- '- Target commit: `%s`\n' "$target_commit"
+            printf -- '- Workflow run: %s/%s/actions/runs/%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf -- '- Workflow attempt: `%s`\n' "$GITHUB_RUN_ATTEMPT"
+            printf -- '- Published by: GitHub Actions `%s` workflow\n' "$GITHUB_WORKFLOW"
+          } >> "$notes_file"
 
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "github release $GITHUB_REF_NAME already exists"
