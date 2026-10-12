@@ -18,8 +18,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install --assume-yes --no-install-recommends libpam0g-dev
       - uses: taiki-e/install-action@cargo-llvm-cov
-      # Limit test parallelism to 1 thread to avoid resource contention
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Cover Rust and language SDK integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/sdk-venv"
+          source "$RUNNER_TEMP/sdk-venv/bin/activate"
+          python -m pip install 'maturin>=1.8,<2'
+          eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo llvm-cov clean --workspace
+          cargo test --locked --all-features --workspace -- --test-threads=1
+          export DHTTP_TEST_OPENSSL="$(command -v openssl)"
+          cargo test --locked -p dhttp-api --test quic_roundtrip -- --include-ignored --test-threads=1
+          export DHTTP_TEST_PROFILE_ROOT="$RUNNER_TEMP/sdk-fixtures"
+          cargo run --locked -p dhttp-api --example sdk_credentials -- "$DHTTP_TEST_PROFILE_ROOT"
+          npm --prefix api run build
+          node --test api/tests/node.test.cjs
+          # Preserve the N-API coverage object before the PyO3 build replaces it.
+          native_hash="$(sha256sum "$CARGO_TARGET_DIR/debug/libdhttp_api.so" | cut -d ' ' -f1)"
+          cp "$CARGO_TARGET_DIR/debug/libdhttp_api.so" "$CARGO_TARGET_DIR/debug/deps/libdhttp_api-$native_hash.so"
+          maturin develop --locked --manifest-path api/Cargo.toml
+          python -m unittest discover -s api/tests -p test_python_sdk.py -v
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
