@@ -37,7 +37,7 @@ pub(super) struct Nat {
 
 enum Probe {
     Initial(BoxFuture<'static, Vec<SocketAddr>>),
-    NatProbe {
+    Classifying {
         servers: Vec<SocketAddr>,
         nat_type: BoxFuture<'static, Option<NatType>>,
     },
@@ -114,7 +114,7 @@ impl Probe {
             }
         }
         .boxed();
-        Self::NatProbe { servers, nat_type }
+        Self::Classifying { servers, nat_type }
     }
 }
 
@@ -145,7 +145,7 @@ impl Nat {
             Probe::Initial(_) => {
                 self.probe = Probe::initial(bound, servers, StunProtocol::stun_servers);
             }
-            Probe::NatProbe { servers, .. } => {
+            Probe::Classifying { servers, .. } => {
                 self.probe = Probe::nat_probe(
                     self.dock.topology().stun().clone(),
                     bound,
@@ -183,7 +183,7 @@ impl Future for Nat {
                     this.probe =
                         Probe::nat_probe(this.dock.topology().stun().clone(), bound, servers);
                 }
-                Probe::NatProbe {
+                Probe::Classifying {
                     servers,
                     nat_type: classification,
                 } => {

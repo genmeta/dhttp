@@ -694,3 +694,29 @@ async fn interfaces_keep_checking_bindings_after_resume_and_multiple_ticks() {
     let _ = task.await;
     assert!(dock.is_empty());
 }
+
+#[tokio::test]
+async fn active_binding_snapshot_excludes_dead_sockets_and_stopped_maintenance() {
+    let mut state = isolated_interfaces().await;
+    let loopback = loopback_interface();
+    let device_name = loopback.name.clone();
+    state.snapshot = HashMap::from([(loopback.index, loopback)]);
+    state.scan();
+    let bound = state.bindings.values().next().unwrap().bound;
+    let dock = state.dock.clone();
+    let interfaces = Interfaces {
+        state: Arc::new(Mutex::new(Some(state))),
+    };
+    assert_eq!(
+        interfaces.active_bindings().unwrap(),
+        vec![super::super::NetworkBinding {
+            device: device_name,
+            address: bound,
+        }]
+    );
+    dock.remove_bound(bound);
+    assert!(interfaces.active_bindings().unwrap().is_empty());
+    // A stopped maintenance task is different from a live network with no bindings.
+    interfaces.state.lock().unwrap().take();
+    assert!(interfaces.active_bindings().is_err());
+}
