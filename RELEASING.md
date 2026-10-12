@@ -38,3 +38,6 @@ publication and production deployment remain separate from this preparation PR.
 Publish crates in order: dhttp-home, dhttp-access, dhttp-log, dhttp.
 The dhttp-api bridge is not a crates.io package; Node.js and Python bindings
 use version 0.7.0. The removed dhttp-identity package is not republished.
+
+The workspace Cargo.lock is tracked for locked platform checks and publication.
+Refresh it from the published registry graph before each release.
