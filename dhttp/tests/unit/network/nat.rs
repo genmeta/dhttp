@@ -111,7 +111,9 @@ async fn nat_classifies_once_then_heartbeats_replace_and_withdraw_mappings() {
     let socket = Arc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap());
     let bound = socket.local_addr().unwrap();
     let mut binding = state.register(socket.clone()).unwrap().unwrap();
-    let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    // Retain the bound server after aborting replies so Windows does not deliver
+    // ICMP port-unreachable errors that close the client's Dock registration.
+    let listener = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let server = listener.local_addr().unwrap();
     let changes = Arc::new(AtomicUsize::new(0));
     let heartbeats = Arc::new(AtomicUsize::new(0));
@@ -121,6 +123,7 @@ async fn nat_classifies_once_then_heartbeats_replace_and_withdraw_mappings() {
         let changes = changes.clone();
         let heartbeats = heartbeats.clone();
         let socket = socket.clone();
+        let listener = listener.clone();
         async move {
             let mut unanswered = Some(unanswered);
             let mut count = 0;
@@ -268,6 +271,7 @@ async fn nat_classifies_once_then_heartbeats_replace_and_withdraw_mappings() {
     );
     // A heartbeat timeout withdraws its public mapping but keeps the direct socket.
     responder.abort();
+    let _ = responder.await;
     tokio::time::pause();
     tokio::time::advance(NAT_HEARTBEAT_INTERVAL).await;
     poll_probe_until(&mut binding, || state.addresses.ddns_endpoints().is_empty()).await;
