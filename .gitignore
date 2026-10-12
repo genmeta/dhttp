@@ -38,3 +38,10 @@ refs/
 
 doc
 tmp/
+
+# Local implementation notes and agent working documents
+/docs/design/
+/docs/api/sdk-interfaces.md
+/docs/api/top-level-review.md
+/docs/api/pishoo-service-boundary.md
+/docs/reviews/

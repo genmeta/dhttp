@@ -3,7 +3,6 @@
 2026-10-08 开始恢复 Node.js / Python SDK。`api/` 现在是可构建的 `dhttp-api`
 crate，两种语言将共用这里的流桥接、错误和生命周期实现。
 `api/` / `dhttp-api` 沿用 v0.6.2 的语言绑定包名称，职责限定为绑定适配。
-完整目标见 [SDK 接口草案](../docs/api/sdk-interfaces.md)。
 
 当前已接入 N-API / PyO3，恢复 Node `@genmeta/dhttp` 和 Python `dhttpy` 的高层客户端与
 handler 服务端。两种包装复用公共层的有界流、取消与任务所有权，不恢复旧 raw connection API。
@@ -201,10 +200,7 @@ DHTTP_TEST_PROFILE_ROOT="$PWD/target/sdk-fixtures" python -m unittest discover -
 producer/handler 异常、取消、期限、端点隔离、重载和重复关闭；Node 还覆盖反向请求。
 Python 检查事件循环关闭前无遗留 asyncio 任务，两种服务端都验证正常退出。
 
-## 后续实施顺序
+## 当前限制
 
-1. 接入默认 H3 DNS / mDNS 和监听后名称发布，维护地址变化、续期、关闭与发布状态。
-2. 增补跨语言互通、发现的跨进程验收，以及其他 Python 版本的事件循环测试。
-3. 恢复多平台 npm 二进制包、Python wheels 和发布 CI。
-
-跨设备公网、真实 NAT/relay 及 Linux/Windows 网卡变化验收仍单独进行。
+默认 H3 DNS/mDNS、名称发布与多平台发行尚不提供；当前使用 System DNS
+和显式 peers。跨设备 NAT/relay 与其他平台的运行行为需要在目标环境验证。
