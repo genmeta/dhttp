@@ -17,6 +17,15 @@ pub(crate) type BoxService =
 static NETWORK: tokio::sync::OnceCell<DhttpNetwork> = tokio::sync::OnceCell::const_new();
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A live local binding owned by the DHTTP network.
+/// Consumers can use this snapshot to synchronize discovery resources without
+/// accessing transport sockets or creating another interface watcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkBinding {
+    pub device: String,
+    pub address: std::net::SocketAddr,
+}
+
 pub struct DhttpNetwork {
     interfaces: interfaces::Interfaces,
     listeners: Mutex<HashMap<Arc<str>, BoxService>>,
@@ -46,6 +55,14 @@ impl DhttpNetwork {
 
     pub fn global() -> Result<&'static Self> {
         NETWORK.get().ok_or(Error::NetworkNotInitialized)
+    }
+
+    /// Snapshot the currently live bindings owned by this network.
+    /// The snapshot is unordered and can change after this call. Discovery libraries
+    /// should reconcile their resources against subsequent snapshots.
+    /// Returns an error if the network maintenance task has stopped.
+    pub fn active_bindings(&self) -> Result<Vec<NetworkBinding>> {
+        self.interfaces.active_bindings()
     }
 
     /// Refresh network resources after device wake or application foregrounding.

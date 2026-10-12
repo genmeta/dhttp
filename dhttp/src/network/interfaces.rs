@@ -116,6 +116,26 @@ impl Interfaces {
         Ok(())
     }
 
+    pub(super) fn active_bindings(&self) -> crate::Result<Vec<super::NetworkBinding>> {
+        let state = self.state.lock().map_err(|_| Self::stopped())?;
+        let state = state.as_ref().ok_or_else(Self::stopped)?;
+        Ok(state
+            .bindings
+            .iter()
+            .filter_map(|(key, binding)| {
+                let live = !binding.receiver.is_finished()
+                    && state
+                        .dock
+                        .find_socket(binding.bound)
+                        .is_some_and(|socket| Arc::ptr_eq(&socket, &binding.socket));
+                live.then(|| super::NetworkBinding {
+                    device: key.name.clone(),
+                    address: binding.bound,
+                })
+            })
+            .collect())
+    }
+
     fn stopped() -> io::Error {
         io::Error::new(
             io::ErrorKind::BrokenPipe,

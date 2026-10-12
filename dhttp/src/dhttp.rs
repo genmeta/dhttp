@@ -12,7 +12,7 @@ pub mod network;
 pub use endpoint::{Anonymous, Empty, Endpoint, Request, RequestWriter};
 pub use error::{Error, Result};
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-pub use network::DhttpNetwork;
+pub use network::{DhttpNetwork, NetworkBinding};
 pub use qconn::{Scope, Scopes};
 pub use qprotocol::AddressBook;
 pub use qrecovery::send::CancelStream;

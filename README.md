@@ -120,3 +120,12 @@ DHTTP_TEST_OPENSSL=/opt/homebrew/bin/openssl cargo test -p dhttp --lib --tests -
 ```
 
 Node.js/Python SDK 已恢复首版高层客户端和 handler，支持流式收发、身份、取消与关闭，并通过本机 npm/wheel 安装和跨进程验收。使用说明见 [SDK](api/README.md)。当前发现支持 System DNS 和显式 peers；默认 H3 DNS/mDNS、名称发布及多平台发行仍待完成。
+
+### Discovery binding snapshots
+
+`DhttpNetwork::active_bindings()` returns the live local device names and socket
+addresses owned by the network. DHTTP owns interface watching and transport
+bindings. Discovery libraries consume snapshots to synchronize their resources;
+applications choose and register resolver sources through `dhttp::resolve`.
+The snapshot excludes retired sockets and returns an error when network
+maintenance has stopped.
