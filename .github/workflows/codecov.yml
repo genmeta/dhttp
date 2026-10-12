@@ -41,8 +41,9 @@ jobs:
           npm --prefix api run build
           node --test api/tests/node.test.cjs
           # Preserve the N-API coverage object before the PyO3 build replaces it.
-          native_hash="$(sha256sum "$CARGO_TARGET_DIR/debug/libdhttp_api.so" | cut -d ' ' -f1)"
-          cp "$CARGO_TARGET_DIR/debug/libdhttp_api.so" "$CARGO_TARGET_DIR/debug/deps/libdhttp_api-$native_hash.so"
+          native_target="$(cargo metadata --locked --no-deps --format-version 1 | python -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+          native_hash="$(sha256sum "$native_target/debug/libdhttp_api.so" | cut -d ' ' -f1)"
+          cp "$native_target/debug/libdhttp_api.so" "$native_target/debug/deps/libdhttp_api-$native_hash.so"
           maturin develop --locked --manifest-path api/Cargo.toml
           python -m unittest discover -s api/tests -p test_python_sdk.py -v
           cargo llvm-cov report --lcov --output-path lcov.info
