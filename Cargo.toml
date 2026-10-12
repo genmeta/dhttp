@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dhttp", "home", "access", "log", "api"]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 futures = "0.3"
 netwatcher = { version = "0.8", features = ["tokio"] }
 matchit = "0.9"
-rustls = { version = "0.23", default-features = false }
+rustls = { package = "qrustls", version = "0.23.45", default-features = false }
 tokio = { version = "1" }
 toml = "1"
 tower-service = "0.3"
@@ -41,22 +41,17 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
-# Pin the validated transport snapshot for reproducible integration.
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qconn = { package = "qconnection", git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qtransport = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qprotocol = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qresolve = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qudp = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qtls = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-h3x = { git = "https://github.com/genmeta/h3x.git", rev = "d1b475d8ae87da73ae886620ae702c978f75b868", version = "0.6.2" }
-dhttp-home = { path = "home", version = "0.5.0", default-features = false }
-dhttp = { path = "dhttp", version = "0.6.2" }
-dhttp-access = { path = "access", version = "0.4.2" }
-dhttp-log = { path = "log", version = "0.1.0" }
-
-# Share the pinned QUIC types with registry dependencies.
-[patch.crates-io]
-qbase = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
-qrecovery = { git = "https://github.com/genmeta/dquic.git", rev = "b9af55da49c2e10a6b2004b72a90b0fff81da0ce" }
+# Release dependencies use compatible crates.io versions.
+qbase = { version = "0.7.0" }
+qconn = { version = "0.9.0", package = "qconnection" }
+qtransport = { version = "0.1.0" }
+qprotocol = { version = "0.7.0" }
+qresolve = { version = "0.9.0" }
+qudp = { version = "0.8.0" }
+qrecovery = { version = "0.7.0" }
+qtls = { version = "0.1.0" }
+h3x = { version = "0.7.0" }
+dhttp-home = { path = "home", version = "0.6.0", default-features = false }
+dhttp = { path = "dhttp", version = "0.7.0" }
+dhttp-access = { path = "access", version = "0.5.0" }
+dhttp-log = { path = "log", version = "0.2.0" }
