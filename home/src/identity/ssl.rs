@@ -16,6 +16,12 @@ use crate::identity::normalize_profile_name;
 
 use crate::{DHTTP_SUFFIX, DhttpHome, identity::IdentityProfile};
 
+#[cfg(feature = "manage")]
+#[path = "management.rs"]
+mod management;
+#[cfg(feature = "manage")]
+pub use management::*;
+
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
 pub const KEY_FILE_NAME: &str = "privkey.pem";

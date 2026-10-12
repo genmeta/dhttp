@@ -22,9 +22,23 @@ tokio = { workspace = true, features = ["fs"], optional = true }
 x509-parser = { workspace = true, optional = true }
 ring = { version = "0.17", optional = true }
 
+dhttp-identity = { version = "0.3.0", optional = true }
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+qtls = { workspace = true, optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+der = { version = "0.7", optional = true }
+sha1 = { version = "0.10", optional = true }
+x509-cert = { version = "0.2", optional = true }
+x509-ocsp = { version = "0.2", optional = true }
+tempfile = { version = "3", optional = true }
+
 [features]
 default = ["ssl"]
+manage = ["ssl", "dep:dhttp-identity", "dep:serde", "dep:toml", "tokio/io-util"]
+ocsp = ["ssl", "dep:qtls", "dep:reqwest", "dep:der", "dep:sha1", "dep:x509-cert", "dep:x509-ocsp", "dep:tempfile"]
 ssl = ["dep:tokio", "dep:futures", "dep:rustls", "dep:x509-parser", "dep:ring"]
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }

@@ -129,6 +129,33 @@ impl Endpoint {
         Self::load_profile(profile).await
     }
 
+    /// Refresh missing or expired OCSP before loading this identity directory.
+    /// Uses ordinary HTTP(S) and the configured DHTTP trust anchor; unlike
+    /// `load_from`, this explicit operation can perform network access.
+    #[cfg(feature = "online-identity")]
+    pub async fn load_from_with_ocsp(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        crate::trust::initialize()?;
+        let path = path.as_ref();
+        let profile = dhttp_home::identity::IdentityProfile::try_from(path).map_err(|source| {
+            Error::Home {
+                path: path.to_owned(),
+                source: Arc::new(source),
+            }
+        })?;
+        if dhttp_home::normalize_name(profile.name()).as_deref() != Some(profile.name()) {
+            return Err(Error::InvalidName {
+                name: profile.name().to_owned(),
+            });
+        }
+        let certificates = profile.load_certs().await.map_err(|source| Error::Home {
+            path: profile.cert_path(),
+            source: Arc::new(source),
+        })?;
+        dhttp_home::ocsp::load_or_refresh(&profile, &certificates, crate::trust::DHTTP_ROOT_CA_DER)
+            .await?;
+        Self::load_from(path).await
+    }
+
     async fn load_profile(profile: dhttp_home::identity::IdentityProfile) -> Result<Self> {
         let certificates = profile.load_certs().await.map_err(|source| Error::Home {
             path: profile.cert_path(),

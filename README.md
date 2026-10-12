@@ -129,3 +129,17 @@ bindings. Discovery libraries consume snapshots to synchronize their resources;
 applications choose and register resolver sources through `dhttp::resolve`.
 The snapshot excludes retired sockets and returns an error when network
 maintenance has stopped.
+
+### Identity preparation and URI normalization
+
+`Endpoint::load_from(path)` reads only local certificate, key and OCSP files.
+Enable DHTTP's `online-identity` feature and explicitly call
+`Endpoint::load_from_with_ocsp(path)` to validate cached OCSP and refresh it when
+missing or stale. dhttp-home's optional `ocsp` feature owns cache preparation and
+bounded HTTP(S) refresh, without initializing DHTTP networking.
+
+Enable dhttp-home's `manage` feature for default identity settings, recoverable
+certificate/key installation and candidate discovery. These operations extend
+the existing `DhttpHome` and `IdentityProfile` layout rather than defining a
+second home model. Request shorthand and early display/validation use the same
+`dhttp::expand_uri_with_base(base, uri)` implementation.

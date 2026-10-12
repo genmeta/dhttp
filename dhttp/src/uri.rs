@@ -1,7 +1,7 @@
 use crate::{Error, Result};
 
 /// Expand DHTTP authority shorthand before routing or delivering a request.
-pub(crate) fn expand_uri_with_base(base: Option<&str>, uri: http::Uri) -> Result<http::Uri> {
+pub fn expand_uri_with_base(base: Option<&str>, uri: http::Uri) -> Result<http::Uri> {
     let mut parts = uri.into_parts();
     if let Some(authority) = parts.authority {
         parts.authority = Some(expand_authority_with_base(base, authority)?);

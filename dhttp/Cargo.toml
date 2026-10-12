@@ -14,6 +14,7 @@ path = "src/dhttp.rs"
 
 [features]
 default = []
+online-identity = ["dhttp-home/ocsp"]
 access = ["dep:dhttp-access"]
 log = ["dep:dhttp-log"]
 access-cli = ["access", "dhttp-access/cli"]
@@ -23,6 +24,7 @@ access-migration = ["access-orm", "dhttp-access/migration"]
 access-peg-trace = ["access", "dhttp-access/peg-trace"]
 
 [dependencies]
+rustls = { workspace = true, features = ["ring", "std"] }
 bytes.workspace = true
 futures.workspace = true
 dhttp-home = { workspace = true, features = ["ssl"] }
