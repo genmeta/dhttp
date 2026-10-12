@@ -3419,9 +3419,9 @@ dependencies = [
 
 [[package]]
 name = "qudp"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa6ebc0d7b395cb2dcf19b65e8115fb452d555d1815b729a523e2e2857599e14"
+checksum = "97f814f5448612fe66c307b3da58284c3ee8839138ae395e72d6dd1bd65e7cc2"
 dependencies = [
  "bytes",
  "cfg-if",

@@ -41,3 +41,7 @@ use version 0.7.0. The removed dhttp-identity package is not republished.
 
 The workspace Cargo.lock is tracked for locked platform checks and publication.
 Refresh it from the published registry graph before each release.
+
+Android builds require qudp 0.8.1 from the dquic v0.8.1 patch release.
+The registry lockfile retains libc 0.2.189 while nix is incompatible with the
+Darwin constants removed from iOS in libc 0.2.190.

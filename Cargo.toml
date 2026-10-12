@@ -47,7 +47,7 @@ qconn = { version = "0.9.0", package = "qconnection" }
 qtransport = { version = "0.1.0" }
 qprotocol = { version = "0.7.0" }
 qresolve = { version = "0.9.0" }
-qudp = { version = "0.8.0" }
+qudp = { version = "0.8.1" }
 qrecovery = { version = "0.7.0" }
 qtls = { version = "0.1.0" }
 h3x = { version = "0.7.0" }
