@@ -10,6 +10,8 @@
 
 ## Scope and upgrade
 
+Client and server endpoints advertise a five-minute QUIC idle timeout. This permits five minutes without packets and does not send periodic keepalive traffic. Update both peers to use the full window; an older peer's shorter advertised timeout still applies. Connections created before the upgrade retain their negotiated timeout.
+
 This patch release standardizes the OCSP cache at `ssl/stapling.ocsp`. Identity loading and SDK reloads use this path; the old `ssl/ocsp.der` cache is no longer read. Offline deployments must prepare a valid staple at the new path before loading an identity. With online identity preparation enabled, the existing OCSP preparation validates or refreshes the new cache. No automatic rename or change to OCSP verification is introduced.
 
 The SDK bridge and Node.js/Python binding versions are aligned with dhttp. Multi-platform npm/PyPI publishing remains separate from the crates.io workflow.

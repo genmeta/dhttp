@@ -5,12 +5,33 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use bytes::Bytes;
 use h3x::{ErrorCode, Role, Transport, TransportError};
 use qrecovery::{recv::StopSending, send::CancelStream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+/// DHTTP permits long-running handlers without requiring application heartbeat traffic.
+pub(crate) const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+pub(crate) fn configure_quic(
+    mut endpoint: qconn::QuicEndpoint,
+) -> crate::Result<qconn::QuicEndpoint> {
+    endpoint.set_alpn(vec![h3x::ALPN.to_vec()]);
+    // QUIC negotiates the shorter of the two advertised idle timeouts.
+    for role in [qbase::role::Role::Client, qbase::role::Role::Server] {
+        endpoint
+            .set_parameters(
+                role,
+                qbase::param::ParameterId::MaxIdleTimeout,
+                CONNECTION_IDLE_TIMEOUT,
+            )
+            .map_err(io::Error::other)?;
+    }
+    Ok(endpoint)
+}
 
 #[derive(Clone)]
 pub(crate) struct QuicTransport {

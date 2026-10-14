@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Set DHTTP client and server QUIC idle timeouts to five minutes, allowing silent long-running handlers to finish without extra heartbeat requests. Both peers must adopt the setting; QUIC still negotiates the shorter advertised timeout.
 - Standardize the identity OCSP cache at `ssl/stapling.ocsp` for dhttp-home, Endpoint loads and SDK reloads; update credential fixtures and transport tests to use the same path.
 - Stop reading the old `ssl/ocsp.der` cache. Offline deployments must prepare a valid staple at the new path before loading an identity; online OCSP preparation validates or refreshes the new cache.
 

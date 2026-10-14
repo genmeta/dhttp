@@ -151,6 +151,14 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         .get(endpoint.name())
         .unwrap();
     let second = qconn::ServerRegistry::global().get(other.name()).unwrap();
+    for listener in [&first, &second] {
+        assert_eq!(
+            listener
+                .server_parameters
+                .get::<Duration>(qbase::param::ParameterId::MaxIdleTimeout),
+            Duration::from_secs(5 * 60),
+        );
+    }
     // The new QUIC callback only delivers authenticated connections. Rejecting
     // an unsupported negotiated ALPN at the H3 boundary must still be local to
     // that connection and preserve the listener registration.

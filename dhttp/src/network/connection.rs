@@ -97,13 +97,13 @@ pub(super) async fn connect(
     tracing::trace!(local = ?key.names().0, remote = ?key.names().1, "outgoing QUIC handshake started");
     let (local, remote, connection) = match local {
         Some(endpoint) => {
-            let mut quic = qconn::QuicEndpoint::from(endpoint.identity.clone());
-            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            let quic = crate::transport::configure_quic(qconn::QuicEndpoint::from(
+                endpoint.identity.clone(),
+            ))?;
             quic.connect(remote.to_string()).await?
         }
         None => {
-            let mut quic = qconn::QuicEndpoint::anonymous();
-            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            let quic = crate::transport::configure_quic(qconn::QuicEndpoint::anonymous())?;
             quic.connect(remote.to_string()).await?
         }
     };

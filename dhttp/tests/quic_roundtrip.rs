@@ -107,7 +107,7 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                         let handshake = request.extensions().get::<HandshakeSummary>().unwrap();
                         assert_eq!(handshake.alpn.as_deref(), Some(b"h3".as_slice()));
                         assert_eq!(handshake.local.as_ref().unwrap().name(), "server.dhttp.net");
-                        if request.uri().path() == "/anonymous" {
+                        if request.uri().path().starts_with("/anonymous") {
                             assert!(handshake.remote.is_none());
                         } else {
                             assert_eq!(
@@ -115,7 +115,13 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
                                 "client.dhttp.net"
                             );
                         }
+                        let slow = matches!(request.uri().path(), "/slow" | "/anonymous-slow");
                         let bytes = request.into_body().collect().await?.to_bytes();
+                        if slow {
+                            // Exceed both old transport defaults (20s client / 30s server)
+                            // with no response bytes or application heartbeat requests.
+                            tokio::time::sleep(Duration::from_secs(35)).await;
+                        }
                         Ok::<_, dhttp::BoxError>(http::Response::new(Full::new(bytes)))
                     }),
                 )
@@ -253,6 +259,35 @@ async fn injected_resolver_drives_authenticated_http3_over_udp() {
         resolutions.load(Ordering::SeqCst),
         2,
         "anonymous requests need a distinct reusable connection"
+    );
+    let (named, anonymous) = tokio::time::timeout(Duration::from_secs(45), async {
+        tokio::join!(
+            async { client.get("https://server~/slow".parse().unwrap()).await },
+            async {
+                dhttp::Anonymous
+                    .get("https://server~/anonymous-slow".parse().unwrap())
+                    .await
+            },
+        )
+    })
+    .await
+    .expect("silent handlers must finish within the application deadline");
+    for response in [named.unwrap(), anonymous.unwrap()] {
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        resolutions.load(Ordering::SeqCst),
+        2,
+        "silent responses must use the original connections"
     );
     let reverse = tokio::time::timeout(
         Duration::from_secs(3),

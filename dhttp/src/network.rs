@@ -103,8 +103,8 @@ impl DhttpNetwork {
         scopes: Scopes,
         service: BoxService,
     ) -> Result<crate::ListenFuture> {
-        let mut quic = qconn::QuicEndpoint::from(endpoint.identity.clone());
-        quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+        let quic =
+            crate::transport::configure_quic(qconn::QuicEndpoint::from(endpoint.identity.clone()))?;
         let name: Arc<str> = Arc::from(endpoint.name());
         {
             let mut listeners = self.listeners.lock().unwrap();
@@ -203,8 +203,9 @@ impl Endpoint {
             let registered = qconn::ServerRegistry::global()
                 .get(self.name())
                 .ok_or_else(|| std::io::Error::other("listener TLS registration disappeared"))?;
-            let mut quic = qconn::QuicEndpoint::from(replacement.identity.clone());
-            quic.set_alpn(vec![h3x::ALPN.to_vec()]);
+            let mut quic = crate::transport::configure_quic(qconn::QuicEndpoint::from(
+                replacement.identity.clone(),
+            ))?;
             for (id, value) in registered.server_parameters.iter() {
                 quic.set_parameters(qbase::role::Role::Server, *id, value.clone())
                     .map_err(std::io::Error::other)?;
