@@ -3,7 +3,7 @@ resolver = "3"
 members = ["dhttp", "home", "access", "log", "api"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/genmeta/dhttp"
@@ -51,7 +51,7 @@ qudp = { version = "0.8.1" }
 qrecovery = { version = "0.7.0" }
 qtls = { version = "0.1.0" }
 h3x = { version = "0.7.0" }
-dhttp-home = { path = "home", version = "0.6.0", default-features = false }
-dhttp = { path = "dhttp", version = "0.7.0" }
+dhttp-home = { path = "home", version = "0.6.1", default-features = false }
+dhttp = { path = "dhttp", version = "0.7.1" }
 dhttp-access = { path = "access", version = "0.5.0" }
 dhttp-log = { path = "log", version = "0.2.0" }

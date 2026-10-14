@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "dhttp"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "dhttp-api"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -1202,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "dhttp-home"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "der 0.7.10",
  "dhttp-identity",

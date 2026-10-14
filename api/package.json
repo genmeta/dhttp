@@ -1,6 +1,6 @@
 {
   "name": "@genmeta/dhttp",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "DHTTP HTTP/3 SDK",
   "license": "Apache-2.0",
   "main": "js/index.js",

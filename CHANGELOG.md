@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.1] - 2026-10-14
+
+### Fixed
+
+- Standardize the identity OCSP cache at `ssl/stapling.ocsp` for dhttp-home, Endpoint loads and SDK reloads; update credential fixtures and transport tests to use the same path.
+- Stop reading the old `ssl/ocsp.der` cache. Offline deployments must prepare a valid staple at the new path before loading an identity; online OCSP preparation validates or refreshes the new cache.
+
+### Release versions
+
+| Package | Previous published version | Prepared version |
+| --- | --- | --- |
+| `dhttp` | 0.7.0 | 0.7.1 |
+| `dhttp-home` | 0.6.0 | 0.6.1 |
+| `@genmeta/dhttp / dhttpy` | 0.7.0 | 0.7.1 |
+
+`dhttp-access` remains 0.5.0 and `dhttp-log` remains 0.2.0.
+The SDK bridge version is aligned; multi-platform npm/PyPI publishing remains separate.
+
 ## [0.7.0] - 2026-10-12
 
 ### Changed

@@ -53,7 +53,7 @@ Add the library and the dependencies used by these examples:
 
 ```toml
 [dependencies]
-dhttp = "0.7.0"
+dhttp = "0.7.1"
 ddns = { package = "dyns", version = "0.8.0", features = ["h3"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 http-body-util = "0.1"
@@ -154,7 +154,7 @@ mappings, while the application owns name publication.
 ## Node.js and Python SDK
 
 The native bindings follow the same endpoint model using each language's
-standard request, response and asynchronous streaming conventions. The 0.7.0
+standard request, response and asynchronous streaming conventions. The 0.7.1
 bindings can be built from [api/](api/README.md); multi-platform npm/PyPI release
 packaging remains pending.
 
