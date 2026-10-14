@@ -151,7 +151,7 @@ async fn acceptance() {
     assert!(matches!(second, Err(error) if error.code == ErrorCode::AlreadyListening));
     // A failed explicit-path reload retains the previous signing capability.
     let original = alice.local_authority().await.unwrap().unwrap();
-    let ocsp_path = root.join("alice/ssl/ocsp.der");
+    let ocsp_path = root.join("alice/ssl/stapling.ocsp");
     let ocsp = fs::read(&ocsp_path).unwrap();
     fs::write(&ocsp_path, b"invalid OCSP").unwrap();
     assert!(alice.reload().await.is_err());

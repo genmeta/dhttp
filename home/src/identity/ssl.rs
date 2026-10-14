@@ -25,7 +25,7 @@ pub use management::*;
 pub const SSL_DIR_NAME: &str = "ssl";
 pub const CERT_FILE_NAME: &str = "fullchain.crt";
 pub const KEY_FILE_NAME: &str = "privkey.pem";
-pub const OCSP_FILE_NAME: &str = "ocsp.der";
+pub const OCSP_FILE_NAME: &str = "stapling.ocsp";
 
 #[derive(Snafu, Debug)]
 #[snafu(module)]

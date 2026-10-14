@@ -51,7 +51,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         )
         .unwrap();
     }
-    std::fs::write(ssl.join("ocsp.der"), b"test-ocsp").unwrap();
+    std::fs::write(ssl.join("stapling.ocsp"), b"test-ocsp").unwrap();
     let other_ssl = root.join("other").join("ssl");
     std::fs::create_dir_all(&other_ssl).unwrap();
     let other_cert =
@@ -71,7 +71,7 @@ async fn listener_registers_service_and_releases_it_on_exit() {
         )
         .unwrap();
     }
-    std::fs::write(other_ssl.join("ocsp.der"), b"other-ocsp").unwrap();
+    std::fs::write(other_ssl.join("stapling.ocsp"), b"other-ocsp").unwrap();
     // This test binary has one test and sets the home before starting network tasks.
     unsafe { std::env::set_var("DHTTP_HOME", &root) };
 

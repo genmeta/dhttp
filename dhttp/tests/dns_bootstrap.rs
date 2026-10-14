@@ -106,7 +106,7 @@ fn endpoint(root: &Path, directory: &str, name: &str) -> Endpoint {
         rustls_pemfile::private_key(&mut key.as_slice())
             .unwrap()
             .unwrap(),
-        fs::read(ssl.join("ocsp.der")).unwrap(),
+        fs::read(ssl.join("stapling.ocsp")).unwrap(),
     )
     .unwrap();
     Endpoint::new(identity)

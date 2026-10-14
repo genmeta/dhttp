@@ -157,7 +157,7 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
                 "-cert",
                 &cert,
                 "-respout",
-                &format!("{directory}/ocsp.der"),
+                &format!("{directory}/stapling.ocsp"),
                 "-ndays",
                 "1",
             ],
@@ -167,7 +167,7 @@ pub fn generate(root: &Path, names: &[(&str, &str)]) {
             &[
                 "ocsp",
                 "-respin",
-                &format!("{directory}/ocsp.der"),
+                &format!("{directory}/stapling.ocsp"),
                 "-issuer",
                 "ca.crt",
                 "-cert",
