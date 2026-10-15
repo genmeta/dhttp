@@ -13,7 +13,7 @@ categories = ["network-programming"]
 
 [workspace.dependencies]
 bytes = "1"
-dirs = "6"
+dirs = "7"
 snafu = "0.9"
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
