@@ -28,7 +28,7 @@ toml = { workspace = true, optional = true }
 qtls = { workspace = true, optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 der = { version = "0.7", optional = true }
-sha1 = { version = "0.10", optional = true }
+sha1 = { version = "0.11", optional = true }
 x509-cert = { version = "0.2", optional = true }
 x509-ocsp = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
