@@ -1218,7 +1218,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
- "x509-cert 0.2.5",
+ "x509-cert 0.3.0",
  "x509-ocsp",
  "x509-parser",
 ]
